@@ -46,5 +46,6 @@ func newDataStores(cfg *config.Config) persistence.DataStores {
 		DataDir:           cfg.DataDir,
 		SuspendFlagsDir:   cfg.SuspendFlagsDir,
 		LatestStatusToday: cfg.LatestStatusToday,
+		QueueDir:          cfg.QueueDir,
 	})
 }

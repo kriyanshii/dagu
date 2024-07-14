@@ -23,6 +23,7 @@ type Config struct {
 	LogEncodingCharset string   // Log encoding charset
 	LogDir             string   // Log directory
 	DataDir            string   // Data directory
+	QueueDir           string   // Queue Directory
 	SuspendFlagsDir    string   // Suspend flags directory
 	AdminLogsDir       string   // Directory for admin logs
 	BaseConfig         string   // Common config file for all DAGs.
@@ -33,7 +34,8 @@ type Config struct {
 	IsAuthToken        bool     // Enable auth token for API
 	AuthToken          string   // Auth token for API
 	LatestStatusToday  bool     // Show latest status today or the latest status
-	APIBaseURL         string   // Base URL for API
+	DAGQueueLength     int
+	APIBaseURL         string // Base URL for API
 }
 
 type TLS struct {
@@ -109,6 +111,7 @@ const (
 	dagsDir    = "dags"
 	dataDir    = "data"
 	logDir     = "logs"
+	queueDir   = "queue"
 	suspendDir = "suspend"
 )
 
@@ -132,6 +135,7 @@ func setDefaults() error {
 	viper.SetDefault("baseConfig", path.Join(paths.configDir, baseConfig))
 	viper.SetDefault("logDir", path.Join(paths.configDir, logDir))
 	viper.SetDefault("dataDir", path.Join(paths.configDir, dataDir))
+	viper.SetDefault("queueDir", path.Join(paths.configDir, queueDir))
 	viper.SetDefault("suspendFlagsDir", path.Join(paths.configDir, suspendDir))
 	viper.SetDefault("adminLogsDir", path.Join(paths.configDir, defaults.AdminLogsDir))
 	viper.SetDefault("navbarColor", defaults.NavbarColor)
@@ -140,6 +144,7 @@ func setDefaults() error {
 	viper.SetDefault("authToken", defaults.AuthToken)
 	viper.SetDefault("latestStatusToday", defaults.LatestStatusToday)
 	viper.SetDefault("apiBaseURL", defaults.APIBaseURL)
+	viper.SetDefault("dagQueueLength", "5")
 
 	return nil
 }
@@ -192,6 +197,11 @@ func loadLegacyEnvs(cfg *Config) {
 	if v := os.Getenv("DAGU__ADMIN_LOGS_DIR"); v != "" {
 		cfg.AdminLogsDir = v
 	}
+
+	if v := os.Getenv("DAGU__QUEUE"); v != "" {
+		cfg.QueueDir = v
+	}
+
 }
 
 type defaultPaths struct {

@@ -18,6 +18,7 @@ var (
 type DataStores interface {
 	HistoryStore() HistoryStore
 	DAGStore() DAGStore
+	QueueStore() QueueStore
 	FlagStore() FlagStore
 }
 
@@ -46,6 +47,12 @@ type DAGStore interface {
 	GetSpec(name string) (string, error)
 	UpdateSpec(name string, spec []byte) error
 	Find(name string) (*dag.DAG, error)
+}
+
+type QueueStore interface {
+	Create() error
+	Enqueue(d *dag.DAG) error
+	Dequeue() (*model.Queue, error)
 }
 
 type GrepResult struct {

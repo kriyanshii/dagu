@@ -43,6 +43,7 @@ type Agent struct {
 	graph        *scheduler.ExecutionGraph
 	reporter     *reporter
 	historyStore persistence.HistoryStore
+	queueStore   persistence.QueueStore
 	socketServer *sock.Server
 	logFile      *os.File
 	logDir       string
@@ -121,6 +122,16 @@ func (a *Agent) Run(ctx context.Context) error {
 	// It should close the connection to the history database when the DAG
 	// execution is finished.
 	if err := a.setupDatabase(); err != nil {
+		return err
+	}
+	defer func() {
+		if err := a.historyStore.Close(); err != nil {
+			log.Printf("failed to close history store: %v", err)
+		}
+	}()
+
+	//
+	if err := a.setupQueue(); err != nil {
 		return err
 	}
 	defer func() {
@@ -214,6 +225,11 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Mark the agent finished.
 	a.finished.Store(true)
+
+	err := a.queueStore.Enqueue(a.dag)
+	log.Print(err)
+	// data, _ := a.queueStore.Dequeue()
+	// log.Println("data:", data)
 
 	// Return the last error on the DAG execution.
 	return lastErr
@@ -478,6 +494,18 @@ func (a *Agent) setupDatabase() error {
 	}
 
 	return a.historyStore.Open(a.dag.Location, time.Now(), a.reqID)
+}
+
+// setup queue
+func (a *Agent) setupQueue() error {
+	// TODO: do not use the persistence package directly.
+	log.Print("setting up queueStore")
+	a.queueStore = a.dataStore.QueueStore()
+	err := a.queueStore.Create()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // setupSocketServer create socket server instance.
