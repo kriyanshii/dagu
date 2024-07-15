@@ -267,6 +267,24 @@ func (e *engineImpl) getDAG(name string) (*dag.DAG, error) {
 	return e.emptyDAGIfNil(dagDetail, name), err
 }
 
+func (e *engineImpl) GetrunningStatus() (statuses []*DAGStatus, errs []string, err error) {
+	ds := e.dataStore.DAGStore()
+	dags, errs, err := ds.List()
+
+	ret := make([]*DAGStatus, 0)
+	for _, d := range dags {
+		status, err := e.readStatus(d)
+		if err != nil {
+			errs = append(errs, err.Error())
+		}
+		if status.Status.Status == scheduler.StatusRunning {
+			ret = append(ret, status)
+		}
+	}
+
+	return ret, errs, err
+}
+
 func (e *engineImpl) GetStatus(id string) (*DAGStatus, error) {
 	dg, err := e.getDAG(id)
 	if dg == nil {

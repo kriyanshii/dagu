@@ -18,6 +18,7 @@ import (
 
 type Scheduler struct {
 	entryReader entryReader
+	queueReader queueReader
 	logDir      string
 	stop        chan struct{}
 	running     atomic.Bool
@@ -27,6 +28,10 @@ type Scheduler struct {
 type entryReader interface {
 	Start(done chan any)
 	Read(now time.Time) ([]*entry, error)
+}
+
+type queueReader interface {
+	Start(done chan any)
 }
 
 type entry struct {
@@ -90,6 +95,7 @@ func (e *entry) Invoke() error {
 
 type newSchedulerArgs struct {
 	EntryReader entryReader
+	QueueReader queueReader
 	Logger      logger.Logger
 	LogDir      string
 }
@@ -97,6 +103,7 @@ type newSchedulerArgs struct {
 func newScheduler(args newSchedulerArgs) *Scheduler {
 	return &Scheduler{
 		entryReader: args.EntryReader,
+		queueReader: args.QueueReader,
 		logDir:      args.LogDir,
 		stop:        make(chan struct{}),
 		logger:      args.Logger,
@@ -110,9 +117,12 @@ func (s *Scheduler) Start() error {
 
 	sig := make(chan os.Signal, 1)
 	done := make(chan any)
+	read := make(chan any)
 	defer close(done)
+	defer close(read)
 
 	s.entryReader.Start(done)
+	s.queueReader.Start(read)
 
 	signal.Notify(
 		sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT,
@@ -121,6 +131,8 @@ func (s *Scheduler) Start() error {
 	go func() {
 		select {
 		case <-done:
+			return
+		case <-read:
 			return
 		case <-sig:
 			s.Stop()

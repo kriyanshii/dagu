@@ -6,6 +6,9 @@ import (
 	"github.com/dagu-dev/dagu/internal/config"
 	"github.com/dagu-dev/dagu/internal/engine"
 	dagulogger "github.com/dagu-dev/dagu/internal/logger"
+	"github.com/dagu-dev/dagu/internal/persistence"
+	"github.com/dagu-dev/dagu/internal/persistence/client"
+
 	"go.uber.org/fx"
 )
 
@@ -16,12 +19,14 @@ var Module = fx.Options(
 type Params struct {
 	fx.In
 
-	Config *config.Config
-	Logger dagulogger.Logger
-	Engine engine.Engine
+	Config    *config.Config
+	Logger    dagulogger.Logger
+	Engine    engine.Engine
+	Datastore persistence.DataStores
 }
 
 func New(params Params) *Scheduler {
+	cfg, _ := config.Load()
 	return newScheduler(newSchedulerArgs{
 		EntryReader: newEntryReader(newEntryReaderArgs{
 			Engine:  params.Engine,
@@ -32,6 +37,17 @@ func New(params Params) *Scheduler {
 				Executable: params.Config.Executable,
 			},
 			Logger: params.Logger,
+		}),
+		QueueReader: newQueueReader(newQueueReaderArgs{
+			QueueDir: params.Config.QueueDir,
+			Logger:   params.Logger,
+			Datastore: client.NewDataStores(&client.NewDataStoresArgs{
+				DAGs:              cfg.DAGs,
+				DataDir:           cfg.DataDir,
+				SuspendFlagsDir:   cfg.SuspendFlagsDir,
+				LatestStatusToday: cfg.LatestStatusToday,
+				QueueDir:          cfg.QueueDir,
+			}),
 		}),
 		Logger: params.Logger,
 		LogDir: params.Config.LogDir,

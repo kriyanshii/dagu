@@ -26,6 +26,7 @@ type Engine interface {
 	UpdateDAG(id string, spec string) error
 	DeleteDAG(name, loc string) error
 	GetAllStatus() (statuses []*DAGStatus, errs []string, err error)
+	GetrunningStatus() (statuses []*DAGStatus, errs []string, err error)
 	GetStatus(dagLocation string) (*DAGStatus, error)
 	IsSuspended(id string) bool
 	ToggleSuspend(id string, suspend bool) error
