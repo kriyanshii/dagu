@@ -2,6 +2,7 @@ package dag
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"regexp"
@@ -144,7 +145,7 @@ func parseParams(value string, eval bool, options buildOpts) (
 			}
 		}
 	}
-
+	log.Print("ret", ret)
 	return ret, envs, nil
 }
 
@@ -182,6 +183,14 @@ func parseParamValue(
 	for _, match := range matches {
 		name := match[1]
 		value := match[2]
+
+		if strings.HasPrefix(name, `"`) || strings.HasPrefix(value, "`") {
+			if strings.HasPrefix(name, `"`) {
+				name = strings.Replace(name, `"`, "", -1)
+				log.Print("inside valeu", name)
+				name = strings.ReplaceAll(name, `\"`, `"`)
+			}
+		}
 
 		if strings.HasPrefix(value, `"`) || strings.HasPrefix(value, "`") {
 			if strings.HasPrefix(value, `"`) {
