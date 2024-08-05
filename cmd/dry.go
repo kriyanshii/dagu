@@ -1,3 +1,18 @@
+// Copyright (C) 2024 The Daguflow/Dagu Authors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 package cmd
 
 import (
@@ -5,10 +20,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/dagu-dev/dagu/internal/agent"
-	"github.com/dagu-dev/dagu/internal/config"
-	"github.com/dagu-dev/dagu/internal/dag"
-	"github.com/dagu-dev/dagu/internal/logger"
+	"github.com/daguflow/dagu/internal/agent"
+	"github.com/daguflow/dagu/internal/config"
+	"github.com/daguflow/dagu/internal/dag"
+	"github.com/daguflow/dagu/internal/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -25,8 +40,8 @@ func dryCmd() *cobra.Command {
 				log.Fatalf("Failed to load config: %v", err)
 			}
 			initLogger := logger.NewLogger(logger.NewLoggerArgs{
-				LogLevel:  cfg.LogLevel,
-				LogFormat: cfg.LogFormat,
+				Debug:  cfg.Debug,
+				Format: cfg.LogFormat,
 			})
 
 			params, err := cmd.Flags().GetString("params")
@@ -35,7 +50,7 @@ func dryCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-			workflow, err := dag.Load(cfg.BaseConfig, args[0], params)
+			workflow, err := dag.Load(cfg.BaseConfig, args[0], removeQuotes(params))
 			if err != nil {
 				initLogger.Error("Workflow load failed", "error", err, "file", args[0])
 				os.Exit(1)
@@ -61,9 +76,9 @@ func dryCmd() *cobra.Command {
 			defer logFile.Close()
 
 			agentLogger := logger.NewLogger(logger.NewLoggerArgs{
-				LogLevel:  cfg.LogLevel,
-				LogFormat: cfg.LogFormat,
-				LogFile:   logFile,
+				Debug:   cfg.Debug,
+				Format:  cfg.LogFormat,
+				LogFile: logFile,
 			})
 
 			dataStore := newDataStores(cfg)

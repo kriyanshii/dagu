@@ -1,3 +1,18 @@
+// Copyright (C) 2024 The Daguflow/Dagu Authors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 package client
 
 import (
@@ -5,15 +20,16 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 
-	"github.com/dagu-dev/dagu/internal/dag"
-	"github.com/dagu-dev/dagu/internal/dag/scheduler"
-	"github.com/dagu-dev/dagu/internal/logger"
-	"github.com/dagu-dev/dagu/internal/persistence"
-	"github.com/dagu-dev/dagu/internal/persistence/model"
-	"github.com/dagu-dev/dagu/internal/sock"
+	"github.com/daguflow/dagu/internal/dag"
+	"github.com/daguflow/dagu/internal/dag/scheduler"
+	"github.com/daguflow/dagu/internal/logger"
+	"github.com/daguflow/dagu/internal/persistence"
+	"github.com/daguflow/dagu/internal/persistence/model"
+	"github.com/daguflow/dagu/internal/sock"
 )
 
 // New creates a new Client instance.
@@ -284,7 +300,7 @@ func (e *client) GetStatus(id string) (*DAGStatus, error) {
 	}
 	latestStatus, _ := e.GetLatestStatus(dg)
 	return newDAGStatus(
-		dg, latestStatus, e.IsSuspended(dg.Name), err,
+		dg, latestStatus, e.IsSuspended(id), err,
 	), err
 }
 
@@ -295,8 +311,13 @@ func (e *client) ToggleSuspend(id string, suspend bool) error {
 
 func (e *client) readStatus(workflow *dag.DAG) (*DAGStatus, error) {
 	latestStatus, err := e.GetLatestStatus(workflow)
+	id := strings.TrimSuffix(
+		filepath.Base(workflow.Location),
+		filepath.Ext(workflow.Location),
+	)
+
 	return newDAGStatus(
-		workflow, latestStatus, e.IsSuspended(workflow.Name), err,
+		workflow, latestStatus, e.IsSuspended(id), err,
 	), err
 }
 

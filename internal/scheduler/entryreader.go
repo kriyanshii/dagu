@@ -1,3 +1,18 @@
+// Copyright (C) 2024 The Daguflow/Dagu Authors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 package scheduler
 
 import (
@@ -7,12 +22,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dagu-dev/dagu/internal/client"
-	"github.com/dagu-dev/dagu/internal/logger"
-	"github.com/dagu-dev/dagu/internal/scheduler/filenotify"
+	"github.com/daguflow/dagu/internal/client"
+	"github.com/daguflow/dagu/internal/logger"
+	"github.com/daguflow/dagu/internal/scheduler/filenotify"
 
-	"github.com/dagu-dev/dagu/internal/dag"
-	"github.com/dagu-dev/dagu/internal/util"
+	"github.com/daguflow/dagu/internal/dag"
+	"github.com/daguflow/dagu/internal/util"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -75,7 +90,12 @@ func (er *entryReaderImpl) Read(now time.Time) ([]*entry, error) {
 	}
 
 	for _, workflow := range er.dags {
-		if er.client.IsSuspended(workflow.Name) {
+		id := strings.TrimSuffix(
+			filepath.Base(workflow.Location),
+			filepath.Ext(workflow.Location),
+		)
+
+		if er.client.IsSuspended(id) {
 			continue
 		}
 		addEntriesFn(workflow, workflow.Schedule, entryTypeStart)

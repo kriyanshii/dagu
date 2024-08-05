@@ -1,3 +1,18 @@
+// Copyright (C) 2024 The Daguflow/Dagu Authors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 package dag
 
 import (
@@ -8,15 +23,15 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dagu-dev/dagu/internal/client"
-	"github.com/dagu-dev/dagu/internal/dag"
-	"github.com/dagu-dev/dagu/internal/dag/scheduler"
-	"github.com/dagu-dev/dagu/internal/frontend/gen/models"
-	"github.com/dagu-dev/dagu/internal/frontend/gen/restapi/operations"
-	"github.com/dagu-dev/dagu/internal/frontend/gen/restapi/operations/dags"
-	"github.com/dagu-dev/dagu/internal/frontend/server"
-	"github.com/dagu-dev/dagu/internal/persistence/jsondb"
-	"github.com/dagu-dev/dagu/internal/persistence/model"
+	"github.com/daguflow/dagu/internal/client"
+	"github.com/daguflow/dagu/internal/dag"
+	"github.com/daguflow/dagu/internal/dag/scheduler"
+	"github.com/daguflow/dagu/internal/frontend/gen/models"
+	"github.com/daguflow/dagu/internal/frontend/gen/restapi/operations"
+	"github.com/daguflow/dagu/internal/frontend/gen/restapi/operations/dags"
+	"github.com/daguflow/dagu/internal/frontend/server"
+	"github.com/daguflow/dagu/internal/persistence/jsondb"
+	"github.com/daguflow/dagu/internal/persistence/model"
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/swag"
 	"github.com/samber/lo"

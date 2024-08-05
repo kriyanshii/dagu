@@ -1,7 +1,7 @@
-.. _examples:
+.. _Example DAGs:
 
-Examples
-========
+Example DAGs
+============
 
 .. contents::
     :local:
@@ -45,7 +45,7 @@ Conditional Steps
         - condition: "$1"
           expected: bar
 
-.. image:: https://raw.githubusercontent.com/dagu-dev/dagu/main/examples/images/conditional.png
+.. image:: https://raw.githubusercontent.com/daguflow/dagu/main/examples/images/conditional.png
 
 
 File Output
@@ -84,10 +84,9 @@ Running a Docker Container
       executor: 
         type: docker
         config:
-          image: "denoland/deno:1.10.3"
-          host:
-            autoRemove: true
-      command: run https://examples.deno.land/hello-world.ts
+          image: "denoland/deno:latest"
+          autoRemove: true
+      command: run https://raw.githubusercontent.com/denoland/deno-docs/main/by-example/hello-world.ts
 
 See :ref:`docker executor` for more details.
 
@@ -179,7 +178,7 @@ Expected Output:
 Sending Email Notifications
 ---------------------------
 
-.. image:: https://raw.githubusercontent.com/dagu-dev/dagu/main/examples/images/email.png
+.. image:: https://raw.githubusercontent.com/daguflow/dagu/main/examples/images/email.png
 
 .. code-block:: yaml
 

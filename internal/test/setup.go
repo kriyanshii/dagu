@@ -1,3 +1,18 @@
+// Copyright (C) 2024 The Daguflow/Dagu Authors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 package test
 
 import (
@@ -6,12 +21,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dagu-dev/dagu/internal/client"
-	"github.com/dagu-dev/dagu/internal/config"
-	"github.com/dagu-dev/dagu/internal/logger"
-	"github.com/dagu-dev/dagu/internal/persistence"
-	dsclient "github.com/dagu-dev/dagu/internal/persistence/client"
-	"github.com/dagu-dev/dagu/internal/util"
+	"github.com/daguflow/dagu/internal/client"
+	"github.com/daguflow/dagu/internal/config"
+	"github.com/daguflow/dagu/internal/logger"
+	"github.com/daguflow/dagu/internal/persistence"
+	dsclient "github.com/daguflow/dagu/internal/persistence/client"
+	"github.com/daguflow/dagu/internal/util"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 )
@@ -56,16 +71,20 @@ func SetupTest(t *testing.T) Setup {
 	err := os.Setenv("HOME", tmpDir)
 	require.NoError(t, err)
 
-	viper.AddConfigPath(config.ConfigDir)
+	configDir := filepath.Join(tmpDir, "config")
+	viper.AddConfigPath(configDir)
 	viper.SetConfigType("yaml")
 	viper.SetConfigName("admin")
 
-	config.ConfigDir = filepath.Join(tmpDir, "config")
-	config.DataDir = filepath.Join(tmpDir, "data")
-	config.LogsDir = filepath.Join(tmpDir, "log")
-
 	cfg, err := config.Load()
 	require.NoError(t, err)
+
+	cfg.DAGs = filepath.Join(tmpDir, "dags")
+	cfg.WorkDir = tmpDir
+	cfg.BaseConfig = filepath.Join(tmpDir, "config", "base.yaml")
+	cfg.DataDir = filepath.Join(tmpDir, "data")
+	cfg.LogDir = filepath.Join(tmpDir, "log")
+	cfg.AdminLogsDir = filepath.Join(tmpDir, "log", "admin")
 
 	// Set the executable path to the test binary.
 	cfg.Executable = filepath.Join(util.MustGetwd(), "../../bin/dagu")
@@ -113,7 +132,7 @@ func SetupForDir(t *testing.T, dir string) Setup {
 
 func NewLogger() logger.Logger {
 	return logger.NewLogger(logger.NewLoggerArgs{
-		LogLevel:  "debug",
-		LogFormat: "text",
+		Debug:  true,
+		Format: "text",
 	})
 }

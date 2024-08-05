@@ -1,3 +1,18 @@
+// Copyright (C) 2024 The Daguflow/Dagu Authors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 package dag
 
 import (
@@ -150,6 +165,14 @@ func TestBuilder_BuildParams(t *testing.T) {
 			},
 		},
 		{
+			name:   "QuotedParams",
+			params: `x="1" y="2"`,
+			expected: map[string]string{
+				"x": "1",
+				"y": "2",
+			},
+		},
+		{
 			name:   "ComplexParams",
 			params: "first P1=foo P2=${FOO} P3=`/bin/echo BAR` X=bar Y=${P1} Z=\"A B C\"",
 			env:    "FOO: BAR",
@@ -173,11 +196,17 @@ func TestBuilder_BuildParams(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dg, err := unmarshalData([]byte(fmt.Sprintf(`
-env:
-  - %s
+			var data string
+			if tt.env != "" {
+				data = fmt.Sprintf(`env:
+- %s
 params: %s
-  	`, tt.env, tt.params)))
+`, tt.env, tt.params)
+			} else {
+				data = fmt.Sprintf(`params: %s
+`, tt.params)
+			}
+			dg, err := unmarshalData([]byte(data))
 			require.NoError(t, err)
 
 			def, err := decode(dg)

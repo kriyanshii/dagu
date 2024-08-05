@@ -1,3 +1,18 @@
+// Copyright (C) 2024 The Daguflow/Dagu Authors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 package executor
 
 // See https://docs.docker.com/engine/api/sdk/
@@ -8,8 +23,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/dagu-dev/dagu/internal/dag"
-	"github.com/dagu-dev/dagu/internal/util"
+	"github.com/daguflow/dagu/internal/dag"
+	"github.com/daguflow/dagu/internal/util"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -46,9 +61,9 @@ func (e *docker) Kill(_ os.Signal) error {
 }
 
 func (e *docker) Run() error {
-	ctx, fn := context.WithCancel(context.Background())
+	ctx, cancelFunc := context.WithCancel(context.Background())
 	e.context = ctx
-	e.cancel = fn
+	e.cancel = cancelFunc
 
 	cli, err := client.NewClientWithOpts(
 		client.FromEnv, client.WithAPIVersionNegotiation(),
@@ -82,18 +97,31 @@ func (e *docker) Run() error {
 		return err
 	}
 
+	removing := false
+	removeContainer := func() {
+		if !e.autoRemove || removing {
+			return
+		}
+		removing = true
+		err := cli.ContainerRemove(
+			ctx, resp.ID, types.ContainerRemoveOptions{
+				Force: true,
+			},
+		)
+		util.LogErr("docker executor: remove container", err)
+	}
+
+	defer removeContainer()
+	e.cancel = func() {
+		removeContainer()
+		cancelFunc()
+	}
+
 	if err := cli.ContainerStart(
 		ctx, resp.ID, types.ContainerStartOptions{},
 	); err != nil {
 		return err
 	}
-
-	defer func() {
-		if e.autoRemove {
-			err := cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{})
-			util.LogErr("docker executor: remove container", err)
-		}
-	}()
 
 	out, err := cli.ContainerLogs(
 		ctx, resp.ID, types.ContainerLogsOptions{

@@ -1,3 +1,18 @@
+// Copyright (C) 2024 The Daguflow/Dagu Authors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 package logger
 
 import (
@@ -24,7 +39,6 @@ type (
 
 		With(attrs ...any) Logger
 		WithGroup(name string) Logger
-		WithPrefix(prefix string) Logger
 
 		// Write writes a free-form message to the logger.
 		// It writes to the standard output and to the log file if present.
@@ -43,28 +57,31 @@ type appLogger struct {
 }
 
 type NewLoggerArgs struct {
-	LogLevel  string
-	LogFormat string
-	LogFile   *os.File
-	Quiet     bool
+	Debug   bool
+	Format  string
+	LogFile *os.File
+	Quiet   bool
 }
 
 var (
 	// Default is the default logger used by the application.
 	Default = NewLogger(NewLoggerArgs{
-		LogLevel:  "info",
-		LogFormat: "text",
+		Format: "text",
 	})
 )
 
 func NewLogger(args NewLoggerArgs) Logger {
 	var level slog.Level
-	if err := level.UnmarshalText([]byte(args.LogLevel)); err != nil {
+	if args.Debug {
+		level = slog.LevelDebug
+	} else {
 		level = slog.LevelInfo
 	}
+
 	opts := &slog.HandlerOptions{
 		Level: level,
 	}
+
 	if level == slog.LevelDebug {
 		opts.AddSource = true
 	}
@@ -73,15 +90,18 @@ func NewLogger(args NewLoggerArgs) Logger {
 		handlers       []slog.Handler
 		guardedHandler *guardedHandler
 	)
+
 	if !args.Quiet {
-		handlers = append(handlers, newHandler(os.Stderr, args.LogFormat, opts))
+		handlers = append(handlers, newHandler(os.Stderr, args.Format, opts))
 	}
+
 	if args.LogFile != nil {
 		guardedHandler = newGuardedHandler(
-			newHandler(args.LogFile, args.LogFormat, opts), args.LogFile,
+			newHandler(args.LogFile, args.Format, opts), args.LogFile,
 		)
 		handlers = append(handlers, guardedHandler)
 	}
+
 	return &appLogger{
 		logger: slog.New(
 			slogmulti.Fanout(handlers...),
@@ -205,15 +225,6 @@ func (a *appLogger) WithGroup(name string) Logger {
 	return &appLogger{
 		logger:         a.logger.WithGroup(name),
 		guardedHandler: a.guardedHandler,
-	}
-}
-
-// WithPrefix implements logger.Logger.
-func (a *appLogger) WithPrefix(prefix string) Logger {
-	return &appLogger{
-		logger:         a.logger,
-		guardedHandler: a.guardedHandler,
-		prefix:         prefix,
 	}
 }
 
