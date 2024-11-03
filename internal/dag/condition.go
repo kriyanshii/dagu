@@ -18,7 +18,6 @@ package dag
 import (
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"regexp"
 	"strconv"
@@ -49,12 +48,10 @@ var (
 func (c Condition) eval() (string, error) {
 	// Expand environment variables in the condition
 	expandedCondition := os.ExpandEnv(c.Condition)
-	log.Print("condition: ", c, expandedCondition)
 
 	// Check if it's a Lisp-like condition and evaluate if so
 	if isLispCondition(expandedCondition) {
 		result, err := evalLisp(expandedCondition)
-		log.Print("result: ", result)
 		if err != nil {
 			return "", fmt.Errorf("Lisp evaluation error: %w", err)
 		}
@@ -74,7 +71,6 @@ func isLispCondition(condition string) bool {
 func evalLisp(expr string) (bool, error) {
 	tokens := tokenize(expr)
 
-	log.Print("tokens: ", tokens, " - ", len(tokens))
 	if len(tokens) == 0 {
 		return false, fmt.Errorf("empty expression")
 	}
@@ -134,7 +130,6 @@ func tokenize(input string) []string {
 func evalOr(args []string) (bool, error) {
 	for _, arg := range args {
 		res, err := evalLisp(arg)
-		log.Print("", res)
 		if err != nil {
 			return false, err
 		}

@@ -76,7 +76,7 @@ func TestCondition_Eval(t *testing.T) {
 			name: "ComplexCondition",
 			condition: []Condition{
 				{
-					Condition: "`(or (eq $1 foo) (eq $1 bar))`",
+					Condition: "(or (eq ${TEST_CONDITION} 100) (eq ${TEST_CONDITION} 1))",
 					Expected:  "true",
 				},
 			},
@@ -85,8 +85,17 @@ func TestCondition_Eval(t *testing.T) {
 			name: "ComplexCondition1",
 			condition: []Condition{
 				{
-					Condition: "(and (eq $1 foo) (eq $1 bar))",
+					Condition: "(and (eq ${TEST_CONDITION} 100) (eq ${TEST_CONDITION} 1))",
 					Expected:  "false",
+				},
+			},
+		},
+		{
+			name: "ComplexCondition1",
+			condition: []Condition{
+				{
+					Condition: "(and (eq ${TEST_CONDITION} 100) (eq ${TEST_CONDITION} 1))",
+					Expected:  "true",
 				},
 			},
 			wantErr: true,
