@@ -82,7 +82,7 @@ func TestCondition_Eval(t *testing.T) {
 			},
 		},
 		{
-			name: "ComplexCondition1",
+			name: "ComplexConditionAndTrue",
 			condition: []Condition{
 				{
 					Condition: "(and (eq ${TEST_CONDITION} 100) (eq ${TEST_CONDITION} 1))",
@@ -91,7 +91,7 @@ func TestCondition_Eval(t *testing.T) {
 			},
 		},
 		{
-			name: "ComplexCondition1",
+			name: "ComplexConditionAnd",
 			condition: []Condition{
 				{
 					Condition: "(and (eq ${TEST_CONDITION} 100) (eq ${TEST_CONDITION} 1))",
@@ -99,6 +99,15 @@ func TestCondition_Eval(t *testing.T) {
 				},
 			},
 			wantErr: true,
+		},
+		{
+			name: "ComplexConditionGt",
+			condition: []Condition{
+				{
+					Condition: "(or (gt ${TEST_CONDITION} 99) (gt ${TEST_CONDITION} 98))",
+					Expected:  "true",
+				},
+			},
 		},
 	}
 
