@@ -19,6 +19,7 @@ const (
 	StatusRunning
 	StatusError
 	StatusCancel
+	StatusQueue
 	StatusSuccess
 )
 
@@ -32,6 +33,8 @@ func (s Status) String() string {
 		return "canceled"
 	case StatusSuccess:
 		return "finished"
+	case StatusQueue:
+		return "queued"
 	case StatusNone:
 		fallthrough
 	default:

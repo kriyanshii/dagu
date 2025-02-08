@@ -11,14 +11,15 @@ import (
 // Config represents the server configuration with both new and legacy fields
 type Config struct {
 	// Server settings
-	Host        string `mapstructure:"host"`
-	Port        int    `mapstructure:"port"`
-	Debug       bool   `mapstructure:"debug"`
-	BasePath    string `mapstructure:"basePath"`
-	APIBasePath string `mapstructure:"apiBasePath"`
-	APIBaseURL  string `mapstructure:"apiBaseURL"` // For backward compatibility
-	WorkDir     string `mapstructure:"workDir"`
-	Headless    bool   `mapstructure:"headless"`
+	Host           string `mapstructure:"host"`
+	Port           int    `mapstructure:"port"`
+	DAGQueueLength int    `mapstructure:"dagQueueLength"`
+	Debug          bool   `mapstructure:"debug"`
+	BasePath       string `mapstructure:"basePath"`
+	APIBasePath    string `mapstructure:"apiBasePath"`
+	APIBaseURL     string `mapstructure:"apiBaseURL"` // For backward compatibility
+	WorkDir        string `mapstructure:"workDir"`
+	Headless       bool   `mapstructure:"headless"`
 
 	// Authentication
 	Auth Auth `mapstructure:"auth"`
@@ -34,6 +35,10 @@ type Config struct {
 	Executable string `mapstructure:"executable"`
 	// Deprecated: Use Paths.LogDir instead
 	LogDir string `mapstructure:"logDir"`
+	// Deprecated: Use Paths.QueueDir instead
+	QueueDir string `mapstructure: "queueDir"`
+	// Deprecated: Use Paths.StatsDir instead
+	StatsDir string `mapstructure: "statsDir"`
 	// Deprecated: Use Paths.DataDir instead
 	DataDir string `mapstructure:"dataDir"`
 	// Deprecated: Use Paths.SuspendFlagsDir instead
@@ -100,6 +105,8 @@ type AuthToken struct {
 // Paths represents the file system paths configuration
 type PathsConfig struct {
 	DAGsDir         string `mapstructure:"dagsDir"`
+	QueueDir        string `mapstructure: queueDir`
+	StatsDir        string `mapstructure: statsDir`
 	Executable      string `mapstructure:"executable"`
 	LogDir          string `mapstructure:"logDir"`
 	DataDir         string `mapstructure:"dataDir"`
@@ -182,6 +189,12 @@ func (c *Config) migratePaths() {
 	}
 	if c.DataDir != "" {
 		c.Paths.DataDir = c.DataDir
+	}
+	if c.QueueDir != "" {
+		c.Paths.QueueDir = c.QueueDir
+	}
+	if c.StatsDir != "" {
+		c.Paths.StatsDir = c.StatsDir
 	}
 	if c.SuspendFlagsDir != "" {
 		c.Paths.SuspendFlagsDir = c.SuspendFlagsDir

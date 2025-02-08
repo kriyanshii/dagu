@@ -120,7 +120,29 @@ func (e *client) Start(_ context.Context, dag *digraph.DAG, opts StartOptions) e
 	if opts.Quiet {
 		args = append(args, "-q")
 	}
+	if opts.FromWaitingQueue {
+		args = append(args, "-w")
+	}
 	args = append(args, dag.Location)
+	// nolint:gosec
+	cmd := exec.Command(e.executable, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: 0}
+	cmd.Dir = e.workDir
+	cmd.Env = os.Environ()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	err := cmd.Start()
+	if err != nil {
+		return err
+	}
+	return cmd.Wait()
+}
+
+func (e *client) Dequeue(workflow *digraph.DAG) error {
+	args := []string{"dequeue"}
+
+	args = append(args, workflow.Location)
 	// nolint:gosec
 	cmd := exec.Command(e.executable, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: 0}
@@ -325,13 +347,13 @@ func (e *client) GetAllStatusPagination(ctx context.Context, params dags.ListDag
 	}, nil
 }
 
-func (e *client) getDAG(ctx context.Context, name string) (*digraph.DAG, error) {
+func (e *client) GetDAG(ctx context.Context, name string) (*digraph.DAG, error) {
 	dagDetail, err := e.dagStore.GetDetails(ctx, name)
 	return e.emptyDAGIfNil(dagDetail, name), err
 }
 
 func (e *client) GetStatus(ctx context.Context, id string) (DAGStatus, error) {
-	dag, err := e.getDAG(ctx, id)
+	dag, err := e.GetDAG(ctx, id)
 	if dag == nil {
 		// TODO: fix not to use location
 		dag = &digraph.DAG{Name: id, Location: id}

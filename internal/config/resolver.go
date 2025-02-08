@@ -18,6 +18,8 @@ type Paths struct {
 	DAGsDir         string
 	SuspendFlagsDir string
 	DataDir         string
+	QueueDir        string
+	StatsDir        string
 	LogsDir         string
 	AdminLogsDir    string
 	BaseConfigFile  string
@@ -52,6 +54,8 @@ func (r *PathResolver) resolve(appHomeEnv, legacyPath string) {
 func (r *PathResolver) setXDGPaths() {
 	r.DataDir = filepath.Join(r.DataHome, build.Slug, "history")
 	r.LogsDir = filepath.Join(r.DataHome, build.Slug, "logs")
+	r.QueueDir = filepath.Join(r.ConfigDir, "queue")
+	r.StatsDir = filepath.Join(r.ConfigDir, "stats")
 	r.BaseConfigFile = filepath.Join(r.ConfigHome, build.Slug, "base.yaml")
 	r.AdminLogsDir = filepath.Join(r.DataHome, build.Slug, "logs", "admin")
 	r.SuspendFlagsDir = filepath.Join(r.DataHome, build.Slug, "suspend")
@@ -61,6 +65,8 @@ func (r *PathResolver) setXDGPaths() {
 func (r *PathResolver) setLegacyPaths() {
 	r.DataDir = filepath.Join(r.ConfigDir, "data")
 	r.LogsDir = filepath.Join(r.ConfigDir, "logs")
+	r.QueueDir = filepath.Join(r.ConfigDir, "queue")
+	r.StatsDir = filepath.Join(r.ConfigDir, "stats")
 	r.BaseConfigFile = filepath.Join(r.ConfigDir, "base.yaml")
 	r.AdminLogsDir = filepath.Join(r.ConfigDir, "logs", "admin")
 	r.SuspendFlagsDir = filepath.Join(r.ConfigDir, "suspend")

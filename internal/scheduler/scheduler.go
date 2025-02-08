@@ -27,24 +27,26 @@ type Job interface {
 }
 
 type Scheduler struct {
-	manager  JobManager
-	logDir   string
-	stopChan chan struct{}
-	running  atomic.Bool
-	location *time.Location
+	manager     JobManager
+	queueReader QueueReader
+	logDir      string
+	stopChan    chan struct{}
+	running     atomic.Bool
+	location    *time.Location
 }
 
-func New(cfg *config.Config, manager JobManager) *Scheduler {
+func New(cfg *config.Config, manager JobManager, queueReader QueueReader) *Scheduler {
 	timeLoc := cfg.Location
 	if timeLoc == nil {
 		timeLoc = time.Local
 	}
 
 	return &Scheduler{
-		logDir:   cfg.Paths.LogDir,
-		stopChan: make(chan struct{}),
-		location: timeLoc,
-		manager:  manager,
+		logDir:      cfg.Paths.LogDir,
+		stopChan:    make(chan struct{}),
+		location:    timeLoc,
+		queueReader: queueReader,
+		manager:     manager,
 	}
 }
 
@@ -105,6 +107,12 @@ func (s *Scheduler) Start(ctx context.Context) error {
 
 	done := make(chan any)
 	defer close(done)
+	queue := make(chan any)
+	defer close(queue)
+
+	if err := s.queueReader.Start(ctx, queue); err != nil {
+		return fmt.Errorf("failed to start queue reader: %w", err)
+	}
 
 	if err := s.manager.Start(ctx, done); err != nil {
 		return fmt.Errorf("failed to start manager: %w", err)

@@ -113,6 +113,8 @@ func (l *ConfigLoader) setDefaultValues(resolver PathResolver) {
 	viper.SetDefault("paths.dagsDir", resolver.DAGsDir)
 	viper.SetDefault("paths.suspendFlagsDir", resolver.SuspendFlagsDir)
 	viper.SetDefault("paths.dataDir", resolver.DataDir)
+	viper.SetDefault("paths.queueDir", resolver.QueueDir)
+	viper.SetDefault("paths.statsDir", resolver.StatsDir)
 	viper.SetDefault("paths.logDir", resolver.LogsDir)
 	viper.SetDefault("paths.adminLogsDir", resolver.AdminLogsDir)
 	viper.SetDefault("paths.baseConfig", resolver.BaseConfigFile)
@@ -120,6 +122,7 @@ func (l *ConfigLoader) setDefaultValues(resolver PathResolver) {
 	// Server settings
 	viper.SetDefault("host", "127.0.0.1")
 	viper.SetDefault("port", 8080)
+	viper.SetDefault("dagQueueLength", "5")
 	viper.SetDefault("debug", false)
 	viper.SetDefault("basePath", "")
 	viper.SetDefault("apiBaseURL", "/api/v1")
@@ -182,6 +185,8 @@ func (l *ConfigLoader) bindEnvironmentVariables() {
 	l.bindEnv("baseConfig", "BASE_CONFIG")
 	l.bindEnv("logDir", "LOG_DIR")
 	l.bindEnv("dataDir", "DATA_DIR")
+	l.bindEnv("queueDir", "QUEUE_DIR")
+	l.bindEnv("statsDir", "STATS_DIR")
 	l.bindEnv("suspendFlagsDir", "SUSPEND_FLAGS_DIR")
 	l.bindEnv("adminLogsDir", "ADMIN_LOG_DIR")
 	l.bindEnv("executable", "EXECUTABLE")
@@ -223,6 +228,14 @@ func (l *ConfigLoader) LoadLegacyEnv(cfg *Config) error {
 		"DAGU__DATA": {
 			newKey: "DAGU_DATA_DIR",
 			setter: func(c *Config, v string) { c.Paths.DataDir = v },
+		},
+		"DAGU__QUEUE": {
+			newKey: "DAGU_QUEUE_DIR",
+			setter: func(c *Config, v string) { c.Paths.QueueDir = v },
+		},
+		"DAGU__STATS": {
+			newKey: "DAGU_STATS_DIR",
+			setter: func(c *Config, v string) { c.Paths.StatsDir = v },
 		},
 		"DAGU__SUSPEND_FLAGS_DIR": {
 			newKey: "DAGU_SUSPEND_FLAGS_DIR",

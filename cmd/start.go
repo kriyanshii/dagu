@@ -31,6 +31,7 @@ func initStartFlags(cmd *cobra.Command) {
 	cmd.Flags().StringP("params", "p", "", "parameters")
 	cmd.Flags().StringP("requestID", "r", "", "specify request ID")
 	cmd.Flags().BoolP("quiet", "q", false, "suppress output")
+	cmd.Flags().BoolP("waiting", "w", false, "from waiting queue")
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
@@ -42,6 +43,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 	quiet, err := cmd.Flags().GetBool("quiet")
 	if err != nil {
 		return fmt.Errorf("failed to get quiet flag: %w", err)
+	}
+
+	waiting, err := cmd.Flags().GetBool("waiting")
+	fmt.Print("flag: ", waiting)
+	if err != nil {
+		return fmt.Errorf("failed to get waiting flag: %w", err)
 	}
 
 	requestID, err := cmd.Flags().GetString("requestID")
@@ -68,10 +75,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		loadOpts = append(loadOpts, digraph.WithParams(removeQuotes(params)))
 	}
 
-	return executeDag(ctx, setup, args[0], loadOpts, quiet, requestID)
+	return executeDag(ctx, setup, cfg, args[0], loadOpts, quiet, waiting, requestID)
 }
 
-func executeDag(ctx context.Context, setup *setup, specPath string, loadOpts []digraph.LoadOption, quiet bool, requestID string) error {
+func executeDag(ctx context.Context, setup *setup, cfg *config.Config, specPath string, loadOpts []digraph.LoadOption, quiet bool, waiting bool, requestID string) error {
 	dag, err := digraph.Load(ctx, specPath, loadOpts...)
 	if err != nil {
 		logger.Error(ctx, "Failed to load DAG", "path", specPath, "err", err)
@@ -114,11 +121,14 @@ func executeDag(ctx context.Context, setup *setup, specPath string, loadOpts []d
 		requestID,
 		dag,
 		filepath.Dir(logFile.Name()),
+		cfg.DAGQueueLength,
 		logFile.Name(),
 		cli,
 		dagStore,
+		setup.queueStore(),
+		setup.statsStore(),
 		setup.historyStore(),
-		agent.Options{},
+		agent.Options{FromWaitingQueue: waiting},
 	)
 
 	listenSignals(ctx, agt)
@@ -134,7 +144,7 @@ func executeDag(ctx context.Context, setup *setup, specPath string, loadOpts []d
 		}
 	}
 
-	if !quiet {
+	if !quiet && !waiting {
 		agt.PrintSummary(ctx)
 	}
 

@@ -27,6 +27,7 @@ type Client interface {
 	UpdateStatus(ctx context.Context, dag *digraph.DAG, status model.Status) error
 	UpdateDAG(ctx context.Context, id string, spec string) error
 	DeleteDAG(ctx context.Context, id, loc string) error
+	GetDAG(ctx context.Context, name string) (*digraph.DAG, error)
 	GetAllStatus(ctx context.Context) (statuses []DAGStatus, errs []string, err error)
 	GetAllStatusPagination(ctx context.Context, params dags.ListDagsParams) ([]DAGStatus, *DagListPaginationSummaryResult, error)
 	GetStatus(ctx context.Context, dagLocation string) (DAGStatus, error)
@@ -36,8 +37,9 @@ type Client interface {
 }
 
 type StartOptions struct {
-	Params string
-	Quiet  bool
+	Params           string
+	Quiet            bool
+	FromWaitingQueue bool
 }
 
 type RestartOptions struct {

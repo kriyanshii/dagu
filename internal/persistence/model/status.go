@@ -37,6 +37,24 @@ func (f *StatusFactory) CreateDefault() Status {
 	}
 }
 
+func (f *StatusFactory) CreateDefaultQueue() Status {
+	return Status{
+		Name:       f.dag.Name,
+		Status:     scheduler.StatusQueue,
+		StatusText: scheduler.StatusQueue.String(),
+		PID:        PID(pidNotRunning),
+		Nodes:      FromSteps(f.dag.Steps),
+		OnExit:     nodeOrNil(f.dag.HandlerOn.Exit),
+		OnSuccess:  nodeOrNil(f.dag.HandlerOn.Success),
+		OnFailure:  nodeOrNil(f.dag.HandlerOn.Failure),
+		OnCancel:   nodeOrNil(f.dag.HandlerOn.Cancel),
+		Params:     strings.Join(f.dag.Params, " "),
+		ParamsList: f.dag.Params,
+		StartedAt:  stringutil.FormatTime(time.Time{}),
+		FinishedAt: stringutil.FormatTime(time.Time{}),
+	}
+}
+
 type StatusOption func(*Status)
 
 func WithNodes(nodes []scheduler.NodeData) StatusOption {

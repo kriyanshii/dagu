@@ -85,7 +85,7 @@ func runRetry(cmd *cobra.Command, args []string) error {
 	}
 
 	// Execute DAG retry
-	if err := executeRetry(ctx, dag, setup, status, quiet); err != nil {
+	if err := executeRetry(ctx, dag, setup, cfg, status, quiet); err != nil {
 		logger.Error(ctx, "Failed to execute retry", "path", specFilePath, "err", err)
 		return fmt.Errorf("failed to execute retry: %w", err)
 	}
@@ -93,7 +93,7 @@ func runRetry(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func executeRetry(ctx context.Context, dag *digraph.DAG, setup *setup, originalStatus *model.StatusFile, quiet bool) error {
+func executeRetry(ctx context.Context, dag *digraph.DAG, setup *setup, cfg *config.Config, originalStatus *model.StatusFile, quiet bool) error {
 	newRequestID, err := generateRequestID()
 	if err != nil {
 		return fmt.Errorf("failed to generate new request ID: %w", err)
@@ -125,9 +125,12 @@ func executeRetry(ctx context.Context, dag *digraph.DAG, setup *setup, originalS
 		newRequestID,
 		dag,
 		filepath.Dir(logFile.Name()),
+		cfg.DAGQueueLength,
 		logFile.Name(),
 		cli,
 		dagStore,
+		setup.queueStore(),
+		setup.statsStore(),
 		setup.historyStore(),
 		agent.Options{RetryTarget: &originalStatus.Status},
 	)

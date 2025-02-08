@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
@@ -32,18 +33,23 @@ import (
 // 3. Handle the HTTP request via the unix socket.
 // 4. Write the log and status to the data store.
 type Agent struct {
-	dag          *digraph.DAG
-	dry          bool
-	retryTarget  *model.Status
-	dagStore     persistence.DAGStore
-	client       client.Client
-	scheduler    *scheduler.Scheduler
-	graph        *scheduler.ExecutionGraph
-	reporter     *reporter
-	historyStore persistence.HistoryStore
-	socketServer *sock.Server
-	logDir       string
-	logFile      string
+	dag              *digraph.DAG
+	dry              bool
+	fromWaitingQueue bool //to check if the dag is coming from the waiting queue
+	retry            bool
+	retryTarget      *model.Status
+	dagStore         persistence.DAGStore
+	queueStore       persistence.QueueStore
+	statsStore       persistence.StatsStore
+	client           client.Client
+	scheduler        *scheduler.Scheduler
+	graph            *scheduler.ExecutionGraph
+	reporter         *reporter
+	historyStore     persistence.HistoryStore
+	socketServer     *sock.Server
+	logDir           string
+	logFile          string
+	dagQueueLength   int
 
 	// requestID is request ID to identify DAG execution uniquely.
 	// The request ID can be used for history lookup, retry, etc.
@@ -59,6 +65,10 @@ type Options struct {
 	// Dry is a dry-run mode. It does not execute the actual command.
 	// Dry run does not create history data.
 	Dry bool
+	// retry if the task is retried
+	Retry bool
+	// fromQueue if the task is started from dequeue
+	FromWaitingQueue bool
 	// RetryTarget is the target status (history of execution) to retry.
 	// If it's specified the agent will execute the DAG with the same
 	// configuration as the specified history.
@@ -70,22 +80,30 @@ func New(
 	requestID string,
 	dag *digraph.DAG,
 	logDir string,
+	dagQueueLength int,
 	logFile string,
 	cli client.Client,
 	dagStore persistence.DAGStore,
+	queueStore persistence.QueueStore,
+	statsStore persistence.StatsStore,
 	historyStore persistence.HistoryStore,
 	opts Options,
 ) *Agent {
 	return &Agent{
-		requestID:    requestID,
-		dag:          dag,
-		dry:          opts.Dry,
-		retryTarget:  opts.RetryTarget,
-		logDir:       logDir,
-		logFile:      logFile,
-		client:       cli,
-		dagStore:     dagStore,
-		historyStore: historyStore,
+		requestID:        requestID,
+		dag:              dag,
+		dry:              opts.Dry,
+		retry:            opts.Retry,
+		retryTarget:      opts.RetryTarget,
+		dagQueueLength:   dagQueueLength,
+		fromWaitingQueue: opts.FromWaitingQueue,
+		logDir:           logDir,
+		logFile:          logFile,
+		client:           cli,
+		dagStore:         dagStore,
+		queueStore:       queueStore,
+		statsStore:       statsStore,
+		historyStore:     historyStore,
 	}
 }
 
@@ -122,92 +140,126 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.setupDatabase(ctx); err != nil {
 		return err
 	}
+
+	// Make a connection to queue dir
+	if err := a.setupQueue(); err != nil {
+		return err
+	}
+	// Make a connection to stats dir
+	if err := a.setupStats(); err != nil {
+		return err
+	}
+
 	defer func() {
 		if err := a.historyStore.Close(ctx); err != nil {
 			logger.Error(ctx, "Failed to close history store", "err", err)
 		}
 	}()
-
-	if err := a.historyStore.Write(ctx, a.Status()); err != nil {
-		logger.Error(ctx, "Failed to write status", "err", err)
+	// queue implementation
+	noOfRunningDAGS, err := a.statsStore.GetRunningDags()
+	if err != nil {
+		log.Print("error reading statsStore: ", err)
 	}
-
-	// Start the unix socket server for receiving HTTP requests from
-	// the local client (e.g., the frontend server, scheduler, etc).
-	if err := a.setupSocketServer(ctx); err != nil {
-		return fmt.Errorf("failed to setup unix socket server: %w", err)
-	}
-	listenerErrCh := make(chan error)
-	go execWithRecovery(ctx, func() {
-		err := a.socketServer.Serve(ctx, listenerErrCh)
-		if err != nil && !errors.Is(err, sock.ErrServerRequestedShutdown) {
-			logger.Error(ctx, "Failed to start socket frontend", "err", err)
+	// this will check if the dag is being retried and if the queue.json is empty
+	queueLength := a.queueStore.QueueLength()
+	// log
+	fmt.Println(noOfRunningDAGS, " : ", a.dagQueueLength, " : ", queueLength)
+	if noOfRunningDAGS < a.dagQueueLength && queueLength == 0 || a.retry || a.fromWaitingQueue {
+		if err := a.historyStore.Write(ctx, a.Status()); err != nil {
+			logger.Error(ctx, "Failed to write status", "err", err)
 		}
-	})
+		// increment the number of running DAGs
+		a.statsStore.IncrementRunningDags(a.dag.Name)
 
-	// Stop the socket server when finishing the DAG execution.
-	defer func() {
-		if err := a.socketServer.Shutdown(ctx); err != nil {
-			logger.Error(ctx, "Failed to shutdown socket frontend", "err", err)
+		// Start the unix socket server for receiving HTTP requests from
+		// the local client (e.g., the frontend server, scheduler, etc).
+		if err := a.setupSocketServer(ctx); err != nil {
+			return fmt.Errorf("failed to setup unix socket server: %w", err)
 		}
-	}()
-
-	// It returns error if it failed to start the unix socket server.
-	if err := <-listenerErrCh; err != nil {
-		return fmt.Errorf("failed to start the unix socket server: %w", err)
-	}
-
-	// Setup channels to receive status updates for each node in the DAG.
-	// It should receive node instance when the node status changes, for
-	// example, when started, stopped, or cancelled, etc.
-	done := make(chan *scheduler.Node)
-	defer close(done)
-	go execWithRecovery(ctx, func() {
-		for node := range done {
-			status := a.Status()
-			if err := a.historyStore.Write(ctx, status); err != nil {
-				logger.Error(ctx, "Failed to write status", "err", err)
+		listenerErrCh := make(chan error)
+		go execWithRecovery(ctx, func() {
+			err := a.socketServer.Serve(ctx, listenerErrCh)
+			if err != nil && !errors.Is(err, sock.ErrServerRequestedShutdown) {
+				logger.Error(ctx, "Failed to start socket frontend", "err", err)
 			}
-			if err := a.reporter.reportStep(ctx, a.dag, status, node); err != nil {
-				logger.Error(ctx, "Failed to report step", "err", err)
-			}
-		}
-	})
+		})
 
-	// Write the first status just after the start to store the running status.
-	// If the DAG is already finished, skip it.
-	go execWithRecovery(ctx, func() {
-		time.Sleep(waitForRunning)
-		if a.finished.Load() {
-			return
+		// Stop the socket server when finishing the DAG execution.
+		defer func() {
+			if err := a.socketServer.Shutdown(ctx); err != nil {
+				logger.Error(ctx, "Failed to shutdown socket frontend", "err", err)
+			}
+		}()
+
+		// It returns error if it failed to start the unix socket server.
+		if err := <-listenerErrCh; err != nil {
+			return fmt.Errorf("failed to start the unix socket server: %w", err)
 		}
+
+		// Setup channels to receive status updates for each node in the DAG.
+		// It should receive node instance when the node status changes, for
+		// example, when started, stopped, or cancelled, etc.
+		done := make(chan *scheduler.Node)
+		defer close(done)
+		go execWithRecovery(ctx, func() {
+			for node := range done {
+				status := a.Status()
+				if err := a.historyStore.Write(ctx, status); err != nil {
+					logger.Error(ctx, "Failed to write status", "err", err)
+				}
+				if err := a.reporter.reportStep(ctx, a.dag, status, node); err != nil {
+					logger.Error(ctx, "Failed to report step", "err", err)
+				}
+			}
+		})
+
+		// Write the first status just after the start to store the running status.
+		// If the DAG is already finished, skip it.
+		go execWithRecovery(ctx, func() {
+			time.Sleep(waitForRunning)
+			if a.finished.Load() {
+				return
+			}
+			if err := a.historyStore.Write(ctx, a.Status()); err != nil {
+				logger.Error(ctx, "Status write failed", "err", err)
+			}
+		})
+
+		// Start the DAG execution.
+		// decrement running
+		defer a.statsStore.DecrementRunningDags(a.dag.Name)
+		logger.Info(ctx, "DAG execution started", "reqId", a.requestID, "name", a.dag.Name, "params", a.dag.Params)
+		lastErr := a.scheduler.Schedule(ctx, a.graph, done)
+
+		// Update the finished status to the history database.
+		finishedStatus := a.Status()
+		logger.Info(ctx, "DAG execution finished", "status", finishedStatus.Status)
 		if err := a.historyStore.Write(ctx, a.Status()); err != nil {
 			logger.Error(ctx, "Status write failed", "err", err)
 		}
-	})
 
-	// Start the DAG execution.
-	logger.Info(ctx, "DAG execution started", "reqId", a.requestID, "name", a.dag.Name, "params", a.dag.Params)
-	lastErr := a.scheduler.Schedule(ctx, a.graph, done)
+		// Send the execution report if necessary.
+		a.lastErr = lastErr
+		if err := a.reporter.send(ctx, a.dag, finishedStatus, lastErr); err != nil {
+			logger.Error(ctx, "Mail notification failed", "err", err)
+		}
 
-	// Update the finished status to the history database.
-	finishedStatus := a.Status()
-	logger.Info(ctx, "DAG execution finished", "status", finishedStatus.Status)
-	if err := a.historyStore.Write(ctx, a.Status()); err != nil {
-		logger.Error(ctx, "Status write failed", "err", err)
+		// Mark the agent finished.
+		a.finished.Store(true)
+
+		// Return the last error on the DAG execution.
+		return lastErr
+	} else {
+		if err := a.queueStore.Enqueue(a.dag); err != nil {
+			logger.Error(ctx, "error queuing dag.", a.dag.Name, "err", err)
+		}
+		if err := a.setStatus(ctx, a.dag); err != nil {
+			log.Println("dag queued.")
+		}
+		logger.Infof(ctx, "dag queued.", a.dag.Name)
+
+		return nil
 	}
-
-	// Send the execution report if necessary.
-	a.lastErr = lastErr
-	if err := a.reporter.send(ctx, a.dag, finishedStatus, lastErr); err != nil {
-		logger.Error(ctx, "Mail notification failed", "err", err)
-	}
-
-	// Mark the agent finished.
-	a.finished.Store(true)
-
-	// Return the last error on the DAG execution.
-	return lastErr
 }
 
 func (a *Agent) PrintSummary(ctx context.Context) {
@@ -444,6 +496,31 @@ func (a *Agent) setupDatabase(ctx context.Context) error {
 	}
 
 	return a.historyStore.Open(ctx, a.dag.Location, time.Now(), a.requestID)
+}
+func (a *Agent) setStatus(ctx context.Context, d *digraph.DAG) error {
+	status := model.NewStatusFactory(d).CreateDefaultQueue()
+	a.historyStore.Write(ctx, status)
+	return nil
+}
+
+// TODO
+func (a *Agent) setupQueue() error {
+	// TODO: do not use the persistence package directly.
+	err := a.queueStore.Create()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// TODO
+func (a *Agent) setupStats() error {
+	// TODO: do not use the persistence package directly.
+	err := a.statsStore.Create()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // setupSocketServer create socket server instance.

@@ -43,6 +43,21 @@ type DAGStore interface {
 	TagList(ctx context.Context) ([]string, []string, error)
 }
 
+type QueueStore interface {
+	Create() error
+	Enqueue(d *digraph.DAG) error
+	QueueLength() int
+	Dequeue() (*model.Queue, error)
+	FindJobId(dag string) (bool, error)
+}
+
+type StatsStore interface {
+	Create() error
+	IncrementRunningDags(string) error
+	DecrementRunningDags(string) error
+	GetRunningDags() (int, error)
+}
+
 type DAGListPaginationArgs struct {
 	Page  int
 	Limit int

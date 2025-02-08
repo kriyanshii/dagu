@@ -155,12 +155,17 @@ export function getNextSchedule(data: WorkflowListItem): number {
   const datesToRun = schedules.map((s) => {
     const cronTzMatch = s.Expression.match(/(?<=CRON_TZ=)[^\s]+/);
     if (cronTzMatch) {
-      const cronTz = cronTzMatch[0]
-      const expressionTextWithOutCronTz = s.Expression.replace(`CRON_TZ=${cronTz}`, '')
-      return cronParser.parseExpression(expressionTextWithOutCronTz, {
-        currentDate: new Date(),
-        tz: cronTz,
-      }).next()
+      const cronTz = cronTzMatch[0];
+      const expressionTextWithOutCronTz = s.Expression.replace(
+        `CRON_TZ=${cronTz}`,
+        ''
+      );
+      return cronParser
+        .parseExpression(expressionTextWithOutCronTz, {
+          currentDate: new Date(),
+          tz: cronTz,
+        })
+        .next();
     }
     const expression = tz
       ? cronParser.parseExpression(s.Expression, {

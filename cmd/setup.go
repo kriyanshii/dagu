@@ -23,6 +23,8 @@ import (
 	"github.com/dagu-org/dagu/internal/persistence/local"
 	"github.com/dagu-org/dagu/internal/persistence/local/storage"
 	"github.com/dagu-org/dagu/internal/persistence/model"
+	"github.com/dagu-org/dagu/internal/persistence/queue"
+	"github.com/dagu-org/dagu/internal/persistence/stats"
 	"github.com/dagu-org/dagu/internal/scheduler"
 	"github.com/dagu-org/dagu/internal/stringutil"
 	"github.com/google/uuid"
@@ -86,6 +88,8 @@ type clientOption func(*clientOptions)
 type clientOptions struct {
 	dagStore     persistence.DAGStore
 	historyStore persistence.HistoryStore
+	queueStore   persistence.QueueStore
+	statsStore   persistence.StatsStore
 }
 
 func withDAGStore(dagStore persistence.DAGStore) clientOption {
@@ -97,6 +101,18 @@ func withDAGStore(dagStore persistence.DAGStore) clientOption {
 func withHistoryStore(historyStore persistence.HistoryStore) clientOption {
 	return func(o *clientOptions) {
 		o.historyStore = historyStore
+	}
+}
+
+func withQueueStore(queueStore persistence.QueueStore) clientOption {
+	return func(o *clientOptions) {
+		o.queueStore = queueStore
+	}
+}
+
+func withStatsStore(statsStore persistence.StatsStore) clientOption {
+	return func(o *clientOptions) {
+		o.statsStore = statsStore
 	}
 }
 
@@ -120,6 +136,11 @@ func (s *setup) client(opts ...clientOption) (client.Client, error) {
 	flagStore := local.NewFlagStore(storage.NewStorage(
 		s.cfg.Paths.SuspendFlagsDir,
 	))
+
+	queueStore := options.queueStore
+	if queueStore == nil {
+		queueStore = s.queueStore()
+	}
 
 	return client.New(
 		dagStore,
@@ -153,7 +174,8 @@ func (s *setup) scheduler() (*scheduler.Scheduler, error) {
 	}
 
 	manager := scheduler.NewDAGJobManager(s.cfg.Paths.DAGsDir, cli, s.cfg.Paths.Executable, s.cfg.WorkDir)
-	return scheduler.New(s.cfg, manager), nil
+	queueReader := scheduler.NewQueueReader(s.cfg.Paths.QueueDir, cli)
+	return scheduler.New(s.cfg, manager, queueReader), nil
 }
 
 func (s *setup) dagStore() (persistence.DAGStore, error) {
@@ -183,6 +205,14 @@ func (s *setup) historyStoreWithCache(cache *filecache.Cache[*model.Status]) per
 		jsondb.WithLatestStatusToday(s.cfg.LatestStatusToday),
 		jsondb.WithFileCache(cache),
 	)
+}
+
+func (s *setup) queueStore() persistence.QueueStore {
+	return queue.NewQueueStore(s.cfg.Paths.QueueDir)
+}
+
+func (s *setup) statsStore() persistence.StatsStore {
+	return stats.NewStatsStore(s.cfg.Paths.StatsDir)
 }
 
 func (s *setup) openLogFile(
