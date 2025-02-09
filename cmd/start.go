@@ -75,10 +75,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		loadOpts = append(loadOpts, digraph.WithParams(removeQuotes(params)))
 	}
 
-	return executeDag(ctx, setup, cfg, args[0], loadOpts, quiet, waiting, requestID)
+	return executeDag(ctx, setup, args[0], loadOpts, quiet, waiting, requestID)
 }
 
-func executeDag(ctx context.Context, setup *setup, cfg *config.Config, specPath string, loadOpts []digraph.LoadOption, quiet bool, waiting bool, requestID string) error {
+func executeDag(ctx context.Context, setup *setup, specPath string, loadOpts []digraph.LoadOption, quiet bool, waiting bool, requestID string) error {
 	dag, err := digraph.Load(ctx, specPath, loadOpts...)
 	if err != nil {
 		logger.Error(ctx, "Failed to load DAG", "path", specPath, "err", err)
@@ -121,7 +121,7 @@ func executeDag(ctx context.Context, setup *setup, cfg *config.Config, specPath 
 		requestID,
 		dag,
 		filepath.Dir(logFile.Name()),
-		cfg.DAGQueueLength,
+		setup.cfg.DAGQueueLength,
 		logFile.Name(),
 		cli,
 		dagStore,

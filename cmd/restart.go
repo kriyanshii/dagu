@@ -56,7 +56,7 @@ func runRestart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Handle the restart process
-	if err := handleRestartProcess(ctx, setup, cfg, dag, quiet, specFilePath); err != nil {
+	if err := handleRestartProcess(ctx, setup, dag, quiet, specFilePath); err != nil {
 		logger.Error(ctx, "Failed to restart process", "path", specFilePath, "err", err)
 		return fmt.Errorf("restart process failed for DAG %s: %w", dag.Name, err)
 	}
@@ -64,7 +64,7 @@ func runRestart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func handleRestartProcess(ctx context.Context, setup *setup, cfg *config.Config, dag *digraph.DAG, quiet bool, specFilePath string) error {
+func handleRestartProcess(ctx context.Context, setup *setup, dag *digraph.DAG, quiet bool, specFilePath string) error {
 	cli, err := setup.client()
 	if err != nil {
 		return fmt.Errorf("failed to initialize client: %w", err)
@@ -100,11 +100,11 @@ func handleRestartProcess(ctx context.Context, setup *setup, cfg *config.Config,
 		return fmt.Errorf("failed to reload DAG with params: %w", err)
 	}
 
-	return executeDAG(ctx, cli, setup, dag, quiet, cfg)
+	return executeDAG(ctx, cli, setup, dag, quiet)
 }
 
 func executeDAG(ctx context.Context, cli client.Client, setup *setup,
-	dag *digraph.DAG, quiet bool, cfg *config.Config) error {
+	dag *digraph.DAG, quiet bool) error {
 
 	requestID, err := generateRequestID()
 	if err != nil {
@@ -131,7 +131,7 @@ func executeDAG(ctx context.Context, cli client.Client, setup *setup,
 		requestID,
 		dag,
 		filepath.Dir(logFile.Name()),
-		cfg.DAGQueueLength,
+		setup.cfg.DAGQueueLength,
 		logFile.Name(),
 		cli,
 		dagStore,

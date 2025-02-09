@@ -82,7 +82,7 @@ func runDry(cmd *cobra.Command, args []string) error {
 		requestID,
 		dag,
 		filepath.Dir(logFile.Name()),
-		cfg.DAGQueueLength,
+		setup.cfg.DAGQueueLength,
 		logFile.Name(),
 		cli,
 		dagStore,
