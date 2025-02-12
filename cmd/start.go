@@ -144,7 +144,7 @@ func executeDag(ctx context.Context, setup *setup, specPath string, loadOpts []d
 		}
 	}
 
-	if !quiet && !waiting {
+	if !quiet && waiting {
 		agt.PrintSummary(ctx)
 	}
 

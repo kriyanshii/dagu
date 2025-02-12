@@ -53,7 +53,7 @@ func (store *StatsStore) Create() error {
 		store.Stats = []*model.Stats{}
 		err = store.Save()
 		if err != nil {
-			log.Print("error saving intial stats: ", err)
+			log.Print("error saving initial stats: ", err)
 		}
 	}
 	return nil

@@ -49,7 +49,7 @@ func (store *jsonStore) Create() error {
 		store.Dags = []*model.Queue{}
 		err = store.Save()
 		if err != nil {
-			log.Print("error saving intial queue: ", err)
+			log.Print("error saving initial queue: ", err)
 		}
 	}
 	return nil
@@ -121,7 +121,6 @@ func (store *jsonStore) FindJobId(jobid string) (bool, error) {
 			} else {
 				return true, nil // Item found and deleted
 			}
-			// log.Print("jobid", jobid)
 		}
 	}
 	return false, nil
