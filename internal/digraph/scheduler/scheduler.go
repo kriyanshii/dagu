@@ -199,10 +199,10 @@ func (sc *Scheduler) Schedule(ctx context.Context, graph *ExecutionGraph, done c
 							if sc.handleNodeRetry(ctx, node, execErr) {
 								continue ExecRepeat
 							}
+							fallthrough
 
 						default:
 							// finish the node
-							node.data.SetStatus(NodeStatusError)
 							if node.shouldMarkSuccess(ctx) {
 								// mark as success if the node should be marked as success
 								// i.e. continueOn.markSuccess is set to true
@@ -629,10 +629,8 @@ func (sc *Scheduler) handleNodeRetry(ctx context.Context, node *Node, execErr er
 	logger.Debug(ctx, "Checking retry policy", "exitCode", exitCode, "allowedCodes", node.retryPolicy.ExitCodes, "shouldRetry", shouldRetry)
 
 	if !shouldRetry {
-		// finish the node with error
+		// Set error status but don't mark error yet - let the switch statement handle it
 		node.data.SetStatus(NodeStatusError)
-		node.data.MarkError(execErr)
-		sc.setLastError(execErr)
 		return false
 	}
 
