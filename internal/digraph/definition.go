@@ -1,5 +1,11 @@
 package digraph
 
+// RunConfigDef defines the configuration for running a DAG.
+type RunConfigDef struct {
+	AllowEditParams bool `yaml:"allowEditParams"`
+	AllowEditRunId  bool `yaml:"allowEditRunId"`
+}
+
 // definition is a temporary struct to hold the DAG definition.
 // This struct is used to unmarshal the YAML data.
 // The data is then converted to the DAG struct.
@@ -70,6 +76,8 @@ type definition struct {
 	OTel any
 	// WorkerSelector specifies required worker labels for execution.
 	WorkerSelector map[string]string
+	// RunConfig is the configuration for running a DAG.
+	RunConfig *RunConfigDef `yaml:"runConfig,omitempty"`
 }
 
 // handlerOnDef defines the steps to be executed on different events.

@@ -32,6 +32,11 @@ const (
 	TypeAgent = "agent"
 )
 
+type RunConfig struct {
+	AllowEditParams bool `yaml:"allowEditParams" json:"allowEditParams"`
+	AllowEditRunId  bool `yaml:"allowEditRunId" json:"allowEditRunId"`
+}
+
 // DAG contains all information about a DAG.
 type DAG struct {
 	// Location is the absolute path to the DAG file.
@@ -107,6 +112,8 @@ type DAG struct {
 	BuildErrors []error
 	// LocalDAGs contains DAGs defined in the same file, keyed by DAG name
 	LocalDAGs map[string]*DAG `json:"localDAGs,omitempty"`
+	// RunConfig contains the configuration for the DAG run.
+	RunConfig *RunConfig `yaml:"runConfig,omitempty" json:"runConfig,omitempty"`
 	// YamlData contains the raw YAML data of the DAG.
 	YamlData []byte `json:"yamlData,omitempty"`
 }

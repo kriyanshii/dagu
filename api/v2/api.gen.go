@@ -165,6 +165,15 @@ type DAG struct {
 	// Params List of parameter names that can be passed to DAG-runs created from this DAG
 	Params *[]string `json:"params,omitempty"`
 
+	// RunConfig Controls whether users can edit parameters or run ID at runtime.
+	RunConfig *struct {
+		// AllowEditParams If false, users cannot override parameters at runtime.
+		AllowEditParams *bool `json:"allowEditParams,omitempty"`
+
+		// AllowEditRunId If false, users cannot specify a custom run ID at runtime.
+		AllowEditRunId *bool `json:"allowEditRunId,omitempty"`
+	} `json:"runConfig,omitempty"`
+
 	// Schedule List of scheduling expressions defining when DAG-runs should be created from this DAG
 	Schedule *[]Schedule `json:"schedule,omitempty"`
 
@@ -212,6 +221,15 @@ type DAGDetails struct {
 
 	// Preconditions Conditions that must be met before a DAG-run can start
 	Preconditions *[]Condition `json:"preconditions,omitempty"`
+
+	// RunConfig Controls whether users can edit parameters or run ID at runtime.
+	RunConfig *struct {
+		// AllowEditParams If false, users cannot override parameters at runtime.
+		AllowEditParams *bool `json:"allowEditParams,omitempty"`
+
+		// AllowEditRunId If false, users cannot specify a custom run ID at runtime.
+		AllowEditRunId *bool `json:"allowEditRunId,omitempty"`
+	} `json:"runConfig,omitempty"`
 
 	// Schedule List of scheduling expressions defining when DAG-runs should be created from this DAG
 	Schedule *[]Schedule `json:"schedule,omitempty"`

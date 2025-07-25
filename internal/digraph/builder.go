@@ -78,6 +78,7 @@ var builderRegistry = []builderEntry{
 	{name: "maxActiveRuns", fn: buildMaxActiveRuns},
 	{name: "preconditions", fn: buildPrecondition},
 	{name: "otel", fn: buildOTel},
+	{name: "runConfig", fn: buildRunConfig},
 }
 
 type builderEntry struct {
@@ -1528,4 +1529,17 @@ func buildOTel(_ BuildContext, spec *definition, dag *DAG) error {
 	default:
 		return wrapError("otel", v, fmt.Errorf("otel must be a map"))
 	}
+}
+
+// buildRunConfig copies the runConfig from definition to DAG.
+func buildRunConfig(_ BuildContext, spec *definition, dag *DAG) error {
+	if spec.RunConfig == nil {
+		dag.RunConfig = &RunConfig{AllowEditParams: true, AllowEditRunId: true}
+		return nil
+	}
+	dag.RunConfig = &RunConfig{
+		AllowEditParams: spec.RunConfig.AllowEditParams,
+		AllowEditRunId:  spec.RunConfig.AllowEditRunId,
+	}
+	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dagu-org/dagu/internal/digraph"
+	"github.com/dagu-org/dagu/internal/logger"
 	"github.com/dagu-org/dagu/internal/models"
 )
 
@@ -24,6 +26,7 @@ type State int
 const (
 	StateSelectingDAG State = iota
 	StateEnteringParams
+	StateEnteringRunId
 	StateConfirming
 	StateDone
 )
@@ -71,13 +74,19 @@ type Model struct {
 	dag        *digraph.DAG
 	params     string
 
+	// Run ID input
+	runIdInput textinput.Model
+	runId      string
+
 	// Confirmation
 	confirmed bool
 
 	// General
-	quitting bool
-	width    int
-	height   int
+	quitting        bool
+	width           int
+	height          int
+	allowEditParams bool // enforce runConfig in picker
+	allowEditRunId  bool // enforce runConfig for run ID
 }
 
 // Result contains the final selections
@@ -119,6 +128,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateDAGSelection(msg)
 	case StateEnteringParams:
 		return m.updateParamInput(msg)
+	case StateEnteringRunId:
+		return m.updateRunIdInput(msg)
 	case StateConfirming:
 		return m.updateConfirmation(msg)
 	case StateDone:
@@ -144,15 +155,40 @@ func (m Model) updateDAGSelection(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Check if the selected DAG has parameters
 				hasParams := item.Params != ""
 
+				// --- Refactored: Always check RunConfig, default to true if missing ---
+				allowEditParams := true
+				allowEditRunId := true
+				if m.dag != nil && m.dag.RunConfig != nil {
+					log.Print("m.dag.RunConfig.AllowEditParams: ", m.dag.RunConfig.AllowEditParams)
+					log.Print("m.dag.RunConfig.AllowEditRunId: ", m.dag.RunConfig.AllowEditRunId)
+					allowEditParams = m.dag.RunConfig.AllowEditParams
+					allowEditRunId = m.dag.RunConfig.AllowEditRunId
+				}
+				m.allowEditParams = allowEditParams
+				m.allowEditRunId = allowEditRunId
+				log.Print("m.allowEditRunId: ", m.allowEditRunId)
+
 				if hasParams {
-					m.state = StateEnteringParams
-					// Initialize parameter input with the display params
 					m.paramInput.SetValue(item.Params)
-					return m, textinput.Blink
+					if allowEditParams {
+						m.state = StateEnteringParams
+						return m, textinput.Blink
+					} else {
+						// Skip editing, go straight to confirmation
+						m.params = item.Params
+						m.state = StateConfirming
+						return m, nil
+					}
 				} else {
-					// Skip to confirmation if no params needed
-					m.state = StateConfirming
-					return m, nil
+					m.runIdInput.SetValue("")
+					if allowEditRunId {
+						m.state = StateEnteringRunId
+						return m, textinput.Blink
+					} else {
+						m.runId = "(auto-generated)"
+						m.state = StateConfirming
+						return m, nil
+					}
 				}
 			}
 		}
@@ -164,6 +200,17 @@ func (m Model) updateDAGSelection(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateParamInput(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if !m.allowEditParams {
+		// Editing not allowed, go to run ID input or confirmation
+		if m.allowEditRunId {
+			m.state = StateEnteringRunId
+			return m, textinput.Blink
+		} else {
+			m.runId = "(auto-generated)"
+			m.state = StateConfirming
+			return m, nil
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -174,13 +221,49 @@ func (m Model) updateParamInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter":
 			m.params = m.paramInput.Value()
-			m.state = StateConfirming
-			return m, nil
+			if m.allowEditRunId {
+				m.state = StateEnteringRunId
+				return m, textinput.Blink
+			} else {
+				m.runId = "(auto-generated)"
+				m.state = StateConfirming
+				return m, nil
+			}
 		}
 	}
 
 	var cmd tea.Cmd
 	m.paramInput, cmd = m.paramInput.Update(msg)
+	return m, cmd
+}
+
+func (m Model) updateRunIdInput(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if !m.allowEditRunId {
+		// Editing not allowed, skip to confirmation
+		m.runId = "(auto-generated)"
+		m.state = StateConfirming
+		return m, nil
+	}
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "esc":
+			// Go back to param input
+			if m.allowEditParams {
+				m.state = StateEnteringParams
+				return m, nil
+			} else {
+				m.state = StateSelectingDAG
+				return m, nil
+			}
+		case "enter":
+			m.runId = m.runIdInput.Value()
+			m.state = StateConfirming
+			return m, nil
+		}
+	}
+	var cmd tea.Cmd
+	m.runIdInput, cmd = m.runIdInput.Update(msg)
 	return m, cmd
 }
 
@@ -225,6 +308,8 @@ func (m Model) View() string {
 		return m.viewDAGSelection()
 	case StateEnteringParams:
 		return m.viewParamInput()
+	case StateEnteringRunId:
+		return m.viewRunIdInput()
 	case StateConfirming:
 		return m.viewConfirmation()
 	case StateDone:
@@ -239,6 +324,28 @@ func (m Model) viewDAGSelection() string {
 }
 
 func (m Model) viewParamInput() string {
+	var ctx context.Context
+	logger.Info(ctx, "viewPAramInput")
+	if !m.allowEditParams {
+		// Show params as read-only with clear explanation and visual distinction
+		lockStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
+		titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("170")).MarginBottom(1)
+		selectedDAGStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).MarginBottom(2)
+		paramStyle := lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("243")).PaddingLeft(2)
+		helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).MarginTop(2)
+		explanationStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Italic(true).MarginTop(1)
+		content := lipgloss.JoinVertical(lipgloss.Left,
+			lockStyle.Render("🔒 Parameter editing is disabled by this DAG's runConfig."),
+			titleStyle.Render("Parameters (read-only)"),
+			selectedDAGStyle.Render(fmt.Sprintf("DAG: %s", m.choice.Name)),
+			"",
+			paramStyle.Render(m.paramInput.Value()),
+			"",
+			explanationStyle.Render("The workflow author has set 'runConfig.allowEditParams: false' in the DAG definition. You cannot modify parameters for this run."),
+			helpStyle.Render("ESC: Back • Ctrl+C: Cancel"),
+		)
+		return docStyle.Render(content)
+	}
 	// Define styles
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
@@ -262,6 +369,40 @@ func (m Model) viewParamInput() string {
 		helpStyle.Render("Enter: Confirm • ESC: Back • Ctrl+C: Cancel"),
 	)
 
+	return docStyle.Render(content)
+}
+
+func (m Model) viewRunIdInput() string {
+	if !m.allowEditRunId {
+		lockStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
+		titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("170")).MarginBottom(1)
+		selectedDAGStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).MarginBottom(2)
+		runIdStyle := lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("243")).PaddingLeft(2)
+		helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).MarginTop(2)
+		explanationStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Italic(true).MarginTop(1)
+		content := lipgloss.JoinVertical(lipgloss.Left,
+			lockStyle.Render("🔒 Run ID editing is disabled by this DAG's runConfig."),
+			titleStyle.Render("Run ID (read-only)"),
+			selectedDAGStyle.Render(fmt.Sprintf("DAG: %s", m.choice.Name)),
+			"",
+			runIdStyle.Render("(auto-generated)"),
+			"",
+			explanationStyle.Render("The workflow author has set 'runConfig.allowEditRunId: false' in the DAG definition. You cannot specify a custom run ID for this run."),
+			helpStyle.Render("ESC: Back • Ctrl+C: Cancel"),
+		)
+		return docStyle.Render(content)
+	}
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("170")).MarginBottom(1)
+	selectedDAGStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).MarginBottom(2)
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).MarginTop(2)
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("Enter Run ID (optional)"),
+		selectedDAGStyle.Render(fmt.Sprintf("DAG: %s", m.choice.Name)),
+		"",
+		m.runIdInput.View(),
+		"",
+		helpStyle.Render("Enter: Confirm • ESC: Back • Ctrl+C: Cancel"),
+	)
 	return docStyle.Render(content)
 }
 
@@ -382,18 +523,25 @@ func PickDAGInteractive(ctx context.Context, dagStore models.DAGStore, dag *digr
 	ti.CharLimit = 1024
 	ti.Width = 60
 
+	// Initialize run ID input
+	runIdTi := textinput.New()
+	runIdTi.Placeholder = "Enter run ID (optional)..."
+	runIdTi.CharLimit = 100
+	runIdTi.Width = 60
+
 	m := Model{
 		state:      StateSelectingDAG,
 		list:       l,
 		paramInput: ti,
 		dag:        dag,
+		runIdInput: runIdTi,
 	}
 
 	// Use the default delegate since we'll handle DAG updates differently
 	m.list.SetDelegate(list.NewDefaultDelegate())
 
 	// Run the picker
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m)
 	finalModel, err := p.Run()
 	if err != nil {
 		return Result{}, fmt.Errorf("failed to run DAG picker: %w", err)

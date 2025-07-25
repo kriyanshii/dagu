@@ -58,14 +58,24 @@ var startFlags = []commandLineFlag{paramsFlag, dagRunIDFlag, parentDAGRunFlag, r
 
 // runStart handles the execution of the start command
 func runStart(ctx *Context, args []string) error {
-	// Get dag-run ID and references
-	dagRunID, rootRef, parentRef, isChildDAGRun, err := getDAGRunInfo(ctx)
+	// Load parameters and DAG
+	dag, params, err := loadDAGWithParams(ctx, args)
 	if err != nil {
 		return err
 	}
 
-	// Load parameters and DAG
-	dag, params, err := loadDAGWithParams(ctx, args)
+	// Enforce runConfig: prevent user overrides if not allowed
+	if dag.RunConfig != nil {
+		if !dag.RunConfig.AllowEditParams && dag.DefaultParams != "" {
+			// Check if user tried to override params
+			if params != "" && params != dag.DefaultParams {
+				return fmt.Errorf("Overriding DAG parameters is not allowed for this DAG (see runConfig.allowEditParams)")
+			}
+		}
+	}
+
+	// Get dag-run ID and references
+	dagRunID, rootRef, parentRef, isChildDAGRun, err := getDAGRunInfoWithRunConfig(ctx, dag)
 	if err != nil {
 		return err
 	}
@@ -129,9 +139,8 @@ func runStart(ctx *Context, args []string) error {
 	return enqueueDAGRun(ctx, dag, dagRunID)
 }
 
-// getDAGRunInfo extracts and validates dag-run ID and references from command flags
-// nolint:revive
-func getDAGRunInfo(ctx *Context) (dagRunID, rootDAGRun, parentDAGRun string, isChildDAGRun bool, err error) {
+// getDAGRunInfoWithRunConfig enforces allowEditRunId from runConfig
+func getDAGRunInfoWithRunConfig(ctx *Context, dag *digraph.DAG) (dagRunID, rootDAGRun, parentDAGRun string, isChildDAGRun bool, err error) {
 	dagRunID, err = ctx.StringParam("run-id")
 	if err != nil {
 		return "", "", "", false, fmt.Errorf("failed to get dag-run ID: %w", err)
@@ -145,6 +154,15 @@ func getDAGRunInfo(ctx *Context) (dagRunID, rootDAGRun, parentDAGRun string, isC
 	// Validate dag-run ID for child dag-runs
 	if isChildDAGRun && dagRunID == "" {
 		return "", "", "", false, ErrDAGRunIDRequired
+	}
+
+	// Enforce allowEditRunId
+	allowEditRunId := true
+	if dag != nil && dag.RunConfig != nil {
+		allowEditRunId = dag.RunConfig.AllowEditRunId
+	}
+	if !allowEditRunId && dagRunID != "" {
+		return "", "", "", false, fmt.Errorf("Specifying a custom run ID is not allowed for this DAG (see runConfig.allowEditRunId)")
 	}
 
 	// Validate or generate dag-run ID

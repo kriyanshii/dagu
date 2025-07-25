@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -76,6 +77,13 @@ type ProgressModel struct {
 
 // NewProgressModel creates a new progress model for Bubble Tea
 func NewProgressModel(dag *digraph.DAG) ProgressModel {
+	f, err := tea.LogToFile("/tmp/debug.log", "debug")
+	if err != nil {
+		fmt.Println("fatal:", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+
 	s := spinner.New()
 	s.Spinner = spinner.Spinner{
 		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
@@ -765,9 +773,10 @@ func (p *ProgressTeaDisplay) Start() {
 		}()
 
 		// Enter alternate screen manually
-		fmt.Print("\033[?1049h") // Enter alternate screen
-		fmt.Print("\033[2J")     // Clear screen
-		fmt.Print("\033[H")      // Move cursor to home
+		// Enter alternate screen manually
+		// fmt.Print("[?1049h") // Enter alternate screen
+		// fmt.Print("[2J")     // Clear screen
+		// fmt.Print("[H")      // Move cursor to home
 
 		_, _ = p.program.Run()
 

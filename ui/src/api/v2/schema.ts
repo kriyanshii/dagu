@@ -652,6 +652,13 @@ export interface components {
             defaultParams?: string;
             /** @description List of tags for categorizing and filtering DAGs */
             tags?: string[];
+            /** @description Controls whether users can edit parameters or run ID at runtime. */
+            runConfig?: {
+                /** @description If false, users cannot override parameters at runtime. */
+                allowEditParams?: boolean;
+                /** @description If false, users cannot specify a custom run ID at runtime. */
+                allowEditRunId?: boolean;
+            };
         };
         /** @description Schedule configuration for DAG-run creation */
         Schedule: {
@@ -732,6 +739,13 @@ export interface components {
             defaultParams?: string;
             /** @description List of tags for categorizing and filtering DAGs */
             tags?: string[];
+            /** @description Controls whether users can edit parameters or run ID at runtime. */
+            runConfig?: {
+                /** @description If false, users cannot override parameters at runtime. */
+                allowEditParams?: boolean;
+                /** @description If false, users cannot specify a custom run ID at runtime. */
+                allowEditRunId?: boolean;
+            };
         };
         LocalDag: {
             /** @description Name of the local DAG */

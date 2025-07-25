@@ -65,6 +65,17 @@ function StartDAGModal({
     setParams(parsedParams);
   }, [parsedParams]);
 
+  // Parse runConfig from dag (type assertion for compatibility)
+  type DAGWithRunConfig = typeof dag & {
+    runConfig?: { allowEditParams?: boolean; allowEditRunId?: boolean };
+  };
+  const dagWithRunConfig = dag as DAGWithRunConfig;
+  const allowEditParams = dagWithRunConfig.runConfig?.allowEditParams !== false; // default true
+  const allowEditRunId = dagWithRunConfig.runConfig?.allowEditRunId !== false; // default true
+
+  // For debugging (optional, can remove)
+  console.log(dagWithRunConfig.runConfig?.allowEditRunId);
+
   // Create refs for the buttons
   const cancelButtonRef = React.useRef<HTMLButtonElement>(null);
   const submitButtonRef = React.useRef<HTMLButtonElement>(null);
@@ -126,9 +137,21 @@ function StartDAGModal({
             <Label htmlFor="dagRun-id">DAG-Run ID (optional)</Label>
             <Input
               id="dagRun-id"
-              placeholder="Enter custom DAG-Run ID"
+              placeholder={
+                allowEditRunId
+                  ? 'Enter custom DAG-Run ID'
+                  : 'Editing disabled by runConfig'
+              }
               value={dagRunId}
-              onChange={(e) => setDAGRunId(e.target.value)}
+              onChange={
+                allowEditRunId ? (e) => setDAGRunId(e.target.value) : undefined
+              }
+              disabled={!allowEditRunId}
+              title={
+                allowEditRunId
+                  ? undefined
+                  : "Custom run ID is disabled by this DAG's runConfig (allowEditRunId: false)"
+              }
             />
           </div>
           {parsedParams.map((p, i) => {
@@ -141,22 +164,32 @@ function StartDAGModal({
                     placeholder={p.Value}
                     ref={i === 0 ? ref : undefined}
                     value={params.find((pp) => pp.Name == p.Name)?.Value || ''}
-                    onChange={(e) => {
-                      if (p.Name) {
-                        setParams(
-                          params.map((pp) => {
-                            if (pp.Name == p.Name) {
-                              return {
-                                ...pp,
-                                Value: e.target.value,
-                              };
-                            } else {
-                              return pp;
+                    onChange={
+                      allowEditParams
+                        ? (e) => {
+                            if (p.Name) {
+                              setParams(
+                                params.map((pp) => {
+                                  if (pp.Name == p.Name) {
+                                    return {
+                                      ...pp,
+                                      Value: e.target.value,
+                                    };
+                                  } else {
+                                    return pp;
+                                  }
+                                })
+                              );
                             }
-                          })
-                        );
-                      }
-                    }}
+                          }
+                        : undefined
+                    }
+                    disabled={!allowEditParams}
+                    title={
+                      allowEditParams
+                        ? undefined
+                        : "Parameter editing is disabled by this DAG's runConfig (allowEditParams: false)"
+                    }
                   />
                 </div>
               );
@@ -169,20 +202,30 @@ function StartDAGModal({
                     placeholder={p.Value}
                     ref={i === 0 ? ref : undefined}
                     value={params.find((_, j) => i == j)?.Value || ''}
-                    onChange={(e) => {
-                      setParams(
-                        params.map((pp, j) => {
-                          if (j == i) {
-                            return {
-                              ...pp,
-                              Value: e.target.value,
-                            };
-                          } else {
-                            return pp;
+                    onChange={
+                      allowEditParams
+                        ? (e) => {
+                            setParams(
+                              params.map((pp, j) => {
+                                if (j == i) {
+                                  return {
+                                    ...pp,
+                                    Value: e.target.value,
+                                  };
+                                } else {
+                                  return pp;
+                                }
+                              })
+                            );
                           }
-                        })
-                      );
-                    }}
+                        : undefined
+                    }
+                    disabled={!allowEditParams}
+                    title={
+                      allowEditParams
+                        ? undefined
+                        : "Parameter editing is disabled by this DAG's runConfig (allowEditParams: false)"
+                    }
                   />
                 </div>
               );
