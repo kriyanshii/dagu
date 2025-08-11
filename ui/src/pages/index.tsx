@@ -26,6 +26,15 @@ import { useQuery } from '../hooks/api';
 import type { components } from '../api/v2/schema'; // Import the main components interface
 import { Status } from '../api/v2/schema'; // Import the Status enum
 import dayjs from '../lib/dayjs';
+import { Tabs, Tab } from '@/components/ui/tabs';
+import {
+  Play,
+  Clock,
+  Loader2,
+  CheckCircle,
+  XCircle,
+  StopCircle,
+} from 'lucide-react';
 
 // Define types using the imported components structure
 type DAGRunSummary = components['schemas']['DAGRunSummary'];
@@ -195,6 +204,11 @@ function Dashboard(): React.ReactElement | null {
     title = `Timeline in ${config.tz}`;
   }
 
+  // Add state for active tab
+  const [activeDAGsTab, setActiveDAGsTab] = React.useState<
+    'running' | 'queued'
+  >('running');
+
   // --- Render the dashboard UI ---
   return (
     <div className="flex flex-col gap-3 w-full h-full overflow-hidden">
@@ -242,7 +256,7 @@ function Dashboard(): React.ReactElement | null {
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             <div className="flex items-center gap-2">
               <span className="text-xs font-medium text-muted-foreground">
-                Date:
+                Date Range:
               </span>
               <div className="relative">
                 <Input
@@ -266,6 +280,39 @@ function Dashboard(): React.ReactElement | null {
                         ? date.utcOffset(config.tzOffsetInSec / 60).endOf('day')
                         : date.endOf('day');
                     handleDateChange(startOfDay.unix(), endOfDay.unix());
+                  }}
+                  className="h-7 w-[140px] text-xs pr-8"
+                />
+                {isLoading && (
+                  <Loader2 className="absolute right-2 top-1.5 h-4 w-4 animate-spin text-muted-foreground" />
+                )}
+              </div>
+              <span className="text-xs text-muted-foreground">to</span>
+              <div className="relative">
+                <Input
+                  type="date"
+                  value={
+                    dateRange.endDate
+                      ? dayjs.unix(dateRange.endDate).format('YYYY-MM-DD')
+                      : ''
+                  }
+                  min={dayjs.unix(dateRange.startDate).format('YYYY-MM-DD')}
+                  onChange={(e) => {
+                    const newDate = e.target.value;
+                    if (!newDate) {
+                      // If end date is cleared, set it to undefined to get all runs until now
+                      handleDateChange(dateRange.startDate, undefined);
+                      return;
+                    }
+
+                    const date = dayjs(newDate);
+                    if (!date.isValid()) return; // Handle invalid dates
+
+                    const endOfDay =
+                      config.tzOffsetInSec !== undefined
+                        ? date.utcOffset(config.tzOffsetInSec / 60).endOf('day')
+                        : date.endOf('day');
+                    handleDateChange(dateRange.startDate, endOfDay.unix());
                   }}
                   className="h-7 w-[140px] text-xs pr-8"
                 />
@@ -317,6 +364,116 @@ function Dashboard(): React.ReactElement | null {
               <span className="text-lg font-bold">{card.value}</span>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Real-time DAGs Tabs */}
+      <div className="border rounded bg-card flex-shrink-0">
+        <div className="p-3 border-b">
+          <h3 className="text-sm font-semibold">Real-time DAGs</h3>
+        </div>
+        <Tabs className="p-3">
+          <Tab
+            isActive={activeDAGsTab === 'running'}
+            onClick={() => setActiveDAGsTab('running')}
+            className="flex items-center gap-2 cursor-pointer"
+          >
+            <Play className="h-4 w-4 text-[limegreen]" />
+            Running ({metrics[Status.Running]})
+          </Tab>
+          <Tab
+            isActive={activeDAGsTab === 'queued'}
+            onClick={() => setActiveDAGsTab('queued')}
+            className="flex items-center gap-2 cursor-pointer"
+          >
+            <Clock className="h-4 w-4 text-[purple]" />
+            Queued ({metrics[Status.Queued]})
+          </Tab>
+        </Tabs>
+
+        {/* DAGs List based on active tab */}
+        <div className="px-3 pb-3">
+          <div className="space-y-2">
+            {activeDAGsTab === 'running' ? (
+              // Running DAGs
+              <>
+                {dagRunsList
+                  .filter((dagRun) => dagRun.status === Status.Running)
+                  .map((dagRun) => (
+                    <div
+                      key={dagRun.id}
+                      className="flex items-center justify-between p-3 bg-muted/50 rounded-lg border"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Play className="h-4 w-4 text-[limegreen] animate-pulse" />
+                        <div>
+                          <div className="font-medium text-sm">
+                            {dagRun.name}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Started:{' '}
+                            {dagRun.startedAt
+                              ? dayjs.unix(dagRun.startedAt).format('HH:mm:ss')
+                              : 'N/A'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                        <span className="text-xs text-muted-foreground">
+                          Running
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                {dagRunsList.filter(
+                  (dagRun) => dagRun.status === Status.Running
+                ).length === 0 && (
+                  <div className="text-center py-4 text-muted-foreground text-sm">
+                    No running DAGs
+                  </div>
+                )}
+              </>
+            ) : (
+              // Queued DAGs
+              <>
+                {dagRunsList
+                  .filter((dagRun) => dagRun.status === Status.Queued)
+                  .map((dagRun) => (
+                    <div
+                      key={dagRun.id}
+                      className="flex items-center justify-between p-3 bg-muted/50 rounded-lg border"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Clock className="h-4 w-4 text-[purple]" />
+                        <div>
+                          <div className="font-medium text-sm">
+                            {dagRun.name}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Queued at:{' '}
+                            {dagRun.startedAt
+                              ? dayjs.unix(dagRun.startedAt).format('HH:mm:ss')
+                              : 'N/A'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          Queued
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                {dagRunsList.filter((dagRun) => dagRun.status === Status.Queued)
+                  .length === 0 && (
+                  <div className="text-center py-4 text-muted-foreground text-sm">
+                    No queued DAGs
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
 
