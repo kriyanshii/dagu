@@ -1,14 +1,5 @@
 import React from 'react';
-import {
-  CheckCircle,
-  Filter,
-  ListChecks,
-  Play,
-  XCircle,
-  StopCircle,
-  Clock,
-  Loader2,
-} from 'lucide-react';
+import { Filter, ListChecks } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -401,7 +392,7 @@ function Dashboard(): React.ReactElement | null {
                   .filter((dagRun) => dagRun.status === Status.Running)
                   .map((dagRun) => (
                     <div
-                      key={dagRun.id}
+                      key={dagRun.dagRunId}
                       className="flex items-center justify-between p-3 bg-muted/50 rounded-lg border"
                     >
                       <div className="flex items-center gap-3">
@@ -413,7 +404,7 @@ function Dashboard(): React.ReactElement | null {
                           <div className="text-xs text-muted-foreground">
                             Started:{' '}
                             {dagRun.startedAt
-                              ? dayjs.unix(dagRun.startedAt).format('HH:mm:ss')
+                              ? dayjs(dagRun.startedAt).format('HH:mm:ss')
                               : 'N/A'}
                           </div>
                         </div>
@@ -441,7 +432,7 @@ function Dashboard(): React.ReactElement | null {
                   .filter((dagRun) => dagRun.status === Status.Queued)
                   .map((dagRun) => (
                     <div
-                      key={dagRun.id}
+                      key={dagRun.dagRunId}
                       className="flex items-center justify-between p-3 bg-muted/50 rounded-lg border"
                     >
                       <div className="flex items-center gap-3">
@@ -453,7 +444,7 @@ function Dashboard(): React.ReactElement | null {
                           <div className="text-xs text-muted-foreground">
                             Queued at:{' '}
                             {dagRun.startedAt
-                              ? dayjs.unix(dagRun.startedAt).format('HH:mm:ss')
+                              ? dayjs(dagRun.startedAt).format('HH:mm:ss')
                               : 'N/A'}
                           </div>
                         </div>
