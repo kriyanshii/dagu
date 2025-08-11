@@ -92,6 +92,10 @@ type Props = {
   searchTag: string;
   /** Handler for tag filter changes */
   handleSearchTagChange: (tag: string) => void;
+  /** Current status filter */
+  searchStatus: string;
+  /** Handler for status filter changes */
+  handleSearchStatusChange: (status: string) => void;
   /** Loading state */
   isLoading?: boolean;
   /** Pagination props */
@@ -139,8 +143,9 @@ declare module '@tanstack/react-table' {
   interface TableMeta<TData extends RowData> {
     group: string;
     refreshFn: () => void;
-    // Add tag change handler to meta for direct access in cell
+    // Add tag and status change handlers to meta for direct access in cell
     handleSearchTagChange?: (tag: string) => void;
+    handleSearchStatusChange?: (status: string) => void;
   }
 }
 
@@ -149,12 +154,12 @@ const columnHelper = createColumnHelper<Data>();
 function getTzAndExp(exp: string) {
   const parts = exp.trim().split(/\s+/);
 
-  if (parts[0]?.startsWith("CRON_TZ=")) {
-    const timezone = parts[0]?.split("=")[1];
-    const cronExpr = parts?.slice(1).join(" ");
+  if (parts[0]?.startsWith('CRON_TZ=')) {
+    const timezone = parts[0]?.split('=')[1];
+    const cronExpr = parts?.slice(1).join(' ');
     return [timezone, cronExpr];
   } else {
-    return [parts.join(" ")];
+    return [parts.join(' ')];
   }
 }
 
@@ -167,13 +172,14 @@ function getNextSchedule(
   }
   try {
     const datesToRun = schedules.map((schedule) => {
-      const parsedCronExp = getTzAndExp(schedule.expression)
+      const parsedCronExp = getTzAndExp(schedule.expression);
       const options = {
-        tz: (parsedCronExp.length > 1 ? parsedCronExp[0] : getConfig().tz),
+        tz: parsedCronExp.length > 1 ? parsedCronExp[0] : getConfig().tz,
         iterator: true,
       };
       // Assuming 'parseExpression' is the correct method name based on library docs
-      const cronExp = (parsedCronExp.length > 1 ? parsedCronExp[1] : parsedCronExp[0])
+      const cronExp =
+        parsedCronExp.length > 1 ? parsedCronExp[1] : parsedCronExp[0];
       const interval = cronParser.parse(cronExp!, options);
       return interval.next();
     });
@@ -348,15 +354,29 @@ const defaultColumns = [
         </span>
       </div>
     ),
-    cell: ({ row }) => {
-      // Use row
+    cell: ({ row, table }) => {
       const data = row.original!;
       if (data.kind === ItemKind.DAG) {
-        // Use the updated StatusChip component with xs size
+        const status = data.dag.latestDAGRun.status;
+        const statusLabel = data.dag.latestDAGRun.statusLabel;
+
         return (
-          <StatusChip status={data.dag.latestDAGRun.status} size="xs">
-            {data.dag.latestDAGRun?.statusLabel}
-          </StatusChip>
+          <div
+            className="cursor-pointer hover:bg-muted/50 rounded px-1 py-0.5 transition-colors"
+            onClick={(e) => {
+              e.stopPropagation();
+              // Get the handleSearchStatusChange from the component props
+              const handleStatusClick =
+                table.options.meta?.handleSearchStatusChange;
+              if (handleStatusClick) {
+                handleStatusClick(status.toString());
+              }
+            }}
+          >
+            <StatusChip status={status} size="xs">
+              {statusLabel}
+            </StatusChip>
+          </div>
         );
       }
       return null;
@@ -395,10 +415,10 @@ const defaultColumns = [
       if (finishedAt && finishedAt !== '-') {
         const start = dayjs(startedAt);
         const end = dayjs(finishedAt);
-        
+
         if (start.isValid() && end.isValid()) {
           const durationMs = end.diff(start);
-          
+
           if (durationMs > 0) {
             // Format duration manually without using the custom format function
             const duration = dayjs.duration(durationMs);
@@ -406,15 +426,15 @@ const defaultColumns = [
             const hours = duration.hours();
             const minutes = duration.minutes();
             const seconds = duration.seconds();
-            
+
             const parts: string[] = [];
             if (days > 0) parts.push(`${days}d`);
             if (hours > 0) parts.push(`${hours}h`);
             if (minutes > 0) parts.push(`${minutes}m`);
             if (seconds > 0 && parts.length === 0) parts.push(`${seconds}s`);
-            
+
             const formattedDuration = parts.join(' ');
-            
+
             durationContent = (
               <div className="text-[10px] text-muted-foreground">
                 {formattedDuration}
@@ -593,6 +613,18 @@ const columnToSortField: Record<string, string> = {
 // Client-side sortable columns
 const clientSortableColumns = ['Status', 'LastRun'];
 
+// Status options for the filter
+const statusOptions = [
+  { value: 'all', label: 'All Statuses' },
+  { value: '0', label: 'Not Started' },
+  { value: '1', label: 'Running' },
+  { value: '2', label: 'Failed' },
+  { value: '3', label: 'Cancelled' },
+  { value: '4', label: 'Success' },
+  { value: '5', label: 'Queued' },
+  { value: '6', label: 'Partial Success' },
+];
+
 // --- Header Component for both Server-side and Client-side Sorting ---
 const SortableHeader = ({
   column,
@@ -689,12 +721,14 @@ const SortableHeader = ({
  */
 function DAGTable({
   dags = [],
-  group = '', // Keep group prop if needed for external filtering/logic
+  group = '',
   refreshFn,
   searchText,
   handleSearchTextChange,
   searchTag,
   handleSearchTagChange,
+  searchStatus,
+  handleSearchStatusChange,
   isLoading = false,
   pagination,
   sortField = 'name',
@@ -762,6 +796,7 @@ function DAGTable({
   React.useEffect(() => {
     const nameFilter = columnFilters.find((f) => f.id === 'Name');
     const tagFilter = columnFilters.find((f) => f.id === 'Tags');
+    const statusFilter = columnFilters.find((f) => f.id === 'Status');
 
     let updated = false;
     const newFilters = [...columnFilters];
@@ -788,17 +823,44 @@ function DAGTable({
       updated = true;
     }
 
+    if (
+      searchStatus &&
+      (!statusFilter || statusFilter.value !== searchStatus)
+    ) {
+      const idx = newFilters.findIndex((f) => f.id === 'Status');
+      if (idx > -1) newFilters[idx] = { id: 'Status', value: searchStatus };
+      else newFilters.push({ id: 'Status', value: searchStatus });
+      updated = true;
+    } else if (!searchStatus && statusFilter) {
+      const idx = newFilters.findIndex((f) => f.id === 'Status');
+      if (idx > -1) newFilters.splice(idx, 1);
+      updated = true;
+    }
+
     if (updated) {
       setColumnFilters(newFilters);
     }
-  }, [searchText, searchTag, columnFilters]);
+  }, [searchText, searchTag, searchStatus, columnFilters]);
 
   // Transform the flat list of DAGs into a hierarchical structure with groups
   const data = useMemo(() => {
+    // Apply client-side filtering by status first
+    let filteredDags = [...dags];
+    console.log('searchStatus: ', searchStatus);
+    if (searchStatus) {
+      filteredDags = filteredDags.filter((dag) => {
+        const status = dag.latestDAGRun?.status;
+        console.log('status: ', status);
+        const searchStatusNum = parseInt(searchStatus);
+        return (
+          status !== undefined && status !== null && status === searchStatusNum
+        );
+      });
+    }
+
     // Apply client-side sorting if needed
-    const sortedDags = [...dags];
     if (clientSort) {
-      sortedDags.sort((a, b) => {
+      filteredDags.sort((a, b) => {
         let aValue: string | components['schemas']['Status'] = '';
         let bValue: string | components['schemas']['Status'] = '';
 
@@ -823,8 +885,8 @@ function DAGTable({
     }
 
     const groups: { [key: string]: Data } = {};
-    sortedDags.forEach((dag) => {
-      const groupName = dag.dag.group; // Use groupName consistently
+    filteredDags.forEach((dag) => {
+      const groupName = dag.dag.group;
       if (groupName) {
         if (!groups[groupName]) {
           groups[groupName] = {
@@ -871,9 +933,9 @@ function DAGTable({
       });
     }
 
-    const hierarchicalData: Data[] = Object.values(groups); // Get group objects
+    const hierarchicalData: Data[] = Object.values(groups);
     // Add DAGs without a group
-    sortedDags
+    filteredDags
       .filter((dag) => !dag.dag.group)
       .forEach((dag) => {
         hierarchicalData.push({
@@ -883,7 +945,7 @@ function DAGTable({
         });
       });
     return hierarchicalData;
-  }, [dags, clientSort, clientOrder]); // Added client sort dependencies
+  }, [dags, searchStatus, clientSort, clientOrder]); // Added searchStatus dependency
 
   // Add keyboard navigation between DAGs when modal is open
   // Create a ref to store the table instance
@@ -953,6 +1015,7 @@ function DAGTable({
       group, // Pass group if needed elsewhere
       refreshFn,
       handleSearchTagChange, // Pass tag handler
+      handleSearchStatusChange, // Pass status handler
     },
   });
 
@@ -1044,6 +1107,28 @@ function DAGTable({
                 {uniqueTags?.tags?.map((tag) => (
                   <SelectItem key={tag} value={tag}>
                     {tag}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {/* Status filter */}
+            <Select
+              value={searchStatus || 'all'}
+              onValueChange={(value) =>
+                handleSearchStatusChange(value === 'all' ? '' : value)
+              }
+            >
+              <SelectTrigger className="w-auto min-w-[120px] sm:min-w-[160px] h-9 border border-input rounded-md">
+                <div className="flex items-center gap-2">
+                  <Filter className="h-4 w-4 text-muted-foreground" />
+                  <SelectValue placeholder="Filter by status" />
+                </div>
+              </SelectTrigger>
+              <SelectContent className="max-h-[280px] overflow-y-auto">
+                {statusOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -1336,7 +1421,7 @@ function DAGTable({
             </h3>
             <p className="text-sm text-gray-500 text-center max-w-md mb-4">
               There are no DAGs matching your current filters. Try adjusting
-              your search criteria or tags.
+              your search criteria, tags, or status.
             </p>
             <CreateDAGModal />
           </div>

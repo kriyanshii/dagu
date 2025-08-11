@@ -1,7 +1,11 @@
 import { debounce } from 'lodash';
 import React from 'react';
 import { useLocation } from 'react-router-dom';
-import { components, PathsDagsGetParametersQuerySort, PathsDagsGetParametersQueryOrder } from '../../api/v2/schema';
+import {
+  components,
+  PathsDagsGetParametersQuerySort,
+  PathsDagsGetParametersQueryOrder,
+} from '../../api/v2/schema';
 import { AppBarContext } from '../../contexts/AppBarContext';
 import { useUserPreferences } from '../../contexts/UserPreference';
 import { DAGErrors } from '../../features/dags/components/dag-editor';
@@ -16,12 +20,18 @@ function DAGs() {
   const appBarContext = React.useContext(AppBarContext);
   const [searchText, setSearchText] = React.useState(query.get('search') || '');
   const [searchTag, setSearchTag] = React.useState(query.get('tag') || '');
+  const [searchStatus, setSearchStatus] = React.useState(
+    query.get('status') || ''
+  );
   const [page, setPage] = React.useState(parseInt(query.get('page') || '1'));
   const [apiSearchText, setAPISearchText] = React.useState(
     query.get('search') || ''
   );
   const [apiSearchTag, setAPISearchTag] = React.useState(
     query.get('tag') || ''
+  );
+  const [apiSearchStatus, setAPISearchStatus] = React.useState(
+    query.get('status') || ''
   );
   const [sortField, setSortField] = React.useState(query.get('sort') || 'name');
   const [sortOrder, setSortOrder] = React.useState(query.get('order') || 'asc');
@@ -30,8 +40,6 @@ function DAGs() {
   const handlePageLimitChange = (newLimit: number) => {
     updatePreference('pageLimit', newLimit);
   };
-
-
 
   const { data, mutate, isLoading } = useQuery(
     '/dags',
@@ -43,6 +51,7 @@ function DAGs() {
           remoteNode: appBarContext.selectedRemoteNode || 'local',
           name: apiSearchText ? apiSearchText : undefined,
           tag: apiSearchTag ? apiSearchTag : undefined,
+          status: apiSearchStatus ? apiSearchStatus : undefined,
           sort: sortField as PathsDagsGetParametersQuerySort,
           order: sortOrder as PathsDagsGetParametersQueryOrder,
         },
@@ -112,6 +121,14 @@ function DAGs() {
     []
   );
 
+  const debouncedAPIStatusSearch = React.useMemo(
+    () =>
+      debounce((searchStatus: string) => {
+        setAPISearchStatus(searchStatus);
+      }, 500),
+    []
+  );
+
   const searchTextChange = (searchText: string) => {
     addSearchParam('search', searchText);
     setSearchText(searchText);
@@ -124,6 +141,13 @@ function DAGs() {
     setSearchTag(searchTag);
     setPage(1);
     debouncedAPISearchTag(searchTag);
+  };
+
+  const searchStatusChange = (searchStatus: string) => {
+    addSearchParam('status', searchStatus);
+    setSearchStatus(searchStatus);
+    setPage(1);
+    debouncedAPIStatusSearch(searchStatus);
   };
 
   const handleSortChange = (field: string, order: string) => {
@@ -172,6 +196,8 @@ function DAGs() {
               handleSearchTextChange={searchTextChange}
               searchTag={searchTag}
               handleSearchTagChange={searchTagChange}
+              searchStatus={searchStatus}
+              handleSearchStatusChange={searchStatusChange}
               pagination={{
                 totalPages: displayData.pagination.totalPages,
                 page: page,
