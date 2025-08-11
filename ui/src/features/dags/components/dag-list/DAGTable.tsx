@@ -846,15 +846,20 @@ function DAGTable({
   const data = useMemo(() => {
     // Apply client-side filtering by status first
     let filteredDags = [...dags];
-    console.log('searchStatus: ', searchStatus);
+
     if (searchStatus) {
       filteredDags = filteredDags.filter((dag) => {
         const status = dag.latestDAGRun?.status;
-        console.log('status: ', status);
         const searchStatusNum = parseInt(searchStatus);
-        return (
-          status !== undefined && status !== null && status === searchStatusNum
-        );
+
+        // Handle both string and number status values
+        const statusValue =
+          typeof status === 'string' ? parseInt(status) : status;
+        const matches =
+          statusValue !== undefined &&
+          statusValue !== null &&
+          statusValue === searchStatusNum;
+        return matches;
       });
     }
 
@@ -944,6 +949,7 @@ function DAGTable({
           dag: dag,
         });
       });
+
     return hierarchicalData;
   }, [dags, searchStatus, clientSort, clientOrder]); // Added searchStatus dependency
 
@@ -1001,6 +1007,8 @@ function DAGTable({
     getCoreRowModel: getCoreRowModel<Data>(),
     // Disable client-side sorting as we're using server-side sorting
     manualSorting: true,
+    // Disable client-side filtering since we're doing it manually
+    manualFiltering: true,
     getFilteredRowModel: getFilteredRowModel<Data>(),
     onColumnFiltersChange: setColumnFilters, // Let table manage internal filter state
     getExpandedRowModel: getExpandedRowModel<Data>(),
@@ -1115,9 +1123,9 @@ function DAGTable({
             {/* Status filter */}
             <Select
               value={searchStatus || 'all'}
-              onValueChange={(value) =>
-                handleSearchStatusChange(value === 'all' ? '' : value)
-              }
+              onValueChange={(value) => {
+                handleSearchStatusChange(value === 'all' ? '' : value);
+              }}
             >
               <SelectTrigger className="w-auto min-w-[120px] sm:min-w-[160px] h-9 border border-input rounded-md">
                 <div className="flex items-center gap-2">
