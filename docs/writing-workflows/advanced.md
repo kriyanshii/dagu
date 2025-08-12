@@ -126,7 +126,7 @@ steps:
 name: fork-join-analysis
 steps:
   - name: prepare
-    command: ./prepare-dataset.sh
+    command: echo "Preparing dataset"
     output: DATASET
     
   # Fork: Parallel analysis
@@ -179,6 +179,52 @@ steps:
         --output=global-summary.json
 ```
 
+## Restricting Runtime Parameters
+
+Control how users can interact with your DAGs at runtime using the `runConfig` field:
+
+### Enforcing Fixed Parameters
+
+Prevent users from modifying critical parameters:
+
+```yaml
+name: production-deployment
+runConfig:
+  disableParamEdit: true  # Parameters cannot be changed
+  disableRunIdEdit: false # Custom run IDs still allowed
+
+params:
+  - ENVIRONMENT: production  # Always production
+  - DB_HOST: prod.db.example.com
+  - SAFETY_MODE: enabled
+
+steps:
+  - name: deploy
+    command: echo "Deploying to ${ENVIRONMENT} with DB ${DB_HOST}"
+```
+
+### Enforcing Run ID Format
+
+Ensure consistent run ID naming:
+
+```yaml
+name: audit-workflow
+runConfig:
+  disableParamEdit: false  # Parameters can be changed
+  disableRunIdEdit: true   # Must use auto-generated run IDs
+
+steps:
+  - name: audit
+    command: echo "Auditing run ${DAG_RUN_ID}"
+```
+
+### Use Cases
+
+- **Production Workflows**: Prevent accidental parameter changes in critical workflows
+- **Compliance**: Ensure audit trails use consistent, auto-generated run IDs
+- **Safety**: Lock down dangerous parameters while allowing safe customization
+- **Templates**: Create reusable workflows with fixed configurations
+
 ## Resource Management
 
 ### Concurrency Control
@@ -190,16 +236,16 @@ maxActiveSteps: 1       # Max 1 steps running concurrently
 
 steps:
   - name: cpu-intensive
-    command: ./heavy-computation.sh
+    command: 'sh -c "echo Starting heavy computation; sleep 3; echo Completed"'
       
   - name: memory-intensive
-    command: ./process-large-data.sh
+    command: echo "Processing large dataset"
       
   - name: io-intensive
     parallel:
       items: ${FILE_LIST}
       maxConcurrent: 3  # Limit parallel I/O
-    command: ./process-file.sh ${ITEM}
+    command: echo "Processing file ${ITEM}"
 ```
 
 ### Queue-Based Resource Management
@@ -211,7 +257,7 @@ maxActiveRuns: 2        # Queue allows 2 concurrent
 
 steps:
   - name: resource-heavy
-    command: ./intensive-task.sh
+    command: 'sh -c "echo Starting intensive task; sleep 2; echo Done"'
     
   - name: light-task
     command: echo "Quick task"

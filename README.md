@@ -154,7 +154,7 @@ volumes:
 Notes:
 - If the primary scheduler instance fails, the standby instance will automatically take over. The web servers are stateless and can be scaled horizontally using shared storage. For more details, see the [High Availability](https://docs.dagu.cloud/features/scheduling#high-availability) documentation.
 - Port `50055` is used for gRPC communication between the coordinator and its workers. For more information, refer to the [Distributed Execution](https://docs.dagu.cloud/features/distributed-execution) documentation.
-- Dagu uses a shared volume for service discovery, so you must set a unique `DAGU_COORDINATOR_PORT` for each service instance if they are running on the same host.
+- Dagu uses a shared volume for service registry, so you must set a unique `DAGU_COORDINATOR_PORT` for each service instance if they are running on the same host.
 - If you are not running separate workers and instead execute DAGs locally on the scheduler instances, you can omit the `DAGU_COORDINATOR_PORT` environment variable.
 
 ### 2. Start Docker Compose
@@ -225,7 +225,7 @@ For a detailed list of changes, bug fixes, and new features, please refer to the
 | `DAGU_DAG_RUNS_DIR` | `{dataDir}/dag-runs` | Directory for DAG run data |
 | `DAGU_PROC_DIR` | `{dataDir}/proc` | Directory for process data |
 | `DAGU_QUEUE_DIR` | `{dataDir}/queue` | Directory for queue data |
-| `DAGU_DISCOVERY_DIR` | `{dataDir}/discovery` | Directory for service discovery |
+| `DAGU_SERVICE_REGISTRY_DIR` | `{dataDir}/service-registry` | Directory for service registry |
 
 ### Authentication
 
@@ -395,7 +395,7 @@ Navigate to http://localhost:8081 to view the frontend.
 |                             | Resource quotas                 | CPU time and memory limit                                                | 📋    | P0       | |
 |                             | Audit trail                     | Immutable events for all manual actions                                  | 🏢    |          | |
 |                             | Audit logging                   | Immutable who/what/when records (WORM)                                   | 🏢    |          | |
-|                             | HA (High availability) mode     | Control-plane with failover for scheduler / Web UI / Coordinator         | 🏗️  | P0       | <a href="https://github.com/dagu-org/dagu/issues/1130">#1130</a>, <a href="https://github.com/dagu-org/dagu/issues/361">#361</a> |
+|                             | HA (High availability) mode     | Control-plane with failover for scheduler / Web UI / Coordinator         | ✅   |       | <a href="https://docs.dagu.cloud/features/scheduling#high-availability">High Availability</a> |
 | Executor types              | `jq`                            | JSON processing with jq queries                                          | ✅     |        | <a href="https://docs.dagu.cloud/features/executors/jq">JQ Executor</a> |
 |                             | `ssh`                           | Remote command execution via SSH                                         | ✅     || <a href="https://docs.dagu.cloud/features/executors/ssh">SSH Executor</a> |
 |                             | `docker`                        | Container-based task execution                                           | ✅     |        | <a href="https://docs.dagu.cloud/features/executors/docker">Docker Executor</a> |

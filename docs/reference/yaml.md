@@ -97,6 +97,7 @@ schedule:
 | `delaySec` | integer | Initial delay before start (seconds) | `0` |
 | `maxCleanUpTimeSec` | integer | Max cleanup time (seconds) | `300` |
 | `preconditions` | array | Workflow-level preconditions | - |
+| `runConfig` | object | User interaction controls when starting DAG | - |
 
 ### Data Fields
 
@@ -131,6 +132,60 @@ container:
   network: host
   keepContainer: false     # Keep container after DAG run
 ```
+
+### SSH Configuration
+
+| Field | Type | Description | Default |
+|-------|------|-------------|---------|
+| `ssh` | object | Default SSH configuration for all steps | - |
+
+```yaml
+ssh:
+  user: deploy
+  host: production.example.com
+  port: "22"           # Optional, defaults to "22"
+  key: ~/.ssh/id_rsa   # Optional, defaults to standard keys
+  strictHostKey: true  # Optional, defaults to true for security
+  knownHostFile: ~/.ssh/known_hosts  # Optional, defaults to ~/.ssh/known_hosts
+```
+
+When configured at the DAG level, all steps using SSH executor will inherit these settings:
+
+```yaml
+# DAG-level SSH configuration
+ssh:
+  user: deploy
+  host: app.example.com
+  key: ~/.ssh/deploy_key
+
+steps:
+  # These steps inherit the DAG-level SSH configuration
+  - name: check-service
+    executor:
+      type: ssh
+    command: systemctl status myapp
+  
+  - name: restart-service
+    executor:
+      type: ssh
+    command: systemctl restart myapp
+  
+  # Step-level config overrides DAG-level
+  - name: backup-db
+    executor:
+      type: ssh
+      config:
+        user: backup      # Override user
+        host: db.example.com  # Override host
+        key: ~/.ssh/backup_key  # Override key
+    command: mysqldump mydb > backup.sql
+```
+
+**Important Notes:**
+- SSH and container fields are mutually exclusive at the DAG level
+- Step-level SSH configuration completely overrides DAG-level configuration (no partial overrides)
+- For security, password authentication is not supported at the DAG level
+- Default SSH keys are tried if no key is specified: `~/.ssh/id_rsa`, `~/.ssh/id_ecdsa`, `~/.ssh/id_ed25519`, `~/.ssh/id_dsa`
 
 ### Queue Configuration
 
@@ -212,12 +267,39 @@ handlerOn:
   success:
     command: echo "Workflow succeeded"
   failure:
-    command: ./notify-failure.sh
+    command: echo "Notifying failure"
   cancel:
-    command: ./cleanup.sh
+    command: echo "Cleaning up"
   exit:
-    command: ./always-run.sh
+    command: echo "Always running"
 ```
+
+### RunConfig
+
+The `runConfig` field allows you to control user interactions when starting DAG runs:
+
+| Field | Type | Description | Default |
+|-------|------|-------------|---------|
+| `disableParamEdit` | boolean | Prevent parameter editing when starting DAG | `false` |
+| `disableRunIdEdit` | boolean | Prevent custom run ID input when starting DAG | `false` |
+
+Example usage:
+
+```yaml
+# Prevent users from modifying parameters at runtime
+runConfig:
+  disableParamEdit: true
+  disableRunIdEdit: false
+
+params:
+  - ENVIRONMENT: production  # Users cannot change this
+  - VERSION: 1.0.0           # This is fixed
+```
+
+This is useful when:
+- You want to enforce specific parameter values for production workflows
+- You need consistent run IDs for tracking purposes
+- You want to prevent accidental parameter changes
 
 ## Step Fields
 
@@ -282,7 +364,7 @@ steps:
 ```yaml
 steps:
   - name: conditional-step
-    command: ./deploy.sh
+    command: echo "Deploying"
     preconditions:
       - condition: "${ENVIRONMENT}"
         expected: "production"
@@ -290,7 +372,7 @@ steps:
         expected: "main"
     
   - name: optional-step
-    command: ./optional.sh
+    command: echo "Running optional task"
     continueOn:
       failure: true
       skipped: true
@@ -369,7 +451,7 @@ steps:
       limit: 30
       
   - name: repeat-until-with-backoff
-    command: check-status.sh
+    command: echo "Checking status"
     output: STATUS
     repeatPolicy:
       repeat: until        # Repeat UNTIL status is ready
@@ -537,11 +619,11 @@ All steps without dependencies run in parallel:
 ```yaml
 steps:
   - name: task1
-    command: ./task1.sh
+    command: echo "Running task 1"
   - name: task2
-    command: ./task2.sh
+    command: echo "Running task 2"
   - name: task3
-    command: ./task3.sh
+    command: echo "Running task 3"
 ```
 
 ## Complete Example
