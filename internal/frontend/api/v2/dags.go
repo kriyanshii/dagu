@@ -24,8 +24,7 @@ func (a *API) CreateNewDAG(ctx context.Context, request api.CreateNewDAGRequestO
 	}
 
 	spec := []byte(`steps:
-  - name: step1
-    command: echo hello
+  - command: echo hello
 `)
 
 	if err := a.dagStore.Create(ctx, request.Body.Name, spec); err != nil {
@@ -69,7 +68,7 @@ func (a *API) GetDAGSpec(ctx context.Context, request api.GetDAGSpecRequestObjec
 	}
 
 	// Validate the spec - use WithAllowBuildErrors to return DAG even with errors
-	dag, err := a.dagRunMgr.LoadYAML(ctx, []byte(spec), 
+	dag, err := a.dagRunMgr.LoadYAML(ctx, []byte(spec),
 		digraph.WithName(request.FileName),
 		digraph.WithAllowBuildErrors())
 	var errs []string
@@ -81,7 +80,7 @@ func (a *API) GetDAGSpec(ctx context.Context, request api.GetDAGSpecRequestObjec
 		// If we still get an error with AllowBuildErrors, something is seriously wrong
 		return nil, err
 	}
-	
+
 	// If dag is still nil (shouldn't happen with AllowBuildErrors), create a minimal DAG
 	if dag == nil {
 		dag = &digraph.DAG{
@@ -488,7 +487,19 @@ func (a *API) ExecuteDAG(ctx context.Context, request api.ExecuteDAGRequestObjec
 		}
 	}
 
-	if err := a.startDAGRun(ctx, dag, valueOf(request.Body.Params), dagRunId); err != nil {
+	// Check singleton flag - if enabled and DAG is already running, return 409
+	if valueOf(request.Body.Singleton) {
+		dagStatus, err := a.dagRunMgr.GetLatestStatus(ctx, dag)
+		if err == nil && dagStatus.Status == status.Running {
+			return nil, &Error{
+				HTTPStatus: http.StatusConflict,
+				Code:       api.ErrorCodeAlreadyRunning,
+				Message:    fmt.Sprintf("DAG %s is already running, cannot start in singleton mode", dag.Name),
+			}
+		}
+	}
+
+	if err := a.startDAGRun(ctx, dag, valueOf(request.Body.Params), dagRunId, valueOf(request.Body.Singleton)); err != nil {
 		return nil, fmt.Errorf("error starting dag-run: %w", err)
 	}
 
@@ -497,12 +508,13 @@ func (a *API) ExecuteDAG(ctx context.Context, request api.ExecuteDAGRequestObjec
 	}, nil
 }
 
-func (a *API) startDAGRun(ctx context.Context, dag *digraph.DAG, params, dagRunID string) error {
+func (a *API) startDAGRun(ctx context.Context, dag *digraph.DAG, params, dagRunID string, singleton bool) error {
 	if err := a.dagRunMgr.StartDAGRunAsync(ctx, dag, dagrun.StartOptions{
 		Params:    params,
 		DAGRunID:  dagRunID,
 		Quiet:     true,
 		Immediate: true,
+		Singleton: singleton,
 	}); err != nil {
 		return fmt.Errorf("error starting DAG: %w", err)
 	}
