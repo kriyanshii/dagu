@@ -1,8 +1,5 @@
 <div align="center">
   <img src="./assets/images/dagu-logo.webp" width="480" alt="Dagu Logo">
-  <h3>A lightweight and powerful workflow engine</h3>
-  <p>Self-contained. Language agnostic. Local-first.</p>
-  
   <p>
     <a href="https://docs.dagu.cloud/reference/changelog"><img src="https://img.shields.io/github/release/dagu-org/dagu.svg?style=flat-square" alt="Latest Release"></a>
     <a href="https://github.com/dagu-org/dagu/actions/workflows/ci.yaml"><img src="https://img.shields.io/github/actions/workflow/status/dagu-org/dagu/ci.yaml?style=flat-square" alt="Build Status"></a>
@@ -17,16 +14,14 @@
   </p>
 </div>
 
-## Overview
+## Overview - Orchestrate workflows without complexity
 
 Dagu */dah-goo/* is a compact, portable workflow engine implemented in Go. It provides a declarative model for orchestrating command execution across diverse environments, including shell scripts, Python commands, containerized operations, or remote commands.
 
 ```yaml
 steps:
-  - name: step1
-    command: sleep 1 && echo "Hello, dagu!"
-  - name: step2
-    command: sleep 1 && echo "This is a second step"
+  - command: echo "Hello, dagu!" # STEP 1
+  - command: echo "This is a second step" # STEP 2
 ```
 
 By declaratively defining job processes, complex workflows can be visualized, making troubleshooting and recovery easier. Viewing logs and retrying jobs can be performed from the Web UI, eliminating the need to log into a server via SSH.
@@ -40,10 +35,14 @@ Workflow jobs are defined as commands. Therefore, legacy scripts that have been 
 Dagu is designed for enterprise & small teams to easily manage complex workflows. It aims to be an ideal choice for teams that find large-scale, high-cost infrastructure like Airflow to be overkill and are looking for a simpler solution. It requires no database management and only needs a shared filesystem, allowing you to focus on your high-value work.
 
 ### CLI Preview
-![Demo CLI](./assets/images/demo-cli.webp)
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/8d2d8b28-ce3c-4f02-9f99-3eb21b6e4331" width="500" controls></video>
+</p>
 
 ### Web UI Preview
-![Demo Web UI](./assets/images/demo-web-ui.webp)
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/f7f94a30-e2b1-488d-b9c1-ba7c03384614" width="500" controls></video>
+</p>
 
 ## Table of Contents
 
@@ -107,10 +106,8 @@ Note: see [documentation](https://docs.dagu.cloud/getting-started/installation) 
 ```bash
 cat > ./hello.yaml << 'EOF'
 steps:
-  - name: hello
-    command: echo "Hello from Dagu!"
-  - name: world  
-    command: echo "Running step 2"
+  - command: echo "Hello from Dagu!"
+  - command: echo "Running step 2"
 EOF
 ```
 
@@ -333,73 +330,6 @@ pnpm dev
 ```
 
 Navigate to http://localhost:8081 to view the frontend.
-
-## Architecture
-
-### How Dagu Works
-
-```mermaid
-graph LR
-    subgraph "You Write"
-        YAML[YAML<br/>Workflow]
-    end
-    
-    subgraph "Dagu Processes"
-        Parse[Parse]
-        Schedule[Schedule]
-        Execute[Execute]
-        Store[Store]
-    end
-    
-    subgraph "Your Code Runs"
-        Tasks[Scripts<br/>Commands<br/>Containers]
-    end
-    
-    YAML --> Parse
-    Parse --> Schedule
-    Schedule --> Execute
-    Execute --> Tasks
-    Tasks --> Store
-```
-
-### Scaling Options
-
-```mermaid
-graph LR
-    subgraph "Single Machine"
-        Single[One Dagu<br/>Does everything]
-    end
-    
-    subgraph "Multiple Machines"
-        Coord[Coordinator]
-        W1[Worker 1]
-        W2[Worker 2]
-        WN[Worker N]
-        
-        Coord --> W1
-        Coord --> W2
-        Coord --> WN
-    end
-    
-    Single -."Scale when needed".-> Coord
-```
-
-### Storage Structure
-
-```mermaid
-graph TD
-    subgraph "Everything is Files"
-        Home[~/.dagu]
-        
-        Home --> Dags[dags/<br/>Your workflows]
-        Home --> Logs[logs/<br/>Execution logs]
-        Home --> Data[data/<br/>Runtime data]
-        
-        Data --> History[History]
-        Data --> State[Current state]
-        Data --> Queue[Task queue]
-    end
-```
 
 ## Roadmap
 

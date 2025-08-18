@@ -54,7 +54,7 @@ This command parses the DAG definition, resolves parameters, and initiates the D
 }
 
 // Command line flags for the start command
-var startFlags = []commandLineFlag{paramsFlag, dagRunIDFlag, parentDAGRunFlag, rootDAGRunFlag, noQueueFlag}
+var startFlags = []commandLineFlag{paramsFlag, dagRunIDFlag, parentDAGRunFlag, rootDAGRunFlag, noQueueFlag, singletonFlag}
 
 // runStart handles the execution of the start command
 func runStart(ctx *Context, args []string) error {
@@ -86,14 +86,14 @@ func runStart(ctx *Context, args []string) error {
 		return handleChildDAGRun(ctx, dag, dagRunID, params, root, parent)
 	}
 
-	var disabledQueue bool
+	var queueDisabled bool
 	if os.Getenv("DISABLE_DAG_RUN_QUEUE") != "" {
-		disabledQueue = true
+		queueDisabled = true
 	}
 
 	// check no-queue flag
 	if ctx.Command.Flags().Changed("no-queue") {
-		disabledQueue = true
+		queueDisabled = true
 	}
 
 	// Check if the DAG run-id is unique
@@ -103,6 +103,14 @@ func runStart(ctx *Context, args []string) error {
 		return fmt.Errorf("dag-run ID %s already exists for DAG %s", dagRunID, dag.Name)
 	}
 
+	// Check singleton flag - if enabled and DAG is already running, fail
+	if singletonEnabled, _ := ctx.Command.Flags().GetBool("singleton"); singletonEnabled {
+		runningCount, err := ctx.ProcStore.CountAlive(ctx, dag.ProcGroup())
+		if err == nil && runningCount > 0 {
+			return fmt.Errorf("DAG %s is already running, cannot start in singleton mode", dag.Name)
+		}
+	}
+
 	// Log root dag-run
 	logger.Info(ctx, "Executing root dag-run",
 		"dag", dag.Name,
@@ -110,23 +118,56 @@ func runStart(ctx *Context, args []string) error {
 		"dagRunId", dagRunID,
 	)
 
-	// Check if the DAG needs to be enqueued or executed directly
-	// We need to enqueue it unless if the queue is disabled
-	if dag.MaxActiveRuns < 0 || disabledQueue {
-		// MaxActiveRuns < 0 means queueing is disabled for this DAG
-		return executeDAGRun(ctx, dag, digraph.DAGRunRef{}, dagRunID, root)
+	err = tryExecuteDAG(ctx, dag, dagRunID, root, queueDisabled)
+	if errors.Is(err, errMaxRunReached) {
+		dag.Location = "" // Queued dag-runs must not have a location
+
+		// Enqueue the DAG-run for execution
+		return enqueueDAGRun(ctx, dag, dagRunID)
 	}
 
-	runningCount, err := ctx.ProcStore.CountAlive(ctx, dag.ProcGroup())
-	if err == nil && runningCount == 0 {
-		// If there are no running processes, we can execute the DAG-run directly
-		return executeDAGRun(ctx, dag, digraph.DAGRunRef{}, dagRunID, root)
+	return err // return executed result
+}
+
+var (
+	errMaxRunReached = errors.New("max run reached")
+)
+
+// tryExecuteDAG tries to run the DAG within the max concurrent run config
+func tryExecuteDAG(ctx *Context, dag *digraph.DAG, dagRunID string, root digraph.DAGRunRef, queueDisabled bool) error {
+	if err := ctx.ProcStore.TryLock(ctx, dag.ProcGroup()); err != nil {
+		logger.Debug(ctx, "failed to lock process group", "err", err)
+		return errMaxRunReached
+	}
+	defer ctx.ProcStore.Unlock(ctx, dag.ProcGroup())
+
+	if !queueDisabled {
+		runningCount, err := ctx.ProcStore.CountAlive(ctx, dag.ProcGroup())
+		if err != nil {
+			logger.Debug(ctx, "failed to count live processes", "err", err)
+			return fmt.Errorf("failed to count live process for %s: %w", dag.ProcGroup(), errMaxRunReached)
+		}
+
+		if dag.MaxActiveRuns > 0 && runningCount >= dag.MaxActiveRuns {
+			// It's not possible to run right now.
+			return fmt.Errorf("max active run is reached (%d >= %d): %w", runningCount, dag.MaxActiveRuns, errMaxRunReached)
+		}
 	}
 
-	dag.Location = "" // Queued dag-runs must not have a location
+	// Acquire process handle
+	proc, err := ctx.ProcStore.Acquire(ctx, dag.ProcGroup(), digraph.NewDAGRunRef(dag.Name, dagRunID))
+	if err != nil {
+		logger.Debug(ctx, "failed to acquire process handle", "err", err)
+		return fmt.Errorf("failed to acquire process handle: %w", errMaxRunReached)
+	}
+	defer func() {
+		_ = proc.Stop(ctx)
+	}()
 
-	// Enqueue the DAG-run for execution
-	return enqueueDAGRun(ctx, dag, dagRunID)
+	// Unlock the process group
+	ctx.ProcStore.Unlock(ctx, dag.ProcGroup())
+
+	return executeDAGRun(ctx, dag, digraph.DAGRunRef{}, dagRunID, root)
 }
 
 // getDAGRunInfo extracts and validates dag-run ID and references from command flags
@@ -324,7 +365,6 @@ func executeDAGRun(ctx *Context, d *digraph.DAG, parent digraph.DAGRunRef, dagRu
 		ctx.DAGRunMgr,
 		dr,
 		ctx.DAGRunStore,
-		ctx.ProcStore,
 		ctx.ServiceRegistry,
 		root,
 		agent.Options{
