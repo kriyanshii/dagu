@@ -47,8 +47,10 @@ function DAGs() {
       params: {
         query: {
           page,
-          perPage: preferences.pageLimit || 200,
-          remoteNode: appBarContext.selectedRemoteNode || 'local',
+          // When status filtering is active, use a very large page size to get all DAGs
+          // This ensures all DAGs with the selected status are displayed on the same page
+          perPage: apiSearchStatus ? 10000 : (preferences.pageLimit || 200),
+          remoteNode: appBarContext?.selectedRemoteNode || 'local',
           name: apiSearchText ? apiSearchText : undefined,
           tag: apiSearchTag ? apiSearchTag : undefined,
           status: apiSearchStatus ? apiSearchStatus : undefined,
@@ -120,12 +122,18 @@ function DAGs() {
     []
   );
 
-  const debouncedAPIStatusSearch = React.useMemo(
+  const debouncedAPISearchStatus = React.useMemo(
     () =>
       debounce((searchStatus: string) => {
         setAPISearchStatus(searchStatus);
+        // Reset page to 1 when status filtering is activated
+        // since we're now showing all results on one page
+        if (searchStatus && page !== 1) {
+          setPage(1);
+          addSearchParam('page', '1');
+        }
       }, 500),
-    []
+    [page, addSearchParam]
   );
 
   const searchTextChange = (searchText: string) => {
@@ -146,7 +154,7 @@ function DAGs() {
     addSearchParam('status', searchStatus);
     setSearchStatus(searchStatus);
     setPage(1);
-    debouncedAPIStatusSearch(searchStatus);
+    debouncedAPISearchStatus(searchStatus);
   };
 
   const handleSortChange = (field: string, order: string) => {

@@ -843,6 +843,8 @@ function DAGTable({
   }, [searchText, searchTag, searchStatus, columnFilters]);
 
   // Transform the flat list of DAGs into a hierarchical structure with groups
+  // Note: When status filtering is active, the backend fetches a large number of DAGs
+  // and we filter them client-side to show all matching results on the same page
   const data = useMemo(() => {
     // Apply client-side filtering by status first
     let filteredDags = [...dags];
@@ -1144,7 +1146,7 @@ function DAGTable({
           </div>
 
           {/* Pagination - on new row on mobile */}
-          {pagination && (
+          {pagination && !searchStatus && (
             <div className="flex justify-center sm:justify-end sm:ml-auto">
               <DAGPagination
                 totalPages={pagination.totalPages}
@@ -1156,6 +1158,21 @@ function DAGTable({
             </div>
           )}
         </div>
+
+        {/* Status filter info message */}
+        {searchStatus && (
+          <div className="text-xs text-muted-foreground bg-muted/30 rounded px-3 py-2 border-l-2 border-primary/50">
+            <div className="flex items-center gap-2">
+              <Filter className="h-3 w-3" />
+              <span>
+                Showing all DAGs with status "
+                {statusOptions.find((opt) => opt.value === searchStatus)
+                  ?.label || searchStatus}
+                " (pagination disabled for status filtering)
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Desktop Table View - Hidden on mobile */}
@@ -1314,6 +1331,21 @@ function DAGTable({
 
       {/* Mobile Card View - Visible only on mobile */}
       <div className="md:hidden space-y-2">
+        {/* Status filter info message for mobile */}
+        {searchStatus && (
+          <div className="text-xs text-muted-foreground bg-muted/30 rounded px-3 py-2 border-l-2 border-primary/50">
+            <div className="flex items-center gap-2">
+              <Filter className="h-3 w-3" />
+              <span>
+                Showing all DAGs with status "
+                {statusOptions.find((opt) => opt.value === searchStatus)
+                  ?.label || searchStatus}
+                " (pagination disabled for status filtering)
+              </span>
+            </div>
+          </div>
+        )}
+
         {instance.getRowModel().rows.length ? (
           instance.getRowModel().rows.map((row) => {
             // Skip rendering group rows in card view
