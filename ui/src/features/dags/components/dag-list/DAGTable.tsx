@@ -31,6 +31,7 @@ import { DAGDetailsModal } from '../../components/dag-details';
 import { CreateDAGModal, DAGPagination } from '../common';
 import DAGActions from '../common/DAGActions';
 import LiveSwitch from '../common/LiveSwitch';
+import StatusSearchTabs from './StatusSearchTabs';
 
 // Helper to format milliseconds into d/h/m/s
 function formatMs(ms: number): string {
@@ -1041,6 +1042,39 @@ function DAGTable({
     },
   });
 
+  // Calculate status counts for the tabs
+  const statusCounts = useMemo(() => {
+    const counts: Record<string, number> = {
+      all: dags.length,
+      '0': 0, // Not Started
+      '1': 0, // Running
+      '2': 0, // Failed
+      '3': 0, // Cancelled
+      '4': 0, // Success
+      '5': 0, // Queued
+      '6': 0, // Partial Success
+    };
+
+    dags.forEach((dag) => {
+      const status = dag.latestDAGRun?.status;
+      if (status !== undefined && status !== null) {
+        const statusValue =
+          typeof status === 'string' ? parseInt(status) : status;
+        const statusKey = statusValue.toString();
+        if (Object.prototype.hasOwnProperty.call(counts, statusKey)) {
+          counts[statusKey] = (counts[statusKey] || 0) + 1;
+        }
+      } else {
+        // DAGs without status are considered "Not Started"
+        if (counts['0'] !== undefined) {
+          counts['0']++;
+        }
+      }
+    });
+
+    return counts;
+  }, [dags]);
+
   return (
     <div className="space-y-4">
       {/* Side Modal for DAG Details */}
@@ -1157,6 +1191,18 @@ function DAGTable({
               />
             </div>
           )}
+        </div>
+
+        {/* Status Search Tabs */}
+        <div className="w-full">
+          <StatusSearchTabs
+            activeStatus={searchStatus || 'all'}
+            onStatusChange={(status) =>
+              handleSearchStatusChange(status === 'all' ? '' : status)
+            }
+            statusCounts={statusCounts}
+            className="w-full"
+          />
         </div>
 
         {/* Status filter info message */}
