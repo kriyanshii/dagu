@@ -323,11 +323,17 @@ const defaultColumns = [
       }
       if (data.kind === ItemKind.DAG) {
         const name = data.dag.dag.name.toLowerCase();
+        const fileName = data.dag.fileName.toLowerCase();
         const description = (data.dag.dag.description || '').toLowerCase();
         const searchValue = String(filterValue).toLowerCase();
 
         // Search in name and description
-        if (name.includes(searchValue) || description.includes(searchValue)) {
+        console.log({ data });
+        if (
+          fileName.includes(searchValue) ||
+          name.includes(searchValue) ||
+          description.includes(searchValue)
+        ) {
           return true;
         }
 

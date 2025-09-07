@@ -5,7 +5,8 @@ layout: doc
 <img src="/dagu-logo.webp" alt="dagu Logo" style="display: block; margin: 0 auto; max-width: 100%">
 
 <div class="tagline" style="text-align: center;">
-  <h1>A lightweight and powerful workflow engine for enterprise & small teams</h1>
+  <h2>Lightweight Workflow Engine Alternative to Airflow & Cron</h2>
+  <p>Single binary with Web UI. Execute workflows defined in a simple, declarative YAML on a schedule. Natively support shell commands, remote execution via SSH, and docker image.</p>
 </div>
 
 
@@ -148,22 +149,18 @@ Compose workflows from smaller workflows. Build modular, reusable components.
 ## Example: Data Pipeline with Nested Workflows
 
 ```yaml
-name: etl-pipeline
 schedule: "0 2 * * *"  # 2 AM daily
 
 steps:
-  - name: extract
-    command: python extract.py --date=${DATE}
+  - command: python extract.py --date=${DATE}
     output: RAW_DATA
     
-  - name: transform
-    run: transform-data
+  - run: transform-data
     parallel:
       items: [customers, orders, products]
     params: "TYPE=${ITEM} INPUT=${RAW_DATA}"
     
-  - name: load
-    command: python load.py
+  - command: python load.py
     retryPolicy:
       limit: 3
       intervalSec: 2
@@ -173,8 +170,7 @@ steps:
 name: transform-data
 params: [TYPE, INPUT]
 steps:
-  - name: process
-    command: python transform.py --type=${TYPE} --input=${INPUT}
+  - python transform.py --type=${TYPE} --input=${INPUT}
 ```
 
 ## Learn More
