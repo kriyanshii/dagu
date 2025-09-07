@@ -49,6 +49,7 @@ type ListDAGsOptions struct {
 	Paginator *Paginator
 	Name      string // Optional name filter
 	Tag       string // Optional tag filter
+	Status    string // Optional status filter
 	Sort      string // Optional sort field (name, updated_at, created_at)
 	Order     string // Optional sort order (asc, desc)
 }

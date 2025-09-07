@@ -348,19 +348,78 @@ func (a *API) ListDAGs(ctx context.Context, request api.ListDAGsRequestObject) (
 		sortOrder = string(*request.Params.Order)
 	}
 
-	// Use paginator from request
-	pg := models.NewPaginator(valueOf(request.Params.Page), valueOf(request.Params.PerPage))
+	// For status filtering, we need to get all DAGs first, then filter by status, then paginate
+	// This is because status filtering requires getting the latest DAG run status
+	statusFilter := valueOf(request.Params.Status)
 
-	// Let persistence layer handle sorting and pagination
-	result, errList, err := a.dagStore.List(ctx, models.ListDAGsOptions{
-		Paginator: &pg,
-		Name:      valueOf(request.Params.Name),
-		Tag:       valueOf(request.Params.Tag),
-		Sort:      sortField,
-		Order:     sortOrder,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("error listing DAGs: %w", err)
+	var result models.PaginatedResult[*digraph.DAG]
+	var errList []string
+	var err error
+
+	if statusFilter != "" {
+		// Get all DAGs without pagination for status filtering
+		allPaginator := models.NewPaginator(1, 10000) // Get all DAGs
+		allDagsResult, allErrList, allErr := a.dagStore.List(ctx, models.ListDAGsOptions{
+			Paginator: &allPaginator,
+			Name:      valueOf(request.Params.Name),
+			Tag:       valueOf(request.Params.Tag),
+			Sort:      sortField,
+			Order:     sortOrder,
+		})
+		if allErr != nil {
+			return nil, fmt.Errorf("error listing DAGs: %w", allErr)
+		}
+		errList = append(errList, allErrList...)
+
+		// Filter by status
+		var filteredDags []*digraph.DAG
+		for _, item := range allDagsResult.Items {
+			dagStatus, err := a.dagRunMgr.GetLatestStatus(ctx, item)
+			if err != nil {
+				errList = append(errList, err.Error())
+				continue
+			}
+
+			// Apply status filtering
+			statusStr := ""
+			if dagStatus.Status != 0 {
+				statusStr = dagStatus.Status.String()
+			}
+			statusNum := statusToNumber(statusStr)
+			if statusNum == statusFilter {
+				filteredDags = append(filteredDags, item)
+			}
+		}
+
+		// Apply pagination to filtered results
+		totalCount := len(filteredDags)
+		pg := models.NewPaginator(valueOf(request.Params.Page), valueOf(request.Params.PerPage))
+		start := pg.Offset()
+		end := start + pg.Limit()
+
+		var paginatedDags []*digraph.DAG
+		if start < len(filteredDags) {
+			if end > len(filteredDags) {
+				end = len(filteredDags)
+			}
+			paginatedDags = filteredDags[start:end]
+		}
+
+		// Create new pagination result with filtered count
+		result = models.NewPaginatedResult(paginatedDags, totalCount, pg)
+	} else {
+		// No status filtering, use normal pagination
+		pg := models.NewPaginator(valueOf(request.Params.Page), valueOf(request.Params.PerPage))
+		result, errList, err = a.dagStore.List(ctx, models.ListDAGsOptions{
+			Paginator: &pg,
+			Name:      valueOf(request.Params.Name),
+			Tag:       valueOf(request.Params.Tag),
+			Sort:      sortField,
+			Order:     sortOrder,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("error listing DAGs: %w", err)
+		}
 	}
 
 	// Build DAG files for the paginated results
@@ -784,4 +843,26 @@ func (a *API) StopAllDAGRuns(ctx context.Context, request api.StopAllDAGRunsRequ
 	return &api.StopAllDAGRuns200JSONResponse{
 		Errors: errors,
 	}, nil
+}
+
+// statusToNumber converts a status string to its numeric representation
+func statusToNumber(statusStr string) string {
+	switch statusStr {
+	case "not started":
+		return "0"
+	case "running":
+		return "1"
+	case "failed":
+		return "2"
+	case "cancelled":
+		return "3"
+	case "finished":
+		return "4"
+	case "queued":
+		return "5"
+	case "partial success":
+		return "6"
+	default:
+		return "0" // Default to "not started" for unknown statuses
+	}
 }

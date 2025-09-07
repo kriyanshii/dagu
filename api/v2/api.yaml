@@ -104,6 +104,12 @@ paths:
           schema:
             type: "string"
           description: "Filter DAGs by tag"
+        - name: "status"
+          in: "query"
+          required: false
+          schema:
+            type: "string"
+          description: "Filter DAGs by status (0=Not Started, 1=Running, 2=Failed, 3=Cancelled, 4=Success, 5=Queued, 6=Partial Success)"
         - name: "sort"
           in: "query"
           required: false

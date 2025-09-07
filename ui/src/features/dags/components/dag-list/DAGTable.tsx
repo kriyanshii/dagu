@@ -327,8 +327,7 @@ const defaultColumns = [
         const description = (data.dag.dag.description || '').toLowerCase();
         const searchValue = String(filterValue).toLowerCase();
 
-        // Search in name and description
-        console.log({ data });
+        // Search in name, filename, and description
         if (
           fileName.includes(searchValue) ||
           name.includes(searchValue) ||
@@ -850,27 +849,9 @@ function DAGTable({
   }, [searchText, searchTag, searchStatus, columnFilters]);
 
   // Transform the flat list of DAGs into a hierarchical structure with groups
-  // Note: When status filtering is active, the backend fetches a large number of DAGs
-  // and we filter them client-side to show all matching results on the same page
   const data = useMemo(() => {
-    // Apply client-side filtering by status first
-    let filteredDags = [...dags];
-
-    if (searchStatus) {
-      filteredDags = filteredDags.filter((dag) => {
-        const status = dag.latestDAGRun?.status;
-        const searchStatusNum = parseInt(searchStatus);
-
-        // Handle both string and number status values
-        const statusValue =
-          typeof status === 'string' ? parseInt(status) : status;
-        const matches =
-          statusValue !== undefined &&
-          statusValue !== null &&
-          statusValue === searchStatusNum;
-        return matches;
-      });
-    }
+    // No need for client-side status filtering since backend handles it
+    const filteredDags = [...dags];
 
     // Apply client-side sorting if needed
     if (clientSort) {
@@ -960,7 +941,7 @@ function DAGTable({
       });
 
     return hierarchicalData;
-  }, [dags, searchStatus, clientSort, clientOrder]); // Added searchStatus dependency
+  }, [dags, clientSort, clientOrder]);
 
   // Add keyboard navigation between DAGs when modal is open
   // Create a ref to store the table instance
@@ -1049,6 +1030,9 @@ function DAGTable({
   });
 
   // Calculate status counts for the tabs
+  // Note: Since backend now handles status filtering, we calculate from the current dags array
+  // This means counts will be accurate only when no status filter is applied
+  // TODO: Ideally, this should come from a separate API call that gets counts for all DAGs
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = {
       all: dags.length,
@@ -1186,7 +1170,7 @@ function DAGTable({
           </div>
 
           {/* Pagination - on new row on mobile */}
-          {pagination && !searchStatus && (
+          {pagination && (
             <div className="flex justify-center sm:justify-end sm:ml-auto">
               <DAGPagination
                 totalPages={pagination.totalPages}
@@ -1217,10 +1201,10 @@ function DAGTable({
             <div className="flex items-center gap-2">
               <Filter className="h-3 w-3" />
               <span>
-                Showing all DAGs with status "
+                Showing DAGs with status "
                 {statusOptions.find((opt) => opt.value === searchStatus)
                   ?.label || searchStatus}
-                " (pagination disabled for status filtering)
+                "
               </span>
             </div>
           </div>
