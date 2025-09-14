@@ -16,6 +16,8 @@ import {
   ArrowUp,
   Calendar,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   Filter,
   Search,
@@ -198,417 +200,7 @@ function getNextSchedule(
 }
 // --- End Helper Functions ---
 
-const defaultColumns = [
-  columnHelper.accessor('name', {
-    id: 'Expand',
-    header: ({ table }) => (
-      <Button
-        variant="ghost"
-        size="icon"
-        onClick={table.getToggleAllRowsExpandedHandler()}
-        className="text-muted-foreground cursor-pointer" // Use Tailwind for color
-      >
-        {table.getIsAllRowsExpanded() ? (
-          <>
-            <VisuallyHidden>Compress rows</VisuallyHidden>
-            <ChevronUp className="h-4 w-4" />
-          </>
-        ) : (
-          <>
-            <VisuallyHidden>Expand rows</VisuallyHidden>
-            <ChevronDown className="h-4 w-4" />
-          </>
-        )}
-      </Button>
-    ),
-    cell: ({ row }) => {
-      if (row.getCanExpand()) {
-        return (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={row.getToggleExpandedHandler()}
-            className="text-muted-foreground cursor-pointer"
-          >
-            {row.getIsExpanded() ? (
-              <ChevronUp className="h-4 w-4" />
-            ) : (
-              <ChevronDown className="h-4 w-4" />
-            )}
-          </Button>
-        );
-      }
-      return null; // Return null instead of empty string for clarity
-    },
-    size: 40,
-    minSize: 40,
-    maxSize: 40,
-  }),
-  columnHelper.accessor('name', {
-    id: 'Name',
-    size: 350,
-    minSize: 200,
-    header: () => (
-      <div className="flex flex-col py-1">
-        <span className="text-xs">Name</span>
-        <span className="text-[10px] font-normal text-muted-foreground">
-          Description
-        </span>
-      </div>
-    ),
-    cell: ({ row, getValue, table }) => {
-      const data = row.original!;
-
-      if (data.kind === ItemKind.Group) {
-        // Group Row: Render group name directly
-        return (
-          <div style={{ paddingLeft: `${row.depth * 1.5}rem` }}>
-            <span className="font-normal text-muted-foreground">
-              {getValue()}
-            </span>{' '}
-            {/* Muted color group text */}
-          </div>
-        );
-      } else {
-        // DAG Row: Render link with description and tags below
-        const tags = data.dag.dag.tags || [];
-        const description = data.dag.dag.description;
-
-        return (
-          <div
-            style={{ paddingLeft: `${row.depth * 1.5}rem` }}
-            className="space-y-0.5 min-w-0"
-          >
-            <div className="font-medium text-gray-800 dark:text-gray-200 tracking-tight text-xs truncate">
-              {getValue()}
-            </div>
-
-            {description && (
-              <div className="text-[10px] text-muted-foreground whitespace-normal leading-tight line-clamp-2">
-                {description}
-              </div>
-            )}
-
-            {tags.length > 0 && (
-              <div className="flex flex-wrap gap-0.5">
-                {tags.map((tag) => (
-                  <Badge
-                    key={tag}
-                    variant="outline"
-                    className="text-[10px] px-1 py-0 h-3.5 rounded-sm border-blue-200 dark:border-blue-600 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-800/50 hover:text-blue-800 dark:hover:text-blue-200 transition-colors duration-200 cursor-pointer font-normal"
-                    onClick={(e) => {
-                      e.stopPropagation(); // Prevent row click
-                      e.preventDefault();
-                      // Get the handleSearchTagChange from the component props
-                      const handleTagClick =
-                        table.options.meta?.handleSearchTagChange;
-                      if (handleTagClick) handleTagClick(tag);
-                    }}
-                  >
-                    <div className="h-1 w-1 rounded-full bg-primary/70 mr-0.5"></div>
-                    {tag}
-                  </Badge>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      }
-    },
-    filterFn: (row, _, filterValue) => {
-      // Use row instead of props
-      const data = row.original!;
-      if (data.kind === ItemKind.Group) {
-        return true; // Always show group rows during filtering
-      }
-      if (data.kind === ItemKind.DAG) {
-        const name = data.dag.dag.name.toLowerCase();
-        const fileName = data.dag.fileName.toLowerCase();
-        const description = (data.dag.dag.description || '').toLowerCase();
-        const searchValue = String(filterValue).toLowerCase();
-
-        // Search in name, filename, and description
-        if (
-          fileName.includes(searchValue) ||
-          name.includes(searchValue) ||
-          description.includes(searchValue)
-        ) {
-          return true;
-        }
-
-        // Also search in tags if needed
-        const tags = data.dag.dag.tags || [];
-        if (tags.some((tag) => tag.toLowerCase().includes(searchValue))) {
-          return true;
-        }
-      }
-      return false;
-    },
-  }),
-  // Tags column removed as tags are now displayed under the name
-  // The filter functionality is preserved in the Name column
-  columnHelper.accessor('kind', {
-    id: 'Status',
-    size: 100,
-    minSize: 100,
-    maxSize: 120,
-    header: () => (
-      <div className="flex flex-col py-1">
-        <span className="text-xs">Status</span>
-        <span className="text-[10px] font-normal text-muted-foreground">
-          Latest status
-        </span>
-      </div>
-    ),
-    cell: ({ row, table }) => {
-      const data = row.original!;
-      if (data.kind === ItemKind.DAG) {
-        const status = data.dag.latestDAGRun.status;
-        const statusLabel = data.dag.latestDAGRun.statusLabel;
-
-        return (
-          <div
-            className="cursor-pointer hover:bg-muted/50 rounded px-1 py-0.5 transition-colors"
-            onClick={(e) => {
-              e.stopPropagation();
-              // Get the handleSearchStatusChange from the component props
-              const handleStatusClick =
-                table.options.meta?.handleSearchStatusChange;
-              if (handleStatusClick) {
-                handleStatusClick(status.toString());
-              }
-            }}
-          >
-            <StatusChip status={status} size="xs">
-              {statusLabel}
-            </StatusChip>
-          </div>
-        );
-      }
-      return null;
-    },
-  }),
-  // Removed Started At and Finished At columns
-  columnHelper.accessor('kind', {
-    id: 'LastRun',
-    size: 150,
-    minSize: 150,
-    maxSize: 180,
-    header: () => (
-      <div className="flex flex-col py-1">
-        <span className="text-xs">Last Run</span>
-        <span className="text-[10px] font-normal text-muted-foreground">
-          {getConfig().tz || 'Local Timezone'}
-        </span>
-      </div>
-    ),
-    cell: ({ row }) => {
-      const data = row.original!;
-      if (data.kind !== ItemKind.DAG) {
-        return null;
-      }
-
-      const { startedAt, finishedAt, status } = data.dag.latestDAGRun;
-
-      if (!startedAt || startedAt === '-') {
-        // If no start time, display nothing or a placeholder
-        return <span className="font-normal text-muted-foreground">-</span>;
-      }
-
-      const formattedStartedAt = startedAt;
-      let durationContent: React.ReactNode = null;
-
-      if (finishedAt && finishedAt !== '-') {
-        const start = dayjs(startedAt);
-        const end = dayjs(finishedAt);
-
-        if (start.isValid() && end.isValid()) {
-          const durationMs = end.diff(start);
-
-          if (durationMs > 0) {
-            // Format duration manually without using the custom format function
-            const duration = dayjs.duration(durationMs);
-            const days = Math.floor(duration.asDays());
-            const hours = duration.hours();
-            const minutes = duration.minutes();
-            const seconds = duration.seconds();
-
-            const parts: string[] = [];
-            if (days > 0) parts.push(`${days}d`);
-            if (hours > 0) parts.push(`${hours}h`);
-            if (minutes > 0) parts.push(`${minutes}m`);
-            if (seconds > 0 && parts.length === 0) parts.push(`${seconds}s`);
-
-            const formattedDuration = parts.join(' ');
-
-            durationContent = (
-              <div className="text-[10px] text-muted-foreground">
-                {formattedDuration}
-              </div>
-            );
-          }
-        }
-      } else if (status === 1) {
-        // Status 1 typically means "Running"
-        durationContent = (
-          <div className="text-[10px] text-muted-foreground">(Running)</div>
-        );
-      }
-
-      return (
-        <div className="space-y-0.5">
-          <span className="font-normal text-foreground/70 text-xs">
-            {formattedStartedAt}
-          </span>
-          {durationContent}
-        </div>
-      );
-    },
-  }),
-  columnHelper.accessor('kind', {
-    id: 'ScheduleAndNextRun',
-    size: 180,
-    minSize: 150,
-    maxSize: 200,
-    header: () => (
-      <div className="flex flex-col py-1">
-        <span className="text-xs">Schedule</span>
-        <span className="text-[10px] font-normal text-muted-foreground">
-          Next execution
-        </span>
-      </div>
-    ),
-    cell: ({ row }) => {
-      const data = row.original!;
-      if (data.kind === ItemKind.DAG) {
-        const schedules = data.dag.dag.schedule || [];
-
-        if (schedules.length === 0) {
-          return null;
-        }
-
-        // Display schedule expressions
-        const scheduleContent = (
-          <div className="flex flex-wrap gap-0.5">
-            {schedules.map((schedule) => (
-              <Badge
-                key={schedule.expression}
-                variant="outline"
-                className="text-[10px] font-normal px-1 py-0 h-3.5"
-              >
-                {schedule.expression}
-              </Badge>
-            ))}
-          </div>
-        );
-
-        // Display next run information
-        let nextRunContent: React.ReactNode | null = null;
-        if (!data.dag.suspended && schedules.length > 0) {
-          const nextRun = getNextSchedule(data.dag);
-          if (nextRun) {
-            nextRunContent = (
-              <div className="text-[10px] text-muted-foreground font-normal leading-tight">
-                <Ticker intervalMs={1000}>
-                  {() => {
-                    const ms = nextRun.getTime() - new Date().getTime();
-                    return <span>Run in {formatMs(ms)}</span>;
-                  }}
-                </Ticker>
-              </div>
-            );
-          }
-        } else if (data.dag.suspended) {
-          nextRunContent = (
-            <div className="text-[10px] text-muted-foreground font-normal leading-tight">
-              Suspended
-            </div>
-          );
-        }
-
-        return (
-          <div className="space-y-0.5">
-            {scheduleContent}
-            {nextRunContent}
-          </div>
-        );
-      }
-      return null;
-    },
-  }),
-  // Description column removed as description is now displayed under the name
-  columnHelper.accessor('kind', {
-    id: 'Live',
-    size: 70,
-    minSize: 70,
-    maxSize: 70,
-    header: () => (
-      <div className="flex flex-col py-1">
-        <span className="text-xs">Live</span>
-        <span className="text-[10px] font-normal text-muted-foreground">
-          Auto-schedule
-        </span>
-      </div>
-    ),
-    cell: ({ row, table }) => {
-      // Use row and table
-      const data = row.original!;
-      if (data.kind !== ItemKind.DAG) {
-        return null; // Changed from false to null
-      }
-      // Wrap LiveSwitch in a div and stop propagation on its click
-      return (
-        <div
-          onClick={(e) => e.stopPropagation()}
-          className="flex justify-center scale-90" // Scale the container instead
-        >
-          <LiveSwitch
-            dag={data.dag}
-            refresh={table.options.meta?.refreshFn}
-            aria-label={`Toggle ${data.name}`}
-          />
-        </div>
-      );
-    },
-  }),
-  columnHelper.display({
-    id: 'Actions',
-    size: 100,
-    minSize: 100,
-    maxSize: 100,
-    header: () => (
-      <div className="flex flex-col items-center py-1">
-        <span className="text-xs">Actions</span>
-        <span className="text-[10px] font-normal text-muted-foreground">
-          Operations
-        </span>
-      </div>
-    ),
-    cell: ({ row, table }) => {
-      // Use row and table
-      const data = row.original!;
-      if (data.kind === ItemKind.Group) {
-        return null;
-      }
-      // Assuming DAGActions is refactored or compatible
-      return (
-        // Wrap DAGActions in a div and stop propagation on its click
-        <div
-          className="flex justify-center scale-90" // Scale down for density
-          onClick={(e) => e.stopPropagation()}
-        >
-          <DAGActions
-            dag={data.dag.dag}
-            status={data.dag.latestDAGRun}
-            fileName={data.dag.fileName}
-            label={false}
-            refresh={table.options.meta?.refreshFn}
-          />
-        </div>
-      );
-    },
-  }),
-];
+// Removed defaultColumns - now defined inside component
 
 // Mapping between column IDs and backend sort fields
 const columnToSortField: Record<string, string> = {
@@ -742,7 +334,617 @@ function DAGTable({
   onSortChange,
 }: Props) {
   const navigate = useNavigate();
-  const [columns] = React.useState(() => [...defaultColumns]);
+
+  // State for search mode (normal vs date-wise)
+  const [searchMode, setSearchMode] = React.useState<'normal' | 'date'>('date');
+
+  // State for date picker
+  const [showDatePicker, setShowDatePicker] = React.useState(false);
+  const [selectedDate, setSelectedDate] = React.useState<Date | null>(
+    new Date()
+  );
+  const [currentMonth, setCurrentMonth] = React.useState(new Date());
+  const datePickerRef = React.useRef<HTMLDivElement>(null);
+
+  // Close date picker when clicking outside
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        datePickerRef.current &&
+        !datePickerRef.current.contains(event.target as Node)
+      ) {
+        setShowDatePicker(false);
+      }
+    };
+
+    if (showDatePicker) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showDatePicker]);
+
+  // Initialize search text with today's date when in date mode
+  React.useEffect(() => {
+    if (searchMode === 'date' && !searchText) {
+      const today = new Date();
+      const formattedDate = dayjs(today).format('DDMMMYYYY').toUpperCase();
+      handleSearchTextChange(formattedDate);
+    }
+  }, [searchMode, searchText, handleSearchTextChange]);
+
+  // Calendar navigation functions
+  const goToPreviousMonth = () => {
+    setCurrentMonth(
+      new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1)
+    );
+  };
+
+  const goToNextMonth = () => {
+    setCurrentMonth(
+      new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1)
+    );
+  };
+
+  const goToToday = () => {
+    setCurrentMonth(new Date());
+  };
+
+  // Date navigation functions for day-by-day navigation
+  const goToPreviousDay = () => {
+    if (selectedDate) {
+      const previousDay = new Date(selectedDate);
+      previousDay.setDate(previousDay.getDate() - 1);
+      setSelectedDate(previousDay);
+      const formattedDate = dayjs(previousDay)
+        .format('DDMMMYYYY')
+        .toUpperCase();
+      handleSearchTextChange(formattedDate);
+    }
+  };
+
+  const goToNextDay = () => {
+    if (selectedDate) {
+      const nextDay = new Date(selectedDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+      setSelectedDate(nextDay);
+      const formattedDate = dayjs(nextDay).format('DDMMMYYYY').toUpperCase();
+      handleSearchTextChange(formattedDate);
+    }
+  };
+
+  // Generate calendar days
+  const getCalendarDays = () => {
+    const year = currentMonth.getFullYear();
+    const month = currentMonth.getMonth();
+
+    // First day of the month
+    const firstDay = new Date(year, month, 1);
+    // Last day of the month
+    const lastDay = new Date(year, month + 1, 0);
+    // First day of the week (Sunday = 0)
+    const firstDayOfWeek = firstDay.getDay();
+
+    const days = [];
+
+    // Add empty cells for days before the first day of the month
+    for (let i = 0; i < firstDayOfWeek; i++) {
+      days.push(null);
+    }
+
+    // Add days of the month
+    for (let day = 1; day <= lastDay.getDate(); day++) {
+      days.push(new Date(year, month, day));
+    }
+
+    return days;
+  };
+
+  // Handle date selection
+  const handleDateSelect = (date: Date) => {
+    setSelectedDate(date);
+    const formattedDate = dayjs(date).format('DDMMMYYYY').toUpperCase();
+    handleSearchTextChange(formattedDate);
+    setShowDatePicker(false);
+  };
+
+  // Create columns inside component to access searchMode state
+  const columns = React.useMemo(() => {
+    const createColumns = () => [
+      columnHelper.accessor('name', {
+        id: 'Expand',
+        header: ({ table }) => (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={table.getToggleAllRowsExpandedHandler()}
+            className="text-muted-foreground cursor-pointer"
+          >
+            {table.getIsAllRowsExpanded() ? (
+              <>
+                <VisuallyHidden>Compress rows</VisuallyHidden>
+                <ChevronUp className="h-4 w-4" />
+              </>
+            ) : (
+              <>
+                <VisuallyHidden>Expand rows</VisuallyHidden>
+                <ChevronDown className="h-4 w-4" />
+              </>
+            )}
+          </Button>
+        ),
+        cell: ({ row }) => {
+          if (row.getCanExpand()) {
+            return (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={row.getToggleExpandedHandler()}
+                className="text-muted-foreground cursor-pointer"
+              >
+                {row.getIsExpanded() ? (
+                  <ChevronUp className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
+              </Button>
+            );
+          }
+          return null;
+        },
+        size: 40,
+        minSize: 40,
+        maxSize: 40,
+      }),
+      columnHelper.accessor('name', {
+        id: 'Name',
+        size: 350,
+        minSize: 200,
+        header: () => (
+          <div className="flex flex-col py-1">
+            <span className="text-xs">Name</span>
+            <span className="text-[10px] font-normal text-muted-foreground">
+              Description
+            </span>
+          </div>
+        ),
+        cell: ({ row, getValue, table }) => {
+          const data = row.original!;
+
+          if (data.kind === ItemKind.Group) {
+            return (
+              <div style={{ paddingLeft: `${row.depth * 1.5}rem` }}>
+                <span className="font-normal text-muted-foreground">
+                  {getValue()}
+                </span>
+              </div>
+            );
+          } else {
+            const tags = data.dag.dag.tags || [];
+            const description = data.dag.dag.description;
+
+            return (
+              <div
+                style={{ paddingLeft: `${row.depth * 1.5}rem` }}
+                className="space-y-0.5 min-w-0"
+              >
+                <div className="font-medium text-gray-800 dark:text-gray-200 tracking-tight text-xs truncate">
+                  {getValue()}
+                </div>
+
+                {description && (
+                  <div className="text-[10px] text-muted-foreground whitespace-normal leading-tight line-clamp-2">
+                    {description}
+                  </div>
+                )}
+
+                {tags.length > 0 && (
+                  <div className="flex flex-wrap gap-0.5">
+                    {tags.map((tag) => (
+                      <Badge
+                        key={tag}
+                        variant="outline"
+                        className="text-[10px] px-1 py-0 h-3.5 rounded-sm border-blue-200 dark:border-blue-600 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-800/50 hover:text-blue-800 dark:hover:text-blue-200 transition-colors duration-200 cursor-pointer font-normal"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          const handleTagClick =
+                            table.options.meta?.handleSearchTagChange;
+                          if (handleTagClick) handleTagClick(tag);
+                        }}
+                      >
+                        <div className="h-1 w-1 rounded-full bg-primary/70 mr-0.5"></div>
+                        {tag}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          }
+        },
+        filterFn: (row, _, filterValue) => {
+          // Dual-mode search function (normal vs date-wise)
+          const data = row.original!;
+          if (data.kind === ItemKind.Group) {
+            return true;
+          }
+          if (data.kind === ItemKind.DAG) {
+            const name = data.dag.dag.name;
+            const fileName = data.dag.fileName;
+            const description = (data.dag.dag.description || '').toLowerCase();
+            const searchValue = String(filterValue);
+
+            // Normal search mode
+            if (searchMode === 'normal') {
+              const normalizedSearch = searchValue.toLowerCase();
+              const normalizedFileName = fileName.toLowerCase();
+              const normalizedName = name.toLowerCase();
+
+              if (
+                normalizedFileName.includes(normalizedSearch) ||
+                normalizedName.includes(normalizedSearch) ||
+                description.includes(normalizedSearch)
+              ) {
+                return true;
+              }
+
+              const tags = data.dag.dag.tags || [];
+              if (
+                tags.some((tag) => tag.toLowerCase().includes(normalizedSearch))
+              ) {
+                return true;
+              }
+
+              return false;
+            }
+
+            // Date-wise search mode
+            if (searchMode === 'date') {
+              const upperSearchValue = searchValue.toUpperCase();
+
+              // Helper function to extract and normalize date patterns from text
+              const extractDatePatterns = (text: string): string[] => {
+                const patterns: string[] = [];
+                const upperText = text.toUpperCase();
+
+                const dateRegex = /(\d{1,2}[-_]?[A-Z]{3}[-_]?\d{4})/g;
+                const matches = upperText.match(dateRegex);
+                if (matches) {
+                  patterns.push(...matches.map((m) => m.replace(/[-_]/g, '')));
+                }
+
+                const yearRegex = /(\d{4})/g;
+                const yearMatches = upperText.match(yearRegex);
+                if (yearMatches) {
+                  patterns.push(...yearMatches);
+                }
+
+                const monthYearRegex = /([A-Z]{3}\d{4})/g;
+                const monthYearMatches = upperText.match(monthYearRegex);
+                if (monthYearMatches) {
+                  patterns.push(...monthYearMatches);
+                }
+
+                const dayMonthRegex = /(\d{1,2}[-_]?[A-Z]{3})/g;
+                const dayMonthMatches = upperText.match(dayMonthRegex);
+                if (dayMonthMatches) {
+                  patterns.push(
+                    ...dayMonthMatches.map((m) => m.replace(/[-_]/g, ''))
+                  );
+                }
+
+                return patterns;
+              };
+
+              const matchesDatePattern = (
+                searchTerm: string,
+                text: string
+              ): boolean => {
+                const searchPatterns = extractDatePatterns(searchTerm);
+                const textPatterns = extractDatePatterns(text);
+
+                if (searchPatterns.length === 0) return false;
+
+                for (const searchPattern of searchPatterns) {
+                  for (const textPattern of textPatterns) {
+                    if (
+                      textPattern.includes(searchPattern) ||
+                      searchPattern.includes(textPattern)
+                    ) {
+                      return true;
+                    }
+                  }
+                }
+
+                const normalizedSearch = searchTerm.replace(/[-_]/g, '');
+
+                for (const textPattern of textPatterns) {
+                  if (textPattern.includes(normalizedSearch)) {
+                    return true;
+                  }
+                }
+
+                return false;
+              };
+
+              if (
+                matchesDatePattern(upperSearchValue, fileName) ||
+                matchesDatePattern(upperSearchValue, name)
+              ) {
+                return true;
+              }
+
+              const normalizedSearch = upperSearchValue.toLowerCase();
+              const normalizedFileName = fileName.toLowerCase();
+              const normalizedName = name.toLowerCase();
+
+              if (
+                normalizedFileName.includes(normalizedSearch) ||
+                normalizedName.includes(normalizedSearch)
+              ) {
+                return true;
+              }
+            }
+          }
+          return false;
+        },
+      }),
+      columnHelper.accessor('kind', {
+        id: 'Status',
+        size: 100,
+        minSize: 100,
+        maxSize: 120,
+        header: () => (
+          <div className="flex flex-col py-1">
+            <span className="text-xs">Status</span>
+            <span className="text-[10px] font-normal text-muted-foreground">
+              Latest status
+            </span>
+          </div>
+        ),
+        cell: ({ row, table }) => {
+          const data = row.original!;
+          if (data.kind === ItemKind.DAG) {
+            const status = data.dag.latestDAGRun.status;
+            const statusLabel = data.dag.latestDAGRun.statusLabel;
+
+            return (
+              <div
+                className="cursor-pointer hover:bg-muted/50 rounded px-1 py-0.5 transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const handleStatusClick =
+                    table.options.meta?.handleSearchStatusChange;
+                  if (handleStatusClick) {
+                    handleStatusClick(status.toString());
+                  }
+                }}
+              >
+                <StatusChip status={status} size="xs">
+                  {statusLabel}
+                </StatusChip>
+              </div>
+            );
+          }
+          return null;
+        },
+      }),
+      columnHelper.accessor('kind', {
+        id: 'LastRun',
+        size: 150,
+        minSize: 150,
+        maxSize: 180,
+        header: () => (
+          <div className="flex flex-col py-1">
+            <span className="text-xs">Last Run</span>
+            <span className="text-[10px] font-normal text-muted-foreground">
+              {getConfig().tz || 'Local Timezone'}
+            </span>
+          </div>
+        ),
+        cell: ({ row }) => {
+          const data = row.original!;
+          if (data.kind !== ItemKind.DAG) {
+            return null;
+          }
+
+          const { startedAt, finishedAt, status } = data.dag.latestDAGRun;
+
+          if (!startedAt || startedAt === '-') {
+            return <span className="font-normal text-muted-foreground">-</span>;
+          }
+
+          const formattedStartedAt = startedAt;
+          let durationContent: React.ReactNode = null;
+
+          if (finishedAt && finishedAt !== '-') {
+            const start = dayjs(startedAt);
+            const end = dayjs(finishedAt);
+
+            if (start.isValid() && end.isValid()) {
+              const durationMs = end.diff(start);
+
+              if (durationMs > 0) {
+                const duration = dayjs.duration(durationMs);
+                const days = Math.floor(duration.asDays());
+                const hours = duration.hours();
+                const minutes = duration.minutes();
+                const seconds = duration.seconds();
+
+                const parts: string[] = [];
+                if (days > 0) parts.push(`${days}d`);
+                if (hours > 0) parts.push(`${hours}h`);
+                if (minutes > 0) parts.push(`${minutes}m`);
+                if (seconds > 0 && parts.length === 0)
+                  parts.push(`${seconds}s`);
+
+                const formattedDuration = parts.join(' ');
+
+                durationContent = (
+                  <div className="text-[10px] text-muted-foreground">
+                    {formattedDuration}
+                  </div>
+                );
+              }
+            }
+          } else if (status === 1) {
+            durationContent = (
+              <div className="text-[10px] text-muted-foreground">(Running)</div>
+            );
+          }
+
+          return (
+            <div className="space-y-0.5">
+              <span className="font-normal text-foreground/70 text-xs">
+                {formattedStartedAt}
+              </span>
+              {durationContent}
+            </div>
+          );
+        },
+      }),
+      columnHelper.accessor('kind', {
+        id: 'ScheduleAndNextRun',
+        size: 180,
+        minSize: 150,
+        maxSize: 200,
+        header: () => (
+          <div className="flex flex-col py-1">
+            <span className="text-xs">Schedule</span>
+            <span className="text-[10px] font-normal text-muted-foreground">
+              Next execution
+            </span>
+          </div>
+        ),
+        cell: ({ row }) => {
+          const data = row.original!;
+          if (data.kind === ItemKind.DAG) {
+            const schedules = data.dag.dag.schedule || [];
+
+            if (schedules.length === 0) {
+              return null;
+            }
+
+            const scheduleContent = (
+              <div className="flex flex-wrap gap-0.5">
+                {schedules.map((schedule) => (
+                  <Badge
+                    key={schedule.expression}
+                    variant="outline"
+                    className="text-[10px] font-normal px-1 py-0 h-3.5"
+                  >
+                    {schedule.expression}
+                  </Badge>
+                ))}
+              </div>
+            );
+
+            let nextRunContent: React.ReactNode | null = null;
+            if (!data.dag.suspended && schedules.length > 0) {
+              const nextRun = getNextSchedule(data.dag);
+              if (nextRun) {
+                nextRunContent = (
+                  <div className="text-[10px] text-muted-foreground font-normal leading-tight">
+                    <Ticker intervalMs={1000}>
+                      {() => {
+                        const ms = nextRun.getTime() - new Date().getTime();
+                        return <span>Run in {formatMs(ms)}</span>;
+                      }}
+                    </Ticker>
+                  </div>
+                );
+              }
+            } else if (data.dag.suspended) {
+              nextRunContent = (
+                <div className="text-[10px] text-muted-foreground font-normal leading-tight">
+                  Suspended
+                </div>
+              );
+            }
+
+            return (
+              <div className="space-y-0.5">
+                {scheduleContent}
+                {nextRunContent}
+              </div>
+            );
+          }
+          return null;
+        },
+      }),
+      columnHelper.accessor('kind', {
+        id: 'Live',
+        size: 70,
+        minSize: 70,
+        maxSize: 70,
+        header: () => (
+          <div className="flex flex-col py-1">
+            <span className="text-xs">Live</span>
+            <span className="text-[10px] font-normal text-muted-foreground">
+              Auto-schedule
+            </span>
+          </div>
+        ),
+        cell: ({ row, table }) => {
+          const data = row.original!;
+          if (data.kind !== ItemKind.DAG) {
+            return null;
+          }
+          return (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="flex justify-center scale-90"
+            >
+              <LiveSwitch
+                dag={data.dag}
+                refresh={table.options.meta?.refreshFn}
+                aria-label={`Toggle ${data.name}`}
+              />
+            </div>
+          );
+        },
+      }),
+      columnHelper.display({
+        id: 'Actions',
+        size: 100,
+        minSize: 100,
+        maxSize: 100,
+        header: () => (
+          <div className="flex flex-col items-center py-1">
+            <span className="text-xs">Actions</span>
+            <span className="text-[10px] font-normal text-muted-foreground">
+              Operations
+            </span>
+          </div>
+        ),
+        cell: ({ row, table }) => {
+          const data = row.original!;
+          if (data.kind === ItemKind.Group) {
+            return null;
+          }
+          return (
+            <div
+              className="flex justify-center scale-90"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <DAGActions
+                dag={data.dag.dag}
+                status={data.dag.latestDAGRun}
+                fileName={data.dag.fileName}
+                label={false}
+                refresh={table.options.meta?.refreshFn}
+              />
+            </div>
+          );
+        },
+      }),
+    ];
+
+    return createColumns();
+  }, [searchMode]);
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>(
     []
   );
@@ -1085,19 +1287,260 @@ function DAGTable({
         <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-2">
           {/* Search and Filter Row */}
           <div className="flex flex-1 gap-2 min-w-0">
+            {/* Search Mode Toggle Icon */}
+            <div className="flex items-center justify-center w-10 h-9 bg-muted/30 rounded-md border">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      setSearchMode(searchMode === 'normal' ? 'date' : 'normal')
+                    }
+                    className="h-7 w-7 p-0 hover:bg-muted/50"
+                  >
+                    {searchMode === 'normal' ? (
+                      <Search className="h-4 w-4" />
+                    ) : (
+                      <Calendar className="h-4 w-4" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>
+                    Switch to {searchMode === 'normal' ? 'Date' : 'Normal'}{' '}
+                    search
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+
             {/* Search input */}
             <div className="relative flex-1 min-w-0">
-              <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-                <Search className="h-4 w-4" />
-              </div>
-              <Input
-                type="search"
-                placeholder="Search definitions..."
-                value={searchText}
-                onChange={(e) => handleSearchTextChange(e.target.value)}
-                className="pl-10 h-9 border border-input rounded-md w-full"
-              />
-              {searchText && (
+              {searchMode === 'date' ? (
+                /* Date chooser mode */
+                <div className="relative" ref={datePickerRef}>
+                  <div className="flex gap-1">
+                    {/* Previous Day Button */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={goToPreviousDay}
+                      className="h-9 w-9 p-0 flex-shrink-0"
+                      disabled={!selectedDate}
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+
+                    {/* Date Display Button */}
+                    <Button
+                      variant="outline"
+                      onClick={() => setShowDatePicker(!showDatePicker)}
+                      className="flex-1 h-9 justify-start text-left font-normal pl-10 pr-10"
+                    >
+                      <Calendar className="h-4 w-4 text-muted-foreground" />
+                      {selectedDate
+                        ? dayjs(selectedDate).format('MMM DD, YYYY')
+                        : searchText
+                          ? searchText
+                          : 'Choose a date to search...'}
+
+                      {/* Clear search button inside the date button */}
+                      {searchText && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSearchTextChange('');
+                            setSelectedDate(null);
+                          }}
+                          className="absolute right-10 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors z-10"
+                          aria-label="Clear search"
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                          </svg>
+                        </button>
+                      )}
+                    </Button>
+
+                    {/* Next Day Button */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={goToNextDay}
+                      className="h-9 w-9 p-0 flex-shrink-0"
+                      disabled={!selectedDate}
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+
+                  {/* Calendar Component */}
+                  {showDatePicker && (
+                    <div className="absolute top-full left-0 mt-1 p-4 bg-white dark:bg-zinc-900 border rounded-lg shadow-lg z-20 w-80">
+                      <div className="space-y-4">
+                        {/* Calendar Header */}
+                        <div className="flex items-center justify-between">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={goToPreviousMonth}
+                            className="h-8 w-8 p-0"
+                          >
+                            <ChevronLeft className="h-4 w-4" />
+                          </Button>
+                          <div className="flex flex-col items-center">
+                            <h3 className="font-medium text-sm">
+                              {currentMonth.toLocaleDateString('en-US', {
+                                month: 'long',
+                                year: 'numeric',
+                              })}
+                            </h3>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={goToToday}
+                              className="h-6 px-2 text-xs text-muted-foreground"
+                            >
+                              Today
+                            </Button>
+                          </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={goToNextMonth}
+                            className="h-8 w-8 p-0"
+                          >
+                            <ChevronRight className="h-4 w-4" />
+                          </Button>
+                        </div>
+
+                        {/* Calendar Grid */}
+                        <div className="grid grid-cols-7 gap-1">
+                          {/* Day headers */}
+                          {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map(
+                            (day) => (
+                              <div
+                                key={day}
+                                className="text-xs font-medium text-muted-foreground text-center py-2"
+                              >
+                                {day}
+                              </div>
+                            )
+                          )}
+
+                          {/* Calendar days */}
+                          {getCalendarDays().map((date, index) => {
+                            if (!date) {
+                              return <div key={index} className="h-8" />;
+                            }
+
+                            const isToday = dayjs(date).isSame(dayjs(), 'day');
+                            const isSelected =
+                              selectedDate &&
+                              dayjs(date).isSame(dayjs(selectedDate), 'day');
+
+                            return (
+                              <button
+                                key={date.toISOString()}
+                                onClick={() => handleDateSelect(date)}
+                                className={`
+                                  h-8 w-8 text-xs rounded-md transition-colors
+                                  ${
+                                    isSelected
+                                      ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                                      : isToday
+                                        ? 'bg-muted font-medium hover:bg-muted/80'
+                                        : 'hover:bg-muted/50'
+                                  }
+                                `}
+                              >
+                                {date.getDate()}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Quick Search Buttons */}
+                        <div className="border-t pt-3">
+                          <div className="text-xs font-medium mb-2 text-muted-foreground">
+                            Quick Searches
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                handleSearchTextChange(
+                                  dayjs().format('MMMYYYY').toUpperCase()
+                                );
+                                setShowDatePicker(false);
+                              }}
+                              className="h-6 px-2 text-xs"
+                            >
+                              This Month
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                handleSearchTextChange(dayjs().format('YYYY'));
+                                setShowDatePicker(false);
+                              }}
+                              className="h-6 px-2 text-xs"
+                            >
+                              This Year
+                            </Button>
+                          </div>
+                        </div>
+
+                        {/* Manual Input */}
+                        <div className="border-t pt-3">
+                          <div className="text-xs font-medium mb-2 text-muted-foreground">
+                            Or Enter Pattern
+                          </div>
+                          <Input
+                            type="text"
+                            placeholder="e.g., 20SEP2025, SEP2025, 2025"
+                            value={searchText}
+                            onChange={(e) =>
+                              handleSearchTextChange(e.target.value)
+                            }
+                            className="h-8 text-xs"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Normal search mode */
+                <>
+                  <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+                    <Search className="h-4 w-4" />
+                  </div>
+                  <Input
+                    type="search"
+                    placeholder="Search by name, description, tags..."
+                    value={searchText}
+                    onChange={(e) => handleSearchTextChange(e.target.value)}
+                    className="pl-10 h-9 border border-input rounded-md"
+                  />
+                </>
+              )}
+
+              {searchMode === 'normal' && searchText && (
                 <button
                   onClick={() => handleSearchTextChange('')}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
@@ -1118,6 +1561,19 @@ function DAGTable({
                     <line x1="6" y1="6" x2="18" y2="18"></line>
                   </svg>
                 </button>
+              )}
+
+              {/* Search help text */}
+              {searchText && searchMode === 'normal' && (
+                <div className="absolute top-full left-0 right-0 mt-1 p-2 bg-muted/90 text-xs text-muted-foreground rounded border shadow-sm z-10">
+                  <div className="font-medium mb-1">Normal Search:</div>
+                  <div className="space-y-1">
+                    <div>• Search by DAG name or file name</div>
+                    <div>• Search by description content</div>
+                    <div>• Search by tags</div>
+                    <div>• Case-insensitive partial matching</div>
+                  </div>
+                </div>
               )}
             </div>
 
