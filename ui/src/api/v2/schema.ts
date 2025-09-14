@@ -68,6 +68,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/dags/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate a DAG specification
+         * @description Validates a DAG YAML specification without persisting any changes.
+         *
+         *     Returns a list of validation errors. When the spec can be partially parsed,
+         *     the response may also include parsed DAG details built with error-tolerant loading.
+         *
+         */
+        post: operations["validateDAGSpec"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/dags/{fileName}": {
         parameters: {
             query?: never;
@@ -309,7 +333,15 @@ export interface paths {
          */
         get: operations["listDAGRuns"];
         put?: never;
-        post?: never;
+        /**
+         * Create and execute a DAG-run from inline spec
+         * @description Creates a DAG-run directly from a provided DAG specification (YAML) and starts execution.
+         *
+         *     This endpoint does not require a pre-existing DAG file; the supplied `spec` is parsed and validated
+         *     similarly to `/dags/validate`, and the run is executed immediately if valid.
+         *
+         */
+        post: operations["executeDAGRunFromSpec"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1327,6 +1359,8 @@ export interface operations {
             content: {
                 "application/json": {
                     name: components["schemas"]["DAGName"];
+                    /** @description Optional DAG spec in YAML format to initialize the DAG. If provided, the spec will be validated before creation. */
+                    spec?: string;
                 };
             };
         };
@@ -1340,6 +1374,62 @@ export interface operations {
                     "application/json": {
                         /** @description Name of the newly created DAG */
                         name: string;
+                    };
+                };
+            };
+            /** @description Invalid DAG spec */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    validateDAGSpec: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description DAG specification in YAML format */
+                    spec: string;
+                    /** @description Optional name to use when the spec omits a name */
+                    name?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Validation result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description True if the spec is valid (no errors) */
+                        valid: boolean;
+                        dag?: components["schemas"]["DAGDetails"];
+                        /** @description List of validation errors */
+                        errors: string[];
                     };
                 };
             };
@@ -1972,6 +2062,77 @@ export interface operations {
                         /** @description List of DAG-runs with their status and metadata */
                         dagRuns: components["schemas"]["DAGRunSummary"][];
                     };
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    executeDAGRunFromSpec: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description DAG specification in YAML format */
+                    spec: string;
+                    /** @description Optional name to use when the spec omits a name */
+                    name?: string;
+                    /** @description Parameters to pass to the DAG-run in JSON format */
+                    params?: string;
+                    /** @description Optional ID for the DAG-run; if omitted, a new one is generated */
+                    dagRunId?: string;
+                    /**
+                     * @description If true, prevent starting if a DAG with the same name is already running (returns 409)
+                     * @default false
+                     */
+                    singleton?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Run created and started */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description ID of the created DAG-run */
+                        dagRunId: string;
+                    };
+                };
+            };
+            /** @description Invalid DAG spec or parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description A DAG with the same name is already running and singleton is enabled */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description Generic error response */
