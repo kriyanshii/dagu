@@ -173,10 +173,10 @@ func TestPollerErrorHandling(t *testing.T) {
 		}
 
 		executorError := fmt.Errorf("execution failed")
-		var executionAttempted bool
+		var executionAttempted atomic.Bool
 		mockExecutor := &mockTaskExecutor{
 			ExecuteFunc: func(_ context.Context, _ *coordinatorv1.Task) error {
-				executionAttempted = true
+				executionAttempted.Store(true)
 				return executorError
 			},
 		}
@@ -192,7 +192,7 @@ func TestPollerErrorHandling(t *testing.T) {
 		cancel()
 
 		// Verify execution was attempted despite error
-		assert.True(t, executionAttempted)
+		assert.True(t, executionAttempted.Load())
 	})
 
 	t.Run("ContinueOnPollError", func(t *testing.T) {
@@ -215,10 +215,10 @@ func TestPollerErrorHandling(t *testing.T) {
 			return &coordinatorv1.Task{DagRunId: "success-after-retry"}, nil
 		}
 
-		var taskExecuted bool
+		var taskExecuted atomic.Bool
 		mockExecutor := &mockTaskExecutor{
 			ExecuteFunc: func(_ context.Context, _ *coordinatorv1.Task) error {
-				taskExecuted = true
+				taskExecuted.Store(true)
 				cancel() // Stop after execution
 				return nil
 			},
@@ -231,7 +231,7 @@ func TestPollerErrorHandling(t *testing.T) {
 		poller.Run(ctx)
 
 		// Should have retried and eventually succeeded
-		assert.True(t, taskExecuted)
+		assert.True(t, taskExecuted.Load())
 		assert.GreaterOrEqual(t, atomic.LoadInt32(&pollAttempts), int32(4))
 	})
 }

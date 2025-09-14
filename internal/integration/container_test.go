@@ -1,12 +1,17 @@
 package integration_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/dagu-org/dagu/internal/digraph/status"
 	"github.com/dagu-org/dagu/internal/test"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDockerExecutor(t *testing.T) {
@@ -281,4 +286,155 @@ steps:
 	dag.AssertOutputs(t, map[string]any{
 		"OUT1": "pull policy test",
 	})
+}
+
+func TestContainerStartup_Entrypoint_WithHealthyFallback(t *testing.T) {
+	t.Parallel()
+
+	th := test.Setup(t)
+
+	// Use nginx which stays up by default; most tags have no healthcheck,
+	// so waitFor: healthy should fall back to running.
+	dag := th.DAG(t, `
+name: container-startup-entrypoint
+container:
+  image: nginx:alpine
+  startup: entrypoint
+  waitFor: healthy
+steps:
+  - name: s1
+    command: echo entrypoint-ok
+    output: ENTRYPOINT_OK
+`)
+
+	dag.Agent().RunSuccess(t)
+	dag.AssertLatestStatus(t, status.Success)
+	dag.AssertOutputs(t, map[string]any{
+		"ENTRYPOINT_OK": "entrypoint-ok",
+	})
+}
+
+func TestContainerStartup_Command_LongRunning(t *testing.T) {
+	t.Parallel()
+
+	th := test.Setup(t)
+
+	dag := th.DAG(t, `
+name: container-startup-command
+container:
+  image: alpine:3
+  startup: command
+  command: ["sh", "-c", "while true; do sleep 3600; done"]
+steps:
+  - name: s1
+    command: echo command-ok
+    output: COMMAND_OK
+`)
+
+	dag.Agent().RunSuccess(t)
+	dag.AssertLatestStatus(t, status.Success)
+	dag.AssertOutputs(t, map[string]any{
+		"COMMAND_OK": "command-ok",
+	})
+}
+
+// TestDockerExecutor_ExecInExistingContainer verifies that a step-level Docker executor
+// can execute a command in an already-running container by specifying `containerName`
+// without an `image`. This reproduces the reported regression where containerName
+// was ignored and caused an error: "containerName or image must be specified".
+func TestDockerExecutor_ExecInExistingContainer(t *testing.T) {
+	t.Parallel()
+
+	th := test.Setup(t)
+
+	// Ensure the alpine image exists locally (avoid pulling via SDK in tests)
+	ensureImage := th.DAG(t, `
+container:
+  image: alpine:3
+steps:
+  - name: s1
+    command: "true"
+`)
+	ensureImage.Agent().RunSuccess(t)
+
+	ctx := context.Background()
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("failed to create docker client: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+
+	// Create a long-running container we can exec into
+	cname := fmt.Sprintf("dagu-integ-existing-%d", time.Now().UnixNano())
+	created, err := cli.ContainerCreate(
+		ctx,
+		&container.Config{
+			Image: "alpine:3",
+			Cmd:   []string{"sh", "-c", "while true; do sleep 3600; done"},
+		},
+		&container.HostConfig{AutoRemove: true},
+		nil,
+		nil,
+		cname,
+	)
+	if err != nil {
+		t.Fatalf("failed to create container: %v", err)
+	}
+
+	if err := cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+		t.Fatalf("failed to start container: %v", err)
+	}
+
+	// Ensure cleanup
+	t.Cleanup(func() {
+		// Stop (ignore error if already stopped) and remove the container
+		_ = cli.ContainerStop(context.Background(), created.ID, container.StopOptions{})
+		_ = cli.ContainerRemove(context.Background(), created.ID, container.RemoveOptions{Force: true})
+	})
+
+	// Run a DAG step that execs into the existing container via containerName
+	dag := th.DAG(t, fmt.Sprintf(`
+name: exec-in-existing-container
+steps:
+  - name: exec-existing
+    executor:
+      type: docker
+      config:
+        containerName: %s
+        exec:
+          workingDir: /
+    command: echo hello-existing
+    output: EXEC_EXISTING_OUT
+`, cname))
+
+	dag.Agent().RunSuccess(t)
+	dag.AssertLatestStatus(t, status.Success)
+	dag.AssertOutputs(t, map[string]any{
+		"EXEC_EXISTING_OUT": "hello-existing",
+	})
+}
+
+func TestDockerExecutor_ErrorIncludesRecentStderr(t *testing.T) {
+	t.Parallel()
+
+	th := test.Setup(t)
+
+	dag := th.DAG(t, `
+steps:
+  - name: fail
+    executor:
+      type: docker
+      config:
+        image: alpine:3
+        autoRemove: true
+    command: sh -c 'echo first 1>&2; echo second 1>&2; exit 7'
+`)
+
+	agent := dag.Agent()
+
+	err := agent.Run(agent.Context)
+	require.Error(t, err)
+	// Should contain recent stderr from docker executor
+	require.Contains(t, err.Error(), "first")
+	require.Contains(t, err.Error(), "second")
 }

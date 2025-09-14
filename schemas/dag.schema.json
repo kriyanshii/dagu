@@ -901,6 +901,20 @@
     "container": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "startup": { "const": "command" } },
+            "required": ["startup"]
+          },
+          "then": {
+            "required": ["command"],
+            "properties": {
+              "command": { "minItems": 1 }
+            }
+          }
+        }
+      ],
       "properties": {
         "image": {
           "type": "string",
@@ -949,6 +963,31 @@
           "type": "string",
           "description": "Network mode for the container (e.g., 'host', 'bridge', 'none', or a custom network name)."
         },
+        "startup": {
+          "type": "string",
+          "enum": ["keepalive", "entrypoint", "command"],
+          "default": "keepalive",
+          "description": "Startup mode for the DAG-level container: 'keepalive' uses an internal keepalive/sleep, 'entrypoint' honors the image's ENTRYPOINT/CMD, 'command' runs the provided command array."
+        },
+        "command": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Command to execute when startup is 'command'. Must be a non-empty array."
+        },
+        "waitFor": {
+          "type": "string",
+          "enum": ["running", "healthy"],
+          "default": "running",
+          "description": "Readiness condition before steps execute: 'running' waits for container to run; 'healthy' waits for Docker healthcheck to report healthy."
+        },
+        "logPattern": {
+          "type": "string",
+          "description": "Optional regex; if set, waits for this pattern to appear in container logs before steps run."
+        },
+        "restartPolicy": {
+          "type": "string",
+          "description": "Docker restart policy for the container: 'no', 'always', or 'unless-stopped'."
+        },
         "keepContainer": {
           "type": "boolean",
           "default": false,
@@ -979,6 +1018,10 @@
           "type": "string",
           "description": "Path to the SSH private key file. If not specified, defaults are tried: ~/.ssh/id_rsa, ~/.ssh/id_ecdsa, ~/.ssh/id_ed25519, ~/.ssh/id_dsa."
         },
+        "password": {
+          "type": "string",
+          "description": "SSH password for authentication (not recommended; prefer key-based auth)."
+        },
         "strictHostKey": {
           "type": "boolean",
           "default": true,
@@ -991,7 +1034,7 @@
         }
       },
       "required": ["user", "host"],
-      "description": "SSH configuration for remote command execution. Can be specified at DAG level for reuse across steps, or at step level for specific overrides. Note: Password authentication is not supported at DAG level for security reasons."
+      "description": "SSH configuration for remote command execution. Can be specified at DAG level for reuse across steps, or at step level for specific overrides. Password authentication is supported but key-based auth is recommended."
     }
   }
 }

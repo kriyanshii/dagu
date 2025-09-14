@@ -130,6 +130,11 @@ container:
   ports:
     - "8080:8080"
   network: host
+  startup: keepalive       # keepalive | entrypoint | command
+  command: ["sh", "-c", "my-daemon"]   # when startup: command
+  waitFor: running         # running | healthy
+  logPattern: "Ready to accept connections"  # optional regex
+  restartPolicy: unless-stopped              # optional: no|always|unless-stopped
   keepContainer: false     # Keep container after DAG run
 ```
 
@@ -138,6 +143,8 @@ container:
 > This means step commands do not pass through the image’s `ENTRYPOINT`/`CMD`.
 > If your image’s entrypoint dispatches subcommands, invoke it explicitly in
 > the step command (see [Execution Model and Entrypoint Behavior](/writing-workflows/container#execution-model-and-entrypoint-behavior)).
+> Readiness waiting (running/healthy and optional logPattern) times out after
+> 120 seconds with a clear error including the last known state.
 
 ### SSH Configuration
 
@@ -151,6 +158,7 @@ ssh:
   host: production.example.com
   port: "22"           # Optional, defaults to "22"
   key: ~/.ssh/id_rsa   # Optional, defaults to standard keys
+  password: "${SSH_PASSWORD}" # Optional; prefer keys for security
   strictHostKey: true  # Optional, defaults to true for security
   knownHostFile: ~/.ssh/known_hosts  # Optional, defaults to ~/.ssh/known_hosts
 ```
@@ -182,7 +190,7 @@ steps:
 **Important Notes:**
 - SSH and container fields are mutually exclusive at the DAG level
 - Step-level SSH configuration completely overrides DAG-level configuration (no partial overrides)
-- For security, password authentication is not supported at the DAG level
+- Password authentication is supported but not recommended; prefer key-based auth
 - Default SSH keys are tried if no key is specified: `~/.ssh/id_rsa`, `~/.ssh/id_ecdsa`, `~/.ssh/id_ed25519`, `~/.ssh/id_dsa`
 
 ### Working Directory and Volume Resolution

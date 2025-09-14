@@ -104,32 +104,59 @@ func (e *docker) Run(ctx context.Context) error {
 
 	defer cancelFunc()
 
+	// Wrap stderr with a tail writer to capture recent output for inclusion in
+	// error messages.
+	tw := newTailWriter(e.stderr, 0)
+	e.stderr = tw
+
 	cli := getContainerClient(ctx)
 	if cli != nil {
 		// If it exists, use the client from the context
 		// This allows sharing the same container client across multiple executors.
 		// Don't set WorkingDir - use the container's default working directory
 		execOpts := container.ExecOptions{}
+
+		// Build command only when a command is explicitly provided.
+		// If command is empty, avoid passing an empty string which overrides image CMD.
+		var cmd []string
+		if e.step.Command != "" {
+			cmd = append([]string{e.step.Command}, e.step.Args...)
+		}
+
 		exitCode, err := cli.Exec(
 			ctx,
-			append([]string{e.step.Command}, e.step.Args...),
+			cmd,
 			e.stdout, e.stderr,
 			execOpts,
 		)
 		e.mu.Lock()
 		e.exitCode = exitCode
 		e.mu.Unlock()
+		if err != nil {
+			if tail := tw.Tail(); tail != "" {
+				return fmt.Errorf("%w\nrecent stderr (tail):\n%s", err, tail)
+			}
+		}
 		return err
 	}
 
 	if err := e.container.Init(ctx); err != nil {
+		if tail := tw.Tail(); tail != "" {
+			return fmt.Errorf("failed to setup container: %w\nrecent stderr (tail):\n%s", err, tail)
+		}
 		return fmt.Errorf("failed to setup container: %w", err)
 	}
 	defer e.container.Close(ctx)
 
+	// Build command only when explicitly provided; otherwise use image default CMD/ENTRYPOINT.
+	var cmd []string
+	if e.step.Command != "" {
+		cmd = append([]string{e.step.Command}, e.step.Args...)
+	}
+
 	exitCode, err := e.container.Run(
 		ctx,
-		append([]string{e.step.Command}, e.step.Args...),
+		cmd,
 		e.stdout, e.stderr,
 	)
 
@@ -137,6 +164,11 @@ func (e *docker) Run(ctx context.Context) error {
 	e.exitCode = exitCode
 	e.mu.Unlock()
 
+	if err != nil {
+		if tail := tw.Tail(); tail != "" {
+			return fmt.Errorf("%w\nrecent stderr (tail):\n%s", err, tail)
+		}
+	}
 	return err
 }
 
