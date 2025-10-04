@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, Activity, Search, RefreshCw } from 'lucide-react';
+import { Layers, Activity, Search, RefreshCw, Trash2 } from 'lucide-react';
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
 import {
@@ -8,19 +8,24 @@ import {
   TooltipTrigger,
 } from '../../components/ui/tooltip';
 import { AppBarContext } from '../../contexts/AppBarContext';
-import { useQuery } from '../../hooks/api';
+import { useQuery, useClient } from '../../hooks/api';
 import type { components } from '../../api/v2/schema';
 import QueueMetrics from '../../features/queues/components/QueueMetrics';
 import QueueList from '../../features/queues/components/QueueList';
 import { DAGRunDetailsModal } from '../../features/dag-runs/components/dag-run-details';
+import ConfirmModal from '../../ui/ConfirmModal';
 import { cn } from '../../lib/utils';
 
 function Queues() {
   const appBarContext = React.useContext(AppBarContext);
+  const client = useClient();
   const [searchText, setSearchText] = React.useState('');
   const [isRefreshing, setIsRefreshing] = React.useState(false);
-  const [selectedQueueType, setSelectedQueueType] = React.useState<string>('all');
-  
+  const [selectedQueueType, setSelectedQueueType] =
+    React.useState<string>('all');
+  const [isClearing, setIsClearing] = React.useState(false);
+  const [showClearConfirm, setShowClearConfirm] = React.useState(false);
+
   // State for DAG run modal
   const [modalDAGRun, setModalDAGRun] = React.useState<{
     name: string;
@@ -48,25 +53,78 @@ function Queues() {
     setTimeout(() => setIsRefreshing(false), 500);
   };
 
+  const handleClearQueue = async () => {
+    setIsClearing(true);
+    try {
+      // Get all queued DAG runs from all queues
+      const queuedRuns: Array<{ name: string; dagRunId: string }> = [];
+
+      if (data?.queues) {
+        for (const queue of data.queues) {
+          if (queue.queued) {
+            for (const dagRun of queue.queued) {
+              queuedRuns.push({
+                name: dagRun.name,
+                dagRunId: dagRun.dagRunId,
+              });
+            }
+          }
+        }
+      }
+
+      // Dequeue all queued DAG runs
+      await Promise.all(
+        queuedRuns.map(async (dagRun) => {
+          try {
+            await client.GET('/dag-runs/{name}/{dagRunId}/dequeue', {
+              params: {
+                path: {
+                  name: dagRun.name,
+                  dagRunId: dagRun.dagRunId,
+                },
+                query: {
+                  remoteNode: appBarContext.selectedRemoteNode || 'local',
+                },
+              },
+            });
+          } catch (error) {
+            console.error(
+              `Failed to dequeue ${dagRun.name}:${dagRun.dagRunId}:`,
+              error
+            );
+          }
+        })
+      );
+
+      // Refresh the data
+      await mutate();
+    } catch (error) {
+      console.error('Failed to clear queue:', error);
+    } finally {
+      setIsClearing(false);
+      setShowClearConfirm(false);
+    }
+  };
+
   // Filter queues based on search text and type
   const filteredQueues = React.useMemo(() => {
     if (!data?.queues) return [];
-    
+
     let filtered = data.queues;
-    
+
     // Filter by search text
     if (searchText) {
       const search = searchText.toLowerCase();
-      filtered = filtered.filter((queue) => 
+      filtered = filtered.filter((queue) =>
         queue.name.toLowerCase().includes(search)
       );
     }
-    
+
     // Filter by queue type
     if (selectedQueueType !== 'all') {
       filtered = filtered.filter((queue) => queue.type === selectedQueueType);
     }
-    
+
     // Sort alphabetically by queue name for stable display
     return filtered.sort((a, b) => a.name.localeCompare(b.name));
   }, [data?.queues, searchText, selectedQueueType]);
@@ -74,25 +132,39 @@ function Queues() {
   // Calculate metrics
   const metrics = React.useMemo(() => {
     const queues = data?.queues || [];
-    
+
     // Count queues by type
-    const globalQueues = queues.filter(q => q.type === 'global').length;
-    const dagBasedQueues = queues.filter(q => q.type === 'dag-based').length;
-    
+    const globalQueues = queues.filter((q) => q.type === 'global').length;
+    const dagBasedQueues = queues.filter((q) => q.type === 'dag-based').length;
+
     // Count active queues (those with running or queued items)
-    const activeQueues = queues.filter(q => 
-      (q.running?.length || 0) > 0 || (q.queued?.length || 0) > 0
+    const activeQueues = queues.filter(
+      (q) => (q.running?.length || 0) > 0 || (q.queued?.length || 0) > 0
     ).length;
-    
-    const totalRunning = queues.reduce((sum, q) => sum + (q.running?.length || 0), 0);
-    const totalQueued = queues.reduce((sum, q) => sum + (q.queued?.length || 0), 0);
+
+    const totalRunning = queues.reduce(
+      (sum, q) => sum + (q.running?.length || 0),
+      0
+    );
+    const totalQueued = queues.reduce(
+      (sum, q) => sum + (q.queued?.length || 0),
+      0
+    );
     const totalActive = totalRunning + totalQueued;
-    
+
     // Calculate utilization for global queues only (DAG-based queues are isolated and don't compete for shared capacity)
-    const globalQueuesList = queues.filter(q => q.type === 'global');
-    const globalRunning = globalQueuesList.reduce((sum, q) => sum + (q.running?.length || 0), 0);
-    const globalCapacity = globalQueuesList.filter(q => q.maxConcurrency).reduce((sum, q) => sum + (q.maxConcurrency || 0), 0);
-    const utilization = globalCapacity > 0 ? Math.round((globalRunning / globalCapacity) * 100) : 0;
+    const globalQueuesList = queues.filter((q) => q.type === 'global');
+    const globalRunning = globalQueuesList.reduce(
+      (sum, q) => sum + (q.running?.length || 0),
+      0
+    );
+    const globalCapacity = globalQueuesList
+      .filter((q) => q.maxConcurrency)
+      .reduce((sum, q) => sum + (q.maxConcurrency || 0), 0);
+    const utilization =
+      globalCapacity > 0
+        ? Math.round((globalRunning / globalCapacity) * 100)
+        : 0;
 
     return {
       globalQueues,
@@ -106,12 +178,15 @@ function Queues() {
   }, [data?.queues]);
 
   // Handle DAG run click
-  const handleDAGRunClick = React.useCallback((dagRun: components['schemas']['DAGRunSummary']) => {
-    setModalDAGRun({
-      name: dagRun.name,
-      dagRunId: dagRun.dagRunId,
-    });
-  }, []);
+  const handleDAGRunClick = React.useCallback(
+    (dagRun: components['schemas']['DAGRunSummary']) => {
+      setModalDAGRun({
+        name: dagRun.name,
+        dagRunId: dagRun.dagRunId,
+      });
+    },
+    []
+  );
 
   if (error) {
     const errorData = error as components['schemas']['Error'];
@@ -165,6 +240,25 @@ function Queues() {
                 ({filteredQueues.length} of {data?.queues?.length})
               </span>
             )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowClearConfirm(true)}
+                  disabled={isClearing || metrics.totalQueued === 0}
+                  className="h-7 px-2 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20"
+                >
+                  <Trash2
+                    className={cn('h-3 w-3', isClearing && 'animate-pulse')}
+                  />
+                  <span className="ml-1 text-xs">Clear Queue</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Remove all queued DAG runs from all queues</p>
+              </TooltipContent>
+            </Tooltip>
             <Button
               variant="ghost"
               size="sm"
@@ -172,10 +266,9 @@ function Queues() {
               disabled={isRefreshing}
               className="h-7 px-2"
             >
-              <RefreshCw className={cn(
-                "h-3 w-3",
-                isRefreshing && "animate-spin"
-              )} />
+              <RefreshCw
+                className={cn('h-3 w-3', isRefreshing && 'animate-spin')}
+              />
               <span className="ml-1 text-xs">Refresh</span>
             </Button>
           </div>
@@ -215,7 +308,10 @@ function Queues() {
                   </div>
                 </TooltipTrigger>
                 <TooltipContent>
-                  <p className="max-w-xs">Shared queues with maxConcurrency limits that can process DAG runs from multiple DAGs</p>
+                  <p className="max-w-xs">
+                    Shared queues with maxConcurrency limits that can process
+                    DAG runs from multiple DAGs
+                  </p>
                 </TooltipContent>
               </Tooltip>
               <Tooltip>
@@ -226,21 +322,25 @@ function Queues() {
                   </div>
                 </TooltipTrigger>
                 <TooltipContent>
-                  <p className="max-w-xs">Dedicated queues where each DAG has its own queue with maxActiveRuns limit (default 1)</p>
+                  <p className="max-w-xs">
+                    Dedicated queues where each DAG has its own queue with
+                    maxActiveRuns limit (default 1)
+                  </p>
                 </TooltipContent>
               </Tooltip>
             </div>
           </div>
         </div>
         <div className="flex-1 min-h-0 overflow-auto">
-          <QueueList 
-            queues={filteredQueues} 
+          <QueueList
+            queues={filteredQueues}
             isLoading={isLoading && !data}
             onDAGRunClick={handleDAGRunClick}
+            onQueueCleared={handleRefresh}
           />
         </div>
       </div>
-      
+
       {/* DAG Run Details Modal */}
       {modalDAGRun && (
         <DAGRunDetailsModal
@@ -250,6 +350,26 @@ function Queues() {
           onClose={() => setModalDAGRun(null)}
         />
       )}
+
+      {/* Clear Queue Confirmation Modal */}
+      <ConfirmModal
+        title="Clear All Queues"
+        buttonText="Clear Queue"
+        visible={showClearConfirm}
+        dismissModal={() => setShowClearConfirm(false)}
+        onSubmit={handleClearQueue}
+      >
+        <div className="space-y-2">
+          <p className="text-sm">
+            This will remove all queued DAG runs from all queues. This action
+            cannot be undone.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Currently {metrics.totalQueued} DAG runs are queued across all
+            queues.
+          </p>
+        </div>
+      </ConfirmModal>
     </div>
   );
 }

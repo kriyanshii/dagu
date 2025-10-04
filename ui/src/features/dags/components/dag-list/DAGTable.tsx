@@ -60,7 +60,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '../../../../components/ui/select'; // Use shadcn Select
+} from '../../../../components/ui/select';
 import {
   Table,
   TableBody,
@@ -199,8 +199,6 @@ function getNextSchedule(
   }
 }
 // --- End Helper Functions ---
-
-// Removed defaultColumns - now defined inside component
 
 // Mapping between column IDs and backend sort fields
 const columnToSortField: Record<string, string> = {
@@ -1347,14 +1345,24 @@ function DAGTable({
 
                       {/* Clear search button inside the date button */}
                       {searchText && (
-                        <button
+                        <div
                           onClick={(e) => {
                             e.stopPropagation();
                             handleSearchTextChange('');
                             setSelectedDate(null);
                           }}
-                          className="absolute right-10 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors z-10"
+                          className="absolute right-10 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors z-10 cursor-pointer"
                           aria-label="Clear search"
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleSearchTextChange('');
+                              setSelectedDate(null);
+                            }
+                          }}
                         >
                           <svg
                             xmlns="http://www.w3.org/2000/svg"
@@ -1370,7 +1378,7 @@ function DAGTable({
                             <line x1="18" y1="6" x2="6" y2="18"></line>
                             <line x1="6" y1="6" x2="18" y2="18"></line>
                           </svg>
-                        </button>
+                        </div>
                       )}
                     </Button>
 
@@ -1541,10 +1549,18 @@ function DAGTable({
               )}
 
               {searchMode === 'normal' && searchText && (
-                <button
+                <div
                   onClick={() => handleSearchTextChange('')}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
                   aria-label="Clear search"
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleSearchTextChange('');
+                    }
+                  }}
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -1560,7 +1576,7 @@ function DAGTable({
                     <line x1="18" y1="6" x2="6" y2="18"></line>
                     <line x1="6" y1="6" x2="18" y2="18"></line>
                   </svg>
-                </button>
+                </div>
               )}
 
               {/* Search help text */}

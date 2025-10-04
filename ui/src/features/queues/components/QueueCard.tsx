@@ -1,22 +1,75 @@
 import React from 'react';
-import { ChevronDown, ChevronRight, Settings, GitBranch, Play, Clock, BarChart3 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Settings, GitBranch, Play, Clock, BarChart3, Trash2 } from 'lucide-react';
 import type { components } from '../../../api/v2/schema';
 import { cn } from '../../../lib/utils';
 import StatusChip from '../../../ui/StatusChip';
 import dayjs from '../../../lib/dayjs';
 import { useConfig } from '../../../contexts/ConfigContext';
+import { useClient } from '../../../hooks/api';
+import { AppBarContext } from '../../../contexts/AppBarContext';
+import { Button } from '../../../components/ui/button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '../../../components/ui/tooltip';
+import ConfirmModal from '../../../ui/ConfirmModal';
 
 interface QueueCardProps {
   queue: components['schemas']['Queue'];
   isSelected?: boolean;
   onDAGRunClick: (dagRun: components['schemas']['DAGRunSummary']) => void;
+  onQueueCleared?: () => void;
 }
 
-function QueueCard({ queue, isSelected, onDAGRunClick }: QueueCardProps) {
+function QueueCard({ queue, isSelected, onDAGRunClick, onQueueCleared }: QueueCardProps) {
   const config = useConfig();
+  const client = useClient();
+  const appBarContext = React.useContext(AppBarContext);
   const [isExpanded, setIsExpanded] = React.useState(false);
+  const [isClearing, setIsClearing] = React.useState(false);
+  const [showClearConfirm, setShowClearConfirm] = React.useState(false);
 
   const toggleExpanded = () => setIsExpanded(!isExpanded);
+
+  const handleClearQueue = async () => {
+    setIsClearing(true);
+    try {
+      // Get all queued DAG runs from this specific queue
+      const queuedRuns = queue.queued || [];
+      
+      // Dequeue all queued DAG runs
+      await Promise.all(
+        queuedRuns.map(async (dagRun) => {
+          try {
+            await client.GET('/dag-runs/{name}/{dagRunId}/dequeue', {
+              params: {
+                path: {
+                  name: dagRun.name,
+                  dagRunId: dagRun.dagRunId,
+                },
+                query: {
+                  remoteNode: appBarContext?.selectedRemoteNode || 'local',
+                },
+              },
+            });
+          } catch (error) {
+            console.error(`Failed to dequeue ${dagRun.name}:${dagRun.dagRunId}:`, error);
+          }
+        })
+      );
+
+      // Notify parent component to refresh
+      if (onQueueCleared) {
+        onQueueCleared();
+      }
+    } catch (error) {
+      console.error('Failed to clear queue:', error);
+    } finally {
+      setIsClearing(false);
+      setShowClearConfirm(false);
+    }
+  };
 
   // Calculate utilization for global queues
   const utilization = React.useMemo(() => {
@@ -206,11 +259,36 @@ function QueueCard({ queue, isSelected, onDAGRunClick }: QueueCardProps) {
           {queue.queued && queue.queued.length > 0 && (
             <div className="border-t">
               <div className="p-2 bg-purple-50 dark:bg-purple-950/20">
-                <div className="flex items-center gap-2 mb-2">
-                  <Clock className="h-4 w-4 text-purple-500" />
-                  <h4 className="text-sm font-semibold text-purple-700 dark:text-purple-400">
-                    Queued DAGs ({queue.queued.length})
-                  </h4>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Clock className="h-4 w-4 text-purple-500" />
+                    <h4 className="text-sm font-semibold text-purple-700 dark:text-purple-400">
+                      Queued DAGs ({queue.queued.length})
+                    </h4>
+                  </div>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowClearConfirm(true);
+                        }}
+                        disabled={isClearing}
+                        className="h-6 px-2 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20"
+                      >
+                        <Trash2 className={cn(
+                          "h-3 w-3",
+                          isClearing && "animate-pulse"
+                        )} />
+                        <span className="ml-1 text-xs">Clear</span>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Remove all queued DAG runs from this queue</p>
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
@@ -242,6 +320,24 @@ function QueueCard({ queue, isSelected, onDAGRunClick }: QueueCardProps) {
           )}
         </div>
       )}
+
+      {/* Clear Queue Confirmation Modal */}
+      <ConfirmModal
+        title="Clear Queue"
+        buttonText="Clear Queue"
+        visible={showClearConfirm}
+        dismissModal={() => setShowClearConfirm(false)}
+        onSubmit={handleClearQueue}
+      >
+        <div className="space-y-2">
+          <p className="text-sm">
+            This will remove all queued DAG runs from the "{queue.name}" queue. This action cannot be undone.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Currently {queue.queued?.length || 0} DAG runs are queued in this queue.
+          </p>
+        </div>
+      </ConfirmModal>
     </div>
   );
 }
