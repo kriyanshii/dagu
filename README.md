@@ -11,14 +11,16 @@
   
   <p>
     <a href="https://dagu.cloud/">Website</a> |
-    <a href="https://docs.dagu.cloud/getting-started/quickstart">Quick Start</a> |
-    <a href="https://discord.gg/gpahPUjGRk">Discussions</a>
+    <a href="https://docs.dagu.cloud/writing-workflows/examples">Examples</a> |
+    <a href="https://discord.gg/gpahPUjGRk">Discord</a>
   </p>
 </div>
 
 ## What is Dagu?
 
-Dagu is a lightweight workflow engine packaged in a single binary, with a modern Web UI. Workflows are defined in a simple, declarative YAML format and can be executed on schedule. It supports shell commands, remote execution via SSH, and Docker images. Built-in error notifications and logging out of the box.
+Dagu is a lightweight workflow engine with a modern Web UI. Workflows are defined in a simple, declarative YAML format and can be executed on schedule. It supports shell commands, remote execution via SSH, and Docker images. Built-in error notifications and logging out of the box.
+
+For a quick feel of how it works, take a look at the [examples](https://docs.dagu.cloud/writing-workflows/examples).
 
 ### Motivation
 
@@ -80,26 +82,17 @@ steps:
 
 ### 1. Install dagu
 
-**npm**:
-```bash
-# Install via npm
-npm install -g dagu
-```
-
-**Homebrew**:
-
-```bash
-brew install dagu-org/brew/dagu
-
-# Upgrade to latest version
-brew upgrade dagu-org/brew/dagu
-```
-
 **macOS/Linux**:
 
 ```bash
-# Install via script
+# Install to ~/.local/bin (default, no sudo required)
 curl -L https://raw.githubusercontent.com/dagu-org/dagu/main/scripts/installer.sh | bash
+
+# Install specific version
+curl -L https://raw.githubusercontent.com/dagu-org/dagu/main/scripts/installer.sh | bash -s -- --version v1.17.0
+
+# Install to custom directory
+curl -L https://raw.githubusercontent.com/dagu-org/dagu/main/scripts/installer.sh | bash -s -- --install-dir /usr/local/bin
 ```
 
 **Docker**:
@@ -113,6 +106,21 @@ docker run --rm \
 ```
 
 Note: see [documentation](https://docs.dagu.cloud/getting-started/installation) for other methods.
+
+**Homebrew**:
+
+```bash
+brew update && brew install dagu
+
+# Upgrade to latest version
+brew update && brew upgrade dagu
+```
+
+**npm**:
+```bash
+# Install via npm
+npm install -g --ignore-scripts=false dagu
+```
 
 ### 2. Create your first workflow
 
@@ -300,7 +308,7 @@ This configuration is used for communication between coordinator services and ot
 ### Building from Source
 
 #### Prerequisites
-- [Go 1.24+](https://go.dev/doc/install)
+- [Go 1.25+](https://go.dev/doc/install)
 - [Node.js](https://nodejs.org/en/download/)
 - [pnpm](https://pnpm.io/installation)
 
@@ -465,6 +473,7 @@ Thanks to all the contributors who have helped make Dagu better! Your contributi
 
 <a href="https://github.com/Arvintian"><img src="https://wsrv.nl/?url=https%3A%2F%2Fgithub.com%2FArvintian.png&w=128&h=128&fit=cover&mask=circle" width="64" height="64" alt="@Arvintian"></a>
 <a href="https://github.com/yurivish"><img src="https://wsrv.nl/?url=https%3A%2F%2Fgithub.com%2Fyurivish.png&w=128&h=128&fit=cover&mask=circle" width="64" height="64" alt="@yurivish"></a>
+<a href="https://github.com/jayjoshi64"><img src="https://wsrv.nl/?url=https%3A%2F%2Fgithub.com%2Fjayjoshi64.png&w=128&h=128&fit=cover&mask=circle" width="64" height="64" alt="@jayjoshi64"></a>
 
 Thanks for supporting Dagu’s development! Join our supporters: [GitHub Sponsors](https://github.com/sponsors/dagu-org)
 

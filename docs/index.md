@@ -25,12 +25,15 @@ Install and run your first workflow in under 2 minutes.
 
 ::: code-group
 
-```bash [npm]
-npm install -g dagu
-```
-
 ```bash [macOS/Linux]
+# Install to ~/.local/bin (default, no sudo required)
 curl -L https://raw.githubusercontent.com/dagu-org/dagu/main/scripts/installer.sh | bash
+
+# Install specific version
+curl -L https://raw.githubusercontent.com/dagu-org/dagu/main/scripts/installer.sh | bash -s -- --version v1.17.0
+
+# Install to custom directory
+curl -L https://raw.githubusercontent.com/dagu-org/dagu/main/scripts/installer.sh | bash -s -- --install-dir /usr/local/bin
 ```
 
 ```bash [Docker]
@@ -38,7 +41,11 @@ docker pull ghcr.io/dagu-org/dagu:latest
 ```
 
 ```bash [Homebrew]
-brew install dagu-org/brew/dagu
+brew update && brew install dagu
+```
+
+```bash [npm]
+npm install -g --ignore-scripts=false dagu
 ```
 
 :::

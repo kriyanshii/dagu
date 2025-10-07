@@ -10,7 +10,12 @@ interface QueueListProps {
   onQueueCleared?: () => void;
 }
 
-function QueueList({ queues, isLoading, onDAGRunClick, onQueueCleared }: QueueListProps) {
+function QueueList({
+  queues,
+  isLoading,
+  onDAGRunClick,
+  onQueueCleared,
+}: QueueListProps) {
   const [selectedIndex, setSelectedIndex] = React.useState<number>(-1);
 
   // Enhanced keyboard navigation for queues

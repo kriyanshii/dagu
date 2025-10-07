@@ -377,7 +377,7 @@ export interface paths {
         };
         /**
          * Retrieve detailed status of a DAG-run
-         * @description Fetches detailed status information about a specific DAG-run
+         * @description Fetches detailed status information about a specific DAG-run. Use 'latest' as the dagRunId to retrieve the most recent DAG-run for the specified DAG name.
          */
         get: operations["getDAGRunDetails"];
         put?: never;
@@ -719,7 +719,7 @@ export interface components {
             prevPage: number;
         };
         /**
-         * @description Unique identifier for the DAG-run
+         * @description Unique identifier for the DAG-run. The special value 'latest' can be used to reference the most recent DAG-run.
          * @example latest
          */
         DAGRunId: string;
@@ -1308,7 +1308,10 @@ export interface operations {
                 name?: string;
                 /** @description Filter DAGs by tag */
                 tag?: string;
-                /** @description Field to sort by */
+                /** @description Field to sort by:
+                 *     - `name`: Sort alphabetically by DAG name (case-insensitive)
+                 *     - `nextRun`: Sort by next scheduled run time. DAGs with earlier next run times appear first in ascending order. DAGs without schedules appear last.
+                 *      */
                 sort?: PathsDagsGetParametersQuerySort;
                 /** @description Sort order (ascending or descending) */
                 order?: PathsDagsGetParametersQueryOrder;
@@ -2892,7 +2895,8 @@ export interface operations {
     };
 }
 export enum PathsDagsGetParametersQuerySort {
-    name = "name"
+    name = "name",
+    nextRun = "nextRun"
 }
 export enum PathsDagsGetParametersQueryOrder {
     asc = "asc",

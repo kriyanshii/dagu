@@ -26,6 +26,9 @@ function Queues() {
   const [isClearing, setIsClearing] = React.useState(false);
   const [showClearConfirm, setShowClearConfirm] = React.useState(false);
 
+  const [selectedQueueType, setSelectedQueueType] =
+    React.useState<string>('all');
+
   // State for DAG run modal
   const [modalDAGRun, setModalDAGRun] = React.useState<{
     name: string;

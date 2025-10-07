@@ -28,6 +28,7 @@ import (
 	"github.com/dagu-org/dagu/internal/mailer"
 	"github.com/dagu-org/dagu/internal/models"
 	"github.com/dagu-org/dagu/internal/otel"
+	"github.com/dagu-org/dagu/internal/signal"
 	"github.com/dagu-org/dagu/internal/sock"
 	"github.com/dagu-org/dagu/internal/sshutil"
 	"github.com/dagu-org/dagu/internal/stringutil"
@@ -328,26 +329,27 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Create a new container if the DAG has a container configuration.
 	if a.dag.Container != nil {
-		containerClient, err := container.NewFromContainerConfigWithAuth(a.dag.WorkingDir, *a.dag.Container, a.dag.RegistryAuths)
+		ctCfg, err := container.LoadConfig(a.dag.WorkingDir, *a.dag.Container, a.dag.RegistryAuths)
 		if err != nil {
-			initErr = fmt.Errorf("failed to create container client: %w", err)
+			initErr = fmt.Errorf("failed to load container config: %w", err)
 			return initErr
 		}
-		if err := containerClient.Init(ctx); err != nil {
+		ctCli, err := container.InitializeClient(ctx, ctCfg)
+		if err != nil {
 			initErr = fmt.Errorf("failed to initialize container client: %w", err)
 			return initErr
 		}
-		if err := containerClient.CreateContainerKeepAlive(ctx); err != nil {
+		if err := ctCli.CreateContainerKeepAlive(ctx); err != nil {
 			initErr = fmt.Errorf("failed to create keepalive container: %w", err)
 			return initErr
 		}
 
 		// Set the container client in the context for the execution.
-		ctx = executor.WithContainerClient(ctx, containerClient)
+		ctx = executor.WithContainerClient(ctx, ctCli)
 
 		defer func() {
-			containerClient.StopContainerKeepAlive(ctx)
-			containerClient.Close(ctx)
+			ctCli.StopContainerKeepAlive(ctx)
+			ctCli.Close(ctx)
 		}()
 	}
 
@@ -794,6 +796,12 @@ func (a *Agent) signal(ctx context.Context, sig os.Signal, allowOverride bool) {
 		"signal", sig.String(),
 		"allowOverride", allowOverride,
 		"maxCleanupTime", a.dag.MaxCleanUpTime/time.Second)
+
+	if !signal.IsTerminationSignalOS(sig) {
+		// For non-termination signals, just send the signal once and return.
+		a.scheduler.Signal(ctx, a.graph, sig, nil, allowOverride)
+		return
+	}
 
 	signalCtx, cancel := context.WithTimeout(ctx, a.dag.MaxCleanUpTime)
 	defer cancel()

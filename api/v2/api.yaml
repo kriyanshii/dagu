@@ -115,9 +115,12 @@ paths:
           required: false
           schema:
             type: "string"
-            enum: ["name"]
+            enum: ["name", "nextRun"]
             default: "name"
-          description: "Field to sort by"
+          description: |
+            Field to sort by:
+            - `name`: Sort alphabetically by DAG name (case-insensitive)
+            - `nextRun`: Sort by next scheduled run time. DAGs with earlier next run times appear first in ascending order. DAGs without schedules appear last.
         - name: "order"
           in: "query"
           required: false
@@ -916,7 +919,7 @@ paths:
   /dag-runs/{name}/{dagRunId}:
     get:
       summary: "Retrieve detailed status of a DAG-run"
-      description: "Fetches detailed status information about a specific DAG-run"
+      description: "Fetches detailed status information about a specific DAG-run. Use 'latest' as the dagRunId to retrieve the most recent DAG-run for the specified DAG name."
       operationId: "getDAGRunDetails"
       tags:
         - "dag-runs"
@@ -1691,7 +1694,7 @@ components:
 
     DAGRunId:
       type: string
-      description: "Unique identifier for the DAG-run"
+      description: "Unique identifier for the DAG-run. The special value 'latest' can be used to reference the most recent DAG-run."
       example: "latest"
       pattern: "^[a-zA-Z0-9_-]+$"
 

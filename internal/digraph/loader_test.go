@@ -77,7 +77,7 @@ func TestLoad(t *testing.T) {
 		// DAG level
 		assert.Equal(t, "", dag.LogDir)
 		assert.Equal(t, testDAG, dag.Location)
-		assert.Equal(t, time.Second*60, dag.MaxCleanUpTime)
+		assert.Equal(t, time.Second*5, dag.MaxCleanUpTime)
 		assert.Equal(t, 30, dag.HistRetentionDays)
 
 		// Step level
@@ -475,7 +475,6 @@ steps:
     params: "SOURCE=customers TABLE=users"
   - name: transform
     run: transform-module
-    depends: extract
 
 ---
 name: extract-module
