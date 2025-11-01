@@ -13,20 +13,25 @@ import { DAGTable } from '../../features/dags/components/dag-list';
 import DAGListHeader from '../../features/dags/components/dag-list/DAGListHeader';
 import { useQuery } from '../../hooks/api';
 import LoadingIndicator from '../../ui/LoadingIndicator';
+import dayjs from '../../lib/dayjs';
 
 function DAGs() {
   const query = new URLSearchParams(useLocation().search);
   const group = query.get('group') || '';
   const appBarContext = React.useContext(AppBarContext);
-  const [searchText, setSearchText] = React.useState(query.get('search') || '');
+
+  const initialSearchParam = query.get('search');
+  const defaultSearchText = initialSearchParam
+    ? initialSearchParam
+    : dayjs().format('DDMMMYYYY').toUpperCase();
+
+  const [searchText, setSearchText] = React.useState(defaultSearchText);
   const [searchTag, setSearchTag] = React.useState(query.get('tag') || '');
   const [searchStatus, setSearchStatus] = React.useState(
     query.get('status') || ''
   );
   const [page, setPage] = React.useState(parseInt(query.get('page') || '1'));
-  const [apiSearchText, setAPISearchText] = React.useState(
-    query.get('search') || ''
-  );
+  const [apiSearchText, setAPISearchText] = React.useState(defaultSearchText);
   const [apiSearchTag, setAPISearchTag] = React.useState(
     query.get('tag') || ''
   );
@@ -73,6 +78,13 @@ function DAGs() {
       `${window.location.pathname}?${locationQuery.toString()}`
     );
   };
+
+  React.useEffect(() => {
+    if (!initialSearchParam) {
+      addSearchParam('search', defaultSearchText);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const refreshFn = React.useCallback(() => {
     setTimeout(() => mutate(), 500);
