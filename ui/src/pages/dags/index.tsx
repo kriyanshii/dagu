@@ -3,8 +3,8 @@ import React from 'react';
 import { useLocation } from 'react-router-dom';
 import {
   components,
-  PathsDagsGetParametersQuerySort,
   PathsDagsGetParametersQueryOrder,
+  PathsDagsGetParametersQuerySort,
 } from '../../api/v2/schema';
 import { AppBarContext } from '../../contexts/AppBarContext';
 import { useUserPreferences } from '../../contexts/UserPreference';

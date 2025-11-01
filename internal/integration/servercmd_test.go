@@ -22,10 +22,11 @@ import (
 func TestServer_BasePath(t *testing.T) {
 	port := findPort(t)
 	configFile := writeServerConfig(t, port, "/dagu", false)
-
-	startServer(t, configFile, port)
+	stopServer := startServer(t, configFile, port)
 
 	requireHealthy(t, fmt.Sprintf("http://127.0.0.1:%s/dagu/api/v2/health", port))
+
+	stopServer()
 }
 
 // TestServer_RemoteNode verifies that remote node health checks work with and without a base path.
@@ -41,11 +42,12 @@ func TestServer_RemoteNode(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			port := findPort(t)
 			configFile := writeServerConfig(t, port, tc.basePath, true)
-
-			startServer(t, configFile, port)
+			stopServer := startServer(t, configFile, port)
 
 			url := fmt.Sprintf("http://127.0.0.1:%s%s/api/v2/health?remoteNode=dev", port, tc.basePath)
 			requireHealthy(t, url)
+
+			stopServer()
 		})
 	}
 }
@@ -71,37 +73,37 @@ basePath: "%s"
 	return configFile
 }
 
-func startServer(t *testing.T, configFile, port string) {
+func startServer(t *testing.T, configFile, port string) func() {
 	t.Helper()
 	th := test.SetupCommand(t)
 
+	done := make(chan struct{})
 	go func() {
-		time.Sleep(300 * time.Millisecond)
-		th.Cancel()
-	}()
-
-	go func() {
-		th.RunCommand(t, cmd.CmdServer(), test.CmdTest{
+		th.RunCommand(t, cmd.Server(), test.CmdTest{
 			Args:        []string{"server", "--config", configFile, "--port=" + port},
 			ExpectedOut: []string{"Server is starting"},
 		})
+		close(done)
 	}()
 
 	waitForServer(t, port)
+
+	return func() {
+		th.Cancel()
+		<-done
+	}
 }
 
 func waitForServer(t *testing.T, port string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	require.Eventually(t, func() bool {
 		conn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, 50*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
-			return
+			return true
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("server did not start on port %s", port)
+		return false
+	}, 2*time.Second, 20*time.Millisecond, "server did not start on port %s", port)
 }
 
 func requireHealthy(t *testing.T, url string) {

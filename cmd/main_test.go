@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/dagu-org/dagu/internal/build"
 	"github.com/dagu-org/dagu/internal/cmd"
+	"github.com/dagu-org/dagu/internal/common/config"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 )
@@ -70,20 +70,20 @@ func TestRootCommand(t *testing.T) {
 			rootCmd.ResetCommands()
 
 			// Re-add commands
-			rootCmd.AddCommand(cmd.CmdStart())
-			rootCmd.AddCommand(cmd.CmdEnqueue())
-			rootCmd.AddCommand(cmd.CmdDequeue())
-			rootCmd.AddCommand(cmd.CmdStop())
-			rootCmd.AddCommand(cmd.CmdRestart())
-			rootCmd.AddCommand(cmd.CmdDry())
-			rootCmd.AddCommand(cmd.CmdValidate())
-			rootCmd.AddCommand(cmd.CmdStatus())
-			rootCmd.AddCommand(cmd.CmdVersion())
-			rootCmd.AddCommand(cmd.CmdServer())
-			rootCmd.AddCommand(cmd.CmdScheduler())
-			rootCmd.AddCommand(cmd.CmdRetry())
-			rootCmd.AddCommand(cmd.CmdStartAll())
-			rootCmd.AddCommand(cmd.CmdMigrate())
+			rootCmd.AddCommand(cmd.Start())
+			rootCmd.AddCommand(cmd.Enqueue())
+			rootCmd.AddCommand(cmd.Dequeue())
+			rootCmd.AddCommand(cmd.Stop())
+			rootCmd.AddCommand(cmd.Restart())
+			rootCmd.AddCommand(cmd.Dry())
+			rootCmd.AddCommand(cmd.Validate())
+			rootCmd.AddCommand(cmd.Status())
+			rootCmd.AddCommand(cmd.Version())
+			rootCmd.AddCommand(cmd.Server())
+			rootCmd.AddCommand(cmd.Scheduler())
+			rootCmd.AddCommand(cmd.Retry())
+			rootCmd.AddCommand(cmd.StartAll())
+			rootCmd.AddCommand(cmd.Migrate())
 
 			// Set args
 			rootCmd.SetArgs(tt.args[1:]) // Skip program name
@@ -152,8 +152,8 @@ func TestMainFunction(t *testing.T) {
 func TestInit(t *testing.T) {
 	// Test that init() sets up the version correctly
 	// Note: init() is automatically called by Go
-	// Since the test version is set to "0.0.0", that's what should be in build.Version
-	assert.NotEmpty(t, build.Version)
+	// Since the test version is set to "0.0.0", that's what should be in config.Version
+	assert.NotEmpty(t, config.Version)
 }
 
 func TestRootCommandStructure(t *testing.T) {
@@ -188,7 +188,7 @@ func TestRootCommandStructure(t *testing.T) {
 }
 
 func TestRootCommandMetadata(t *testing.T) {
-	assert.Equal(t, build.Slug, rootCmd.Use)
+	assert.Equal(t, config.AppSlug, rootCmd.Use)
 	assert.Equal(t, "Dagu is a compact, portable workflow engine", rootCmd.Short)
 	assert.Contains(t, rootCmd.Long, "declarative model for orchestrating command execution")
 	assert.Contains(t, rootCmd.Long, "shell scripts, Python commands, containerized")
@@ -221,7 +221,7 @@ func TestCommandHelp(t *testing.T) {
 // Helper to reset root command state
 func resetRootCommand() {
 	rootCmd = &cobra.Command{
-		Use:   build.Slug,
+		Use:   config.AppSlug,
 		Short: "Dagu is a compact, portable workflow engine",
 		Long: `Dagu is a compact, portable workflow engine.
 
@@ -232,18 +232,18 @@ operations, or remote commands.
 	}
 
 	// Re-add all commands
-	rootCmd.AddCommand(cmd.CmdStart())
-	rootCmd.AddCommand(cmd.CmdEnqueue())
-	rootCmd.AddCommand(cmd.CmdDequeue())
-	rootCmd.AddCommand(cmd.CmdStop())
-	rootCmd.AddCommand(cmd.CmdRestart())
-	rootCmd.AddCommand(cmd.CmdDry())
-	rootCmd.AddCommand(cmd.CmdValidate())
-	rootCmd.AddCommand(cmd.CmdStatus())
-	rootCmd.AddCommand(cmd.CmdVersion())
-	rootCmd.AddCommand(cmd.CmdServer())
-	rootCmd.AddCommand(cmd.CmdScheduler())
-	rootCmd.AddCommand(cmd.CmdRetry())
-	rootCmd.AddCommand(cmd.CmdStartAll())
-	rootCmd.AddCommand(cmd.CmdMigrate())
+	rootCmd.AddCommand(cmd.Start())
+	rootCmd.AddCommand(cmd.Enqueue())
+	rootCmd.AddCommand(cmd.Dequeue())
+	rootCmd.AddCommand(cmd.Stop())
+	rootCmd.AddCommand(cmd.Restart())
+	rootCmd.AddCommand(cmd.Dry())
+	rootCmd.AddCommand(cmd.Validate())
+	rootCmd.AddCommand(cmd.Status())
+	rootCmd.AddCommand(cmd.Version())
+	rootCmd.AddCommand(cmd.Server())
+	rootCmd.AddCommand(cmd.Scheduler())
+	rootCmd.AddCommand(cmd.Retry())
+	rootCmd.AddCommand(cmd.StartAll())
+	rootCmd.AddCommand(cmd.Migrate())
 }
