@@ -1,28 +1,26 @@
+import { Activity, Layers, RefreshCw, Search, Trash2 } from 'lucide-react';
 import React from 'react';
-import { Layers, Activity, Search, RefreshCw, Trash2 } from 'lucide-react';
-import { Input } from '../../components/ui/input';
+import type { components } from '../../api/v2/schema';
 import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '../../components/ui/tooltip';
 import { AppBarContext } from '../../contexts/AppBarContext';
-import { useQuery, useClient } from '../../hooks/api';
-import type { components } from '../../api/v2/schema';
-import QueueMetrics from '../../features/queues/components/QueueMetrics';
-import QueueList from '../../features/queues/components/QueueList';
 import { DAGRunDetailsModal } from '../../features/dag-runs/components/dag-run-details';
-import ConfirmModal from '../../ui/ConfirmModal';
+import QueueList from '../../features/queues/components/QueueList';
+import QueueMetrics from '../../features/queues/components/QueueMetrics';
+import { useClient, useQuery } from '../../hooks/api';
 import { cn } from '../../lib/utils';
+import ConfirmModal from '../../ui/ConfirmModal';
 
 function Queues() {
   const appBarContext = React.useContext(AppBarContext);
   const client = useClient();
   const [searchText, setSearchText] = React.useState('');
   const [isRefreshing, setIsRefreshing] = React.useState(false);
-  const [selectedQueueType, setSelectedQueueType] =
-    React.useState<string>('all');
   const [isClearing, setIsClearing] = React.useState(false);
   const [showClearConfirm, setShowClearConfirm] = React.useState(false);
 

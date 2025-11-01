@@ -1234,6 +1234,9 @@ type ListDAGsParams struct {
 	// Tag Filter DAGs by tag
 	Tag *string `form:"tag,omitempty" json:"tag,omitempty"`
 
+	// Status Filter DAGs by the latest DAG run status
+	Status *string `form:"status,omitempty" json:"status,omitempty"`
+
 	// Sort Field to sort by:
 	// - `name`: Sort alphabetically by DAG name (case-insensitive)
 	// - `nextRun`: Sort by next scheduled run time. DAGs with earlier next run times appear first in ascending order. DAGs without schedules appear last.
