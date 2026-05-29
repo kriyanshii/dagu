@@ -5,6 +5,7 @@ package exec
 
 import (
 	"context"
+	"time"
 )
 
 // ProcStore is an interface for managing process storage.
@@ -33,6 +34,8 @@ type ProcStore interface {
 	ListEntries(ctx context.Context, groupName string) ([]ProcEntry, error)
 	// LatestFreshEntryByDAGName returns the freshest proc entry for the DAG in the group.
 	LatestFreshEntryByDAGName(ctx context.Context, groupName, dagName string) (*ProcEntry, error)
+	// LatestHeartbeat returns the latest heartbeat observation for a DAG-run in the group.
+	LatestHeartbeat(ctx context.Context, groupName string, dagRun DAGRunRef) (*ProcHeartbeat, error)
 	// ListAllEntries returns all proc entries across all groups, including stale entries.
 	ListAllEntries(ctx context.Context) ([]ProcEntry, error)
 	// RemoveIfStale removes the exact proc entry if it is still stale and unchanged.
@@ -70,13 +73,56 @@ func (m ProcMeta) DAGRun() DAGRunRef {
 	return NewDAGRunRef(m.Name, m.DAGRunID)
 }
 
-// ProcEntry represents a single proc heartbeat file on disk.
+// ProcEntry represents a storage-independent proc heartbeat observation.
 type ProcEntry struct {
 	GroupName       string
-	FilePath        string
+	Identity        ProcEntryID
 	Meta            ProcMeta
 	LastHeartbeatAt int64
 	Fresh           bool
+}
+
+// ProcEntryID is an opaque identity returned by ProcStore for exact stale-entry
+// removal. Callers must not interpret it as a filesystem path or record key.
+type ProcEntryID struct {
+	token string
+}
+
+// NewProcEntryID creates an opaque proc entry identity token.
+func NewProcEntryID(token string) ProcEntryID {
+	return ProcEntryID{token: token}
+}
+
+// IsZero reports whether the identity is empty.
+func (id ProcEntryID) IsZero() bool {
+	return id.token == ""
+}
+
+// String returns an opaque display token. Callers must not parse it.
+func (id ProcEntryID) String() string {
+	return id.token
+}
+
+// ProcHeartbeat is a storage-independent observation of a proc heartbeat.
+type ProcHeartbeat struct {
+	GroupName       string
+	DAGRun          DAGRunRef
+	AttemptID       string
+	StartedAt       int64
+	LastHeartbeatAt int64
+	ObservedAt      time.Time
+	Fresh           bool
+}
+
+// AdvancedSince reports whether this observation is newer than previous.
+func (h ProcHeartbeat) AdvancedSince(previous ProcHeartbeat) bool {
+	if h.GroupName != previous.GroupName || h.DAGRun != previous.DAGRun {
+		return false
+	}
+	if h.AttemptID != previous.AttemptID {
+		return h.StartedAt > previous.StartedAt || h.ObservedAt.After(previous.ObservedAt)
+	}
+	return h.LastHeartbeatAt > previous.LastHeartbeatAt || h.ObservedAt.After(previous.ObservedAt)
 }
 
 // DAGRun returns the DAG-run reference for the proc entry.

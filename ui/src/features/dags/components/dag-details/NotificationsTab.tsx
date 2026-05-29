@@ -25,12 +25,10 @@ import {
 } from '../../../../api/v1/schema';
 import { AppBarContext } from '../../../../contexts/AppBarContext';
 import { useConfig } from '../../../../contexts/ConfigContext';
-import { useLicense } from '../../../../hooks/useLicense';
 import {
   DAGLocalTargetsSection,
   DAGSubscriptionsSection,
   InheritedNotificationRoutesCard,
-  NotificationChannelsUnavailableCard,
   NotificationOverviewCard,
 } from './notifications/NotificationSections';
 import {
@@ -179,11 +177,8 @@ function DAGNotificationHeader({
 
 function NotificationsTab({ fileName, workspaceName }: NotificationsTabProps) {
   const config = useConfig();
-  const license = useLicense();
   const appBarContext = useContext(AppBarContext);
   const remoteNode = appBarContext.selectedRemoteNode || 'local';
-  const reusableChannelsLicensed =
-    !license.community && (license.valid || license.gracePeriod);
   const query = useMemo(
     () => `?remoteNode=${encodeURIComponent(remoteNode)}`,
     [remoteNode]
@@ -207,7 +202,6 @@ function NotificationsTab({ fileName, workspaceName }: NotificationsTabProps) {
     fileName,
     query,
     workspaceName,
-    reusableChannelsLicensed,
   });
   const [isSaving, setIsSaving] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
@@ -225,12 +219,10 @@ function NotificationsTab({ fileName, workspaceName }: NotificationsTabProps) {
     (route) => route.enabled && route.channelEnabled
   ).length;
   const testableDestinationCount = hasDAGSettings
-    ? draft.targets.length +
-      (reusableChannelsLicensed ? draft.subscriptions.length : 0)
+    ? draft.targets.length + draft.subscriptions.length
     : inheritedDestinationCount;
   const hasDAGDestinations =
-    draft.targets.length > 0 ||
-    (reusableChannelsLicensed && draft.subscriptions.length > 0);
+    draft.targets.length > 0 || draft.subscriptions.length > 0;
 
   const refreshSettings = async () => {
     await fetchData();
@@ -264,7 +256,6 @@ function NotificationsTab({ fileName, workspaceName }: NotificationsTabProps) {
   };
 
   const addSubscription = () => {
-    if (!reusableChannelsLicensed) return;
     const used = new Set(draft.subscriptions.map((sub) => sub.channelId));
     const channel = channels.find((item) => item.id && !used.has(item.id));
     if (!channel?.id) {
@@ -306,9 +297,7 @@ function NotificationsTab({ fileName, workspaceName }: NotificationsTabProps) {
         enabled: draft.enabled,
         events: draft.events,
         targets: draft.targets.map(targetInput),
-        ...(reusableChannelsLicensed
-          ? { subscriptions: draft.subscriptions.map(subscriptionInput) }
-          : {}),
+        subscriptions: draft.subscriptions.map(subscriptionInput),
       };
       const response = await fetch(
         `${config.apiURL}/dags/${encodeURIComponent(fileName)}/notifications${query}`,
@@ -451,7 +440,6 @@ function NotificationsTab({ fileName, workspaceName }: NotificationsTabProps) {
   };
 
   const removeSubscription = () => {
-    if (!reusableChannelsLicensed) return;
     if (deleteSubscriptionIndex === null) return;
     setHasUnsavedChanges(true);
     setDraft((current) => ({
@@ -507,7 +495,7 @@ function NotificationsTab({ fileName, workspaceName }: NotificationsTabProps) {
         }}
       />
 
-      {reusableChannelsLicensed && hasDAGSettings ? (
+      {hasDAGSettings ? (
         <DAGSubscriptionsSection
           draft={draft}
           channels={channels}
@@ -518,14 +506,12 @@ function NotificationsTab({ fileName, workspaceName }: NotificationsTabProps) {
           onDelete={setDeleteSubscriptionIndex}
           onTest={testNotifications}
         />
-      ) : reusableChannelsLicensed ? (
+      ) : (
         <InheritedNotificationRoutesCard
           sourceLabel={effectiveRouteSourceLabel}
           routes={effectiveRoutes}
           manageRulesHref="/notification-rules"
         />
-      ) : (
-        <NotificationChannelsUnavailableCard />
       )}
 
       {hasDAGSettings && (

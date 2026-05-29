@@ -282,8 +282,10 @@ export async function waitForSchedulerDAGRegistered(
       async () => {
         try {
           const raw = await fs.readFile(schedulerStatePath, 'utf8');
-          const state = JSON.parse(raw) as { dags?: Record<string, unknown> };
-          return Boolean(state.dags?.[dagName]);
+          const parsed = JSON.parse(raw) as {
+            dags?: Record<string, unknown>;
+          };
+          return Boolean(parsed.dags?.[dagName]);
         } catch {
           return false;
         }

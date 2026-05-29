@@ -27,6 +27,7 @@ import (
 
 	agentpkg "github.com/dagucloud/dagu/internal/agent"
 	"github.com/dagucloud/dagu/internal/agentoauth"
+	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/cmn/eval"
 	"github.com/dagucloud/dagu/internal/cmn/fileutil"
@@ -34,13 +35,14 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/internal/cmn/mailer"
 	"github.com/dagucloud/dagu/internal/cmn/masking"
+	"github.com/dagucloud/dagu/internal/cmn/procutil"
 	"github.com/dagucloud/dagu/internal/cmn/secrets"
-	"github.com/dagucloud/dagu/internal/cmn/signal"
 	"github.com/dagucloud/dagu/internal/cmn/sock"
 	"github.com/dagucloud/dagu/internal/cmn/stringutil"
 	"github.com/dagucloud/dagu/internal/cmn/telemetry"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/internal/dagstate"
 	"github.com/dagucloud/dagu/internal/output"
 	"github.com/dagucloud/dagu/internal/runtime"
 	"github.com/dagucloud/dagu/internal/runtime/builtin/docker"
@@ -53,6 +55,11 @@ import (
 	"github.com/dagucloud/dagu/internal/service/coordinator"
 
 	_ "github.com/dagucloud/dagu/internal/runtime/builtin"
+)
+
+var (
+	currentPIDStartedAtOnce  sync.Once
+	currentPIDStartedAtValue int64
 )
 
 // Agent is responsible for running the DAG and handling communication
@@ -79,6 +86,9 @@ type Agent struct {
 
 	// queueStore is the database to store queued dag-run items.
 	queueStore exec.QueueStore
+
+	// stateStore is the persistent state store shared across DAG runs.
+	stateStore dagstate.Store
 
 	// secretStore resolves workspace-local team-managed secret references.
 	secretStore secretpkg.Store
@@ -294,6 +304,8 @@ type Options struct {
 	DAGRunStore exec.DAGRunStore
 	// QueueStore is the store for queued dag-run items. Nil when queues are unavailable.
 	QueueStore exec.QueueStore
+	// StateStore is the persistent state store shared across DAG runs.
+	StateStore dagstate.Store
 	// SecretStore resolves workspace-local team-managed secret references.
 	SecretStore secretpkg.Store
 	// ServiceRegistry is the registry for service discovery.
@@ -359,6 +371,7 @@ func New(
 		dagStore:                   ds,
 		dagRunStore:                opts.DAGRunStore,
 		queueStore:                 opts.QueueStore,
+		stateStore:                 opts.StateStore,
 		secretStore:                opts.SecretStore,
 		registry:                   opts.ServiceRegistry,
 		extraEnvs:                  append([]string{}, opts.ExtraEnvs...),
@@ -562,6 +575,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	if a.queueStore != nil {
 		contextOpts = append(contextOpts, runtime.WithQueueStore(a.queueStore))
+	}
+	if a.stateStore != nil {
+		contextOpts = append(contextOpts, runtime.WithStateStore(a.stateStore))
 	}
 	if a.dagRunLogDir != "" {
 		contextOpts = append(contextOpts, runtime.WithDAGRunLogDir(a.dagRunLogDir))
@@ -1237,6 +1253,7 @@ func (a *Agent) Status(ctx context.Context) exec.DAGRunStatus {
 			transform.WithArchiveDir(a.artifactDir),
 			transform.WithTriggerType(a.triggerType),
 			transform.WithAutoRetryCount(a.currentAutoRetryCount()),
+			transform.WithPIDStartedAt(currentPIDStartedAt()),
 		}
 		if source != nil {
 			statusOpts = append(statusOpts,
@@ -1279,6 +1296,7 @@ func (a *Agent) Status(ctx context.Context) exec.DAGRunStatus {
 		transform.WithWorkerID(a.workerID),
 		transform.WithTriggerType(a.triggerType),
 		transform.WithAutoRetryCount(a.currentAutoRetryCount()),
+		transform.WithPIDStartedAt(currentPIDStartedAt()),
 	}
 
 	// If the current execution is based on a persisted target, copy timing data
@@ -1306,6 +1324,16 @@ func (a *Agent) Status(ctx context.Context) exec.DAGRunStatus {
 			opts...,
 		)
 	return status
+}
+
+func currentPIDStartedAt() int64 {
+	currentPIDStartedAtOnce.Do(func() {
+		startedAt, ok := procutil.StartTime(os.Getpid())
+		if ok {
+			currentPIDStartedAtValue = startedAt
+		}
+	})
+	return currentPIDStartedAtValue
 }
 
 func (a *Agent) currentAutoRetryCount() int {
@@ -1344,7 +1372,7 @@ func (a *Agent) prepareWorkDir(ctx context.Context, attempt exec.DAGRunAttempt) 
 		if a.workDir == "" {
 			return
 		}
-		if err := os.RemoveAll(a.workDir); err != nil {
+		if err := fileutil.RemoveAll(a.workDir); err != nil {
 			logger.Warn(ctx, "Failed to remove temp work dir", tag.Error(err))
 		}
 	}, nil
@@ -1363,6 +1391,11 @@ func (a *Agent) writeStatus(ctx context.Context, attempt exec.DAGRunAttempt, sta
 
 func (a *Agent) pushStatus(ctx context.Context, status exec.DAGRunStatus) {
 	pushCtx := context.WithoutCancel(ctx)
+	if remoteStatusPushTimeout > 0 {
+		var cancel context.CancelFunc
+		pushCtx, cancel = context.WithTimeout(pushCtx, remoteStatusPushTimeout)
+		defer cancel()
+	}
 	if err := a.statusPusher.Push(pushCtx, status); err != nil {
 		logger.Error(ctx, "Failed to push status to coordinator", tag.Error(err))
 		var rejectedErr *remote.AttemptRejectedError
@@ -1371,7 +1404,7 @@ func (a *Agent) pushStatus(ctx context.Context, status exec.DAGRunStatus) {
 				tag.AttemptID(a.dagRunAttemptID),
 				slog.String("reason", rejectedErr.Reason),
 			)
-			a.signal(context.Background(), syscall.SIGTERM, true)
+			a.stopChildren(context.Background(), syscall.SIGTERM, true)
 		}
 	}
 }
@@ -1398,25 +1431,27 @@ func (a *Agent) watchCancelRequested(ctx context.Context, attempt exec.DAGRunAtt
 			// in shared-nothing mode. If the agent already finished normally,
 			// we don't want to send an unnecessary SIGTERM.
 			if !a.finished.Load() {
-				a.signal(context.Background(), syscall.SIGTERM, true)
+				a.stopChildren(context.Background(), syscall.SIGTERM, true)
 			}
 			return
 		case <-ticker.C:
 			if cancelled, _ := attempt.IsAborting(ctx); cancelled {
-				a.signal(ctx, syscall.SIGTERM, true)
+				a.stopChildren(ctx, syscall.SIGTERM, true)
 			}
 		}
 	}
 }
 
-// Signal sends the signal to the processes running
+// Signal requests that running child processes stop.
 func (a *Agent) Signal(ctx context.Context, sig os.Signal) {
-	a.signal(ctx, sig, false)
+	a.stopChildren(ctx, sig, false)
 }
 
 // wait before read the running status
 const waitForRunning = time.Millisecond * 100
 const artifactFinalizeTimeout = 30 * time.Second
+
+var remoteStatusPushTimeout = 5 * time.Second
 
 // Simple regular expressions for request routing
 var (
@@ -1446,7 +1481,7 @@ func (a *Agent) HandleHTTP(ctx context.Context) sock.HTTPHandlerFunc {
 			_, _ = w.Write([]byte("OK"))
 			go func() {
 				logger.Info(ctx, "Stop request received")
-				a.signal(ctx, syscall.SIGTERM, true)
+				a.stopChildren(ctx, syscall.SIGTERM, true)
 			}()
 		default:
 			// Unknown request
@@ -1748,6 +1783,9 @@ func (a *Agent) dryRun(ctx context.Context) error {
 	if a.queueStore != nil {
 		contextOpts = append(contextOpts, runtime.WithQueueStore(a.queueStore))
 	}
+	if a.stateStore != nil {
+		contextOpts = append(contextOpts, runtime.WithStateStore(a.stateStore))
+	}
 	if a.dagRunLogDir != "" {
 		contextOpts = append(contextOpts, runtime.WithDAGRunLogDir(a.dagRunLogDir))
 	}
@@ -1765,23 +1803,35 @@ func (a *Agent) dryRun(ctx context.Context) error {
 	return lastErr
 }
 
-// signal propagates the received signal to the all running child processes.
-// allowOverride parameters is used to specify if a node can override
-// the signal to send to the process, in case the node is configured
-// to send a custom signal (e.g., SIGSTOP instead of SIGTERM).
-// The reason we need this is to allow the system to kill the child
-// process by sending a SIGKILL to force the process to be shutdown.
-// if processes do not terminate after MaxCleanUp time, it sends KILL signal.
-func (a *Agent) signal(ctx context.Context, sig os.Signal, allowOverride bool) {
-	logger.Info(ctx, "Sending signal to running child processes",
-		tag.Signal(sig.String()),
+// stopChildren requests that all running child processes stop.
+// allowOverride specifies whether a node can override the stop request with
+// its configured signal on platforms that support signal delivery. If processes
+// do not terminate after MaxCleanUp time, it requests forceful termination.
+func (a *Agent) stopChildren(ctx context.Context, sig os.Signal, allowOverride bool) {
+	intent := cmdutil.TerminationFromSignal(sig)
+	logger.Info(ctx, "Stopping running child processes",
+		slog.String("stop-mode", string(intent.Mode)),
+		tag.Signal(intent.SignalName()),
 		slog.Bool("allow-override", allowOverride),
 		slog.Duration("max-cleanup-time", a.dag.MaxCleanUpTime),
 	)
 
-	if !signal.IsTerminationSignalOS(sig) {
-		// For non-termination signals, just send the signal once and return.
-		a.runner.Signal(ctx, a.plan, sig, nil, allowOverride)
+	// Snapshot runner+plan under the read lock: listenSignals can attach
+	// before Run() assigns a.runner and a.plan, so an early signal would
+	// otherwise nil-deref below.
+	a.lock.RLock()
+	runner := a.runner
+	plan := a.plan
+	a.lock.RUnlock()
+	if runner == nil || plan == nil {
+		logger.Debug(ctx, "Agent not yet initialized; ignoring stop request",
+			tag.Signal(intent.SignalName()))
+		return
+	}
+
+	if !intent.IsTermination() {
+		// For non-termination signals, just forward the request once and return.
+		runner.Stop(ctx, plan, intent, nil, allowOverride)
 		return
 	}
 
@@ -1790,7 +1840,7 @@ func (a *Agent) signal(ctx context.Context, sig os.Signal, allowOverride bool) {
 
 	done := make(chan bool, 1)
 	go func() {
-		a.runner.Signal(ctx, a.plan, sig, done, allowOverride)
+		runner.Stop(ctx, plan, intent, done, allowOverride)
 	}()
 
 	resendTicker := time.NewTicker(5 * time.Second)
@@ -1805,18 +1855,23 @@ func (a *Agent) signal(ctx context.Context, sig os.Signal, allowOverride bool) {
 			return
 
 		case <-signalCtx.Done():
-			logger.Info(ctx, "Max cleanup time reached, sending SIGKILL to force termination")
-			a.runner.Signal(ctx, a.plan, syscall.SIGKILL, nil, false)
+			forceIntent := cmdutil.ForceTermination()
+			logger.Info(ctx, "Max cleanup time reached, forcing child process termination",
+				slog.String("stop-mode", string(forceIntent.Mode)),
+				tag.Signal(forceIntent.SignalName()),
+			)
+			runner.Stop(ctx, plan, forceIntent, nil, false)
 			return
 
 		case <-resendTicker.C:
-			logger.Info(ctx, "Resending signal to processes that haven't terminated",
-				tag.Signal(sig.String()),
+			logger.Info(ctx, "Resending stop request to processes that haven't terminated",
+				slog.String("stop-mode", string(intent.Mode)),
+				tag.Signal(intent.SignalName()),
 			)
-			a.runner.Signal(ctx, a.plan, sig, nil, false)
+			runner.Stop(ctx, plan, intent, nil, false)
 
 		case <-probeTicker.C:
-			if a.plan != nil && !a.plan.HasActiveNodes() {
+			if !plan.HasActiveNodes() {
 				logger.Info(ctx, "No running processes detected, termination complete")
 				return
 			}

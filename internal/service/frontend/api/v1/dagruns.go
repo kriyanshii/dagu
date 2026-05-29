@@ -38,7 +38,6 @@ import (
 	"github.com/dagucloud/dagu/internal/core/spec"
 	spectypes "github.com/dagucloud/dagu/internal/core/spec/types"
 	"github.com/dagucloud/dagu/internal/dagrun/intake"
-	"github.com/dagucloud/dagu/internal/persis/filedagrun"
 	"github.com/dagucloud/dagu/internal/runtime"
 	"github.com/dagucloud/dagu/internal/runtime/executor"
 	"github.com/dagucloud/dagu/internal/service/audit"
@@ -754,7 +753,7 @@ func (a *API) readDAGRunsPage(
 }
 
 func dagRunListBadRequest(err error) *Error {
-	if !errors.Is(err, filedagrun.ErrInvalidQueryCursor) {
+	if !errors.Is(err, exec.ErrInvalidQueryCursor) {
 		return nil
 	}
 	return &Error{
@@ -2616,7 +2615,7 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 		if stepName != "" {
 			opts = append(opts, executor.WithStep(stepName))
 		}
-		if snapshot, err := agentsnapshot.BuildFromPaths(ctx, dag, a.config.Paths, a.dagStore); err != nil {
+		if snapshot, err := agentsnapshot.BuildFromPaths(ctx, dag, a.config.Paths, a.dagStore, a.snapshotStoreFactory); err != nil {
 			return retryDAGRunResult{}, fmt.Errorf("build distributed agent snapshot: %w", err)
 		} else if len(snapshot) > 0 {
 			opts = append(opts, executor.WithAgentSnapshot(snapshot))
@@ -4228,7 +4227,7 @@ func (a *API) GetDAGRunsListData(ctx context.Context, queryString string) (any, 
 
 		page, err := a.dagRunStore.ListStatusesPage(readCtx, opts.query...)
 		if err != nil {
-			if errors.Is(err, filedagrun.ErrInvalidQueryCursor) {
+			if errors.Is(err, exec.ErrInvalidQueryCursor) {
 				return nil, err
 			}
 			return nil, fmt.Errorf("error listing dag-runs: %w", err)

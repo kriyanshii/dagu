@@ -10,13 +10,11 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis/filedag"
-	"github.com/dagucloud/dagu/internal/persis/filedagrun"
-	"github.com/dagucloud/dagu/internal/persis/filequeue"
+	"github.com/dagucloud/dagu/internal/persis/file"
+	"github.com/dagucloud/dagu/internal/persis/store"
 	"github.com/dagucloud/dagu/internal/runtime"
 	"github.com/dagucloud/dagu/internal/service/coordinator"
 	"github.com/dagucloud/dagu/internal/service/scheduler"
-	"github.com/dagucloud/dagu/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,19 +58,11 @@ func SetupScheduler(t *testing.T, opts ...HelperOption) *Scheduler {
 	helper.Config.Scheduler.LockRetryInterval = 50 * time.Millisecond
 
 	// Create additional stores needed for scheduler
-	ds := filedag.New(
-		helper.Config.Paths.DAGsDir,
-		filedag.WithFlagsBaseDir(helper.Config.Paths.SuspendFlagsDir),
-		filedag.WithBaseConfig(helper.Config.Paths.BaseConfig),
-		filedag.WithWorkspaceBaseConfigDir(workspace.BaseConfigDir(helper.Config.Paths.DAGsDir)),
-		filedag.WithSkipExamples(true),
-	)
-	drs := filedagrun.New(
-		helper.Config.Paths.DAGRunsDir,
-		filedagrun.WithArtifactDir(helper.Config.Paths.ArtifactDir),
-	)
+	ds, err := file.NewDAGStore(helper.Config, file.WithDAGSkipExamples(true))
+	require.NoError(t, err)
+	drs := file.NewDAGRunStore(helper.Config)
 	ps := newProcStore(helper.Config)
-	qs := filequeue.New(helper.Config.Paths.QueueDir)
+	qs := store.NewQueueStore(file.NewCollection(helper.Config.Paths.QueueDir))
 
 	// Create DAG run manager
 	drm := runtime.NewManager(drs, ps, helper.Config)
@@ -126,8 +116,18 @@ func (s *Scheduler) Start(t *testing.T, ctx context.Context) (*scheduler.Schedul
 		errCh <- instance.Start(ctx)
 	}()
 
-	// Give scheduler time to start
-	time.Sleep(100 * time.Millisecond)
+	var startErr error
+	var stopped bool
+	require.Eventually(t, func() bool {
+		select {
+		case startErr = <-errCh:
+			stopped = true
+			return true
+		default:
+		}
+		return instance.IsRunning()
+	}, 5*time.Second, 25*time.Millisecond, "scheduler should start")
+	require.False(t, stopped, "scheduler exited before it started: %v", startErr)
 
 	return instance, errCh
 }

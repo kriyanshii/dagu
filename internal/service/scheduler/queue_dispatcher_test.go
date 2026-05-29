@@ -4,8 +4,8 @@
 package scheduler
 
 import (
+	"fmt"
 	"testing"
-	"time"
 
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/core/exec"
@@ -14,9 +14,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type testQueuedItem struct {
+	id  string
+	ref *exec.DAGRunRef
+	err error
+}
+
+func (i testQueuedItem) ID() string {
+	return i.id
+}
+
+func (i testQueuedItem) Data() (*exec.DAGRunRef, error) {
+	if i.err != nil {
+		return nil, i.err
+	}
+	return i.ref, nil
+}
+
 func TestQueueDispatcher_SelectRunnableQueueItemsSkipsOutstandingReservations(t *testing.T) {
 	f := newQueueFixture(t).withDAG("dispatcher-select-dag", 2).
-		withProcessor(config.Queues{}, WithLeaseStaleThreshold(5*time.Second)).
+		withProcessor(config.Queues{}, WithLeaseStaleThreshold(freshDistributedTestThreshold)).
 		simulateQueue(2, false)
 
 	f.enqueueRuns(2)
@@ -41,7 +58,7 @@ func TestQueueDispatcher_SelectRunnableQueueItemsSkipsOutstandingReservations(t 
 	dispatcher := newQueueDispatcher(queueDispatchDeps{
 		dagRunStore:         f.dagRunStore,
 		dispatchTaskStore:   f.dispatchStore,
-		leaseStaleThreshold: 5 * time.Second,
+		leaseStaleThreshold: freshDistributedTestThreshold,
 	})
 	runnable, err := dispatcher.selectRunnableQueueItems(f.ctx, items, 1)
 	require.NoError(t, err)
@@ -50,4 +67,17 @@ func TestQueueDispatcher_SelectRunnableQueueItemsSkipsOutstandingReservations(t 
 	selectedRef, err := runnable[0].Data()
 	require.NoError(t, err)
 	assert.Equal(t, "run-2", selectedRef.ID)
+}
+
+func TestQueueDispatcher_SelectRunnableQueueItemsSkipsInvalidItems(t *testing.T) {
+	dispatcher := newQueueDispatcher(queueDispatchDeps{})
+	validRef := exec.NewDAGRunRef("dag", "run-ok")
+
+	runnable, err := dispatcher.selectRunnableQueueItems(t.Context(), []exec.QueuedItemData{
+		testQueuedItem{id: "bad", err: fmt.Errorf("invalid queued item")},
+		testQueuedItem{id: "ok", ref: &validRef},
+	}, 1)
+	require.NoError(t, err)
+	require.Len(t, runnable, 1)
+	assert.Equal(t, "ok", runnable[0].ID())
 }

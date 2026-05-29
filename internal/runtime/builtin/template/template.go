@@ -13,6 +13,7 @@ import (
 	"text/template"
 
 	"github.com/dagucloud/dagu/internal/cmn/eval"
+	"github.com/dagucloud/dagu/internal/cmn/fileutil"
 	"github.com/dagucloud/dagu/internal/cmn/templatefuncs"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/runtime"
@@ -108,14 +109,8 @@ func (e *templateExec) writeToFile(data []byte) error {
 		return fmt.Errorf("template: failed to create output directory: %w", err)
 	}
 
-	tmpFile := e.outputFile + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
-		return fmt.Errorf("template: failed to write temp file: %w", err)
-	}
-
-	if err := os.Rename(tmpFile, e.outputFile); err != nil {
-		_ = os.Remove(tmpFile)
-		return fmt.Errorf("template: failed to rename output file: %w", err)
+	if err := fileutil.WriteFileAtomic(e.outputFile, data, 0600); err != nil {
+		return fmt.Errorf("template: failed to write output file: %w", err)
 	}
 
 	return nil

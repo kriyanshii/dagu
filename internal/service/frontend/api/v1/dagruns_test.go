@@ -20,7 +20,7 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis/filedagrun"
+	"github.com/dagucloud/dagu/internal/persis/file/dagrun"
 	"github.com/dagucloud/dagu/internal/runtime/transform"
 	"github.com/dagucloud/dagu/internal/test"
 	"github.com/stretchr/testify/assert"
@@ -101,10 +101,10 @@ func waitForStoredDAGRunStatus(
 	// Read persisted status through a fresh store without the long-lived server cache.
 	// API tests intentionally verify out-of-band status writes (approve/reject/reschedule),
 	// so cached reads can hide valid cross-process updates on Windows.
-	store := filedagrun.New(
+	store := dagrun.New(
 		server.Config.Paths.DAGRunsDir,
-		filedagrun.WithLatestStatusToday(server.Config.Server.LatestStatusToday),
-		filedagrun.WithLocation(server.Config.Core.Location),
+		dagrun.WithLatestStatusToday(server.Config.Server.LatestStatusToday),
+		dagrun.WithLocation(server.Config.Core.Location),
 	)
 	var status *exec.DAGRunStatus
 	require.Eventually(t, func() bool {
@@ -1315,36 +1315,32 @@ steps:
 	startResp.Unmarshal(t, &startBody)
 	require.NotEmpty(t, startBody.DagRunId)
 
-	require.Eventually(t, func() bool {
-		resp := server.Client().Get(
-			fmt.Sprintf("/api/v1/dag-runs/%s/%s", "single_retry_local_dag", startBody.DagRunId),
-		).Send(t)
-		if resp.Response.StatusCode() != http.StatusOK {
-			return false
-		}
-
-		var details api.GetDAGRunDetails200JSONResponse
-		resp.Unmarshal(t, &details)
-		return details.DagRunDetails.Status == api.Status(core.Failed)
-	}, dagRunEventuallyTimeout(15*time.Second), 200*time.Millisecond)
+	waitForStoredDAGRunStatus(
+		t,
+		server,
+		"single_retry_local_dag",
+		startBody.DagRunId,
+		15*time.Second,
+		func(status *exec.DAGRunStatus) bool {
+			return status.Status == core.Failed
+		},
+	)
 
 	server.Client().Post(
 		fmt.Sprintf("/api/v1/dag-runs/%s/%s/retry", "single_retry_local_dag", "latest"),
 		api.RetryDAGRunJSONRequestBody{},
 	).ExpectStatus(http.StatusOK).Send(t)
 
-	require.Eventually(t, func() bool {
-		resp := server.Client().Get(
-			fmt.Sprintf("/api/v1/dag-runs/%s/%s", "single_retry_local_dag", "latest"),
-		).Send(t)
-		if resp.Response.StatusCode() != http.StatusOK {
-			return false
-		}
-
-		var details api.GetDAGRunDetails200JSONResponse
-		resp.Unmarshal(t, &details)
-		return details.DagRunDetails.Status == api.Status(core.Succeeded)
-	}, dagRunEventuallyTimeout(15*time.Second), 200*time.Millisecond)
+	waitForStoredDAGRunStatus(
+		t,
+		server,
+		"single_retry_local_dag",
+		startBody.DagRunId,
+		15*time.Second,
+		func(status *exec.DAGRunStatus) bool {
+			return status.Status == core.Succeeded
+		},
+	)
 }
 
 func TestTerminateDAGRunCancelsFailedAutoRetryPendingRun(t *testing.T) {

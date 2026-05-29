@@ -213,11 +213,15 @@ type Server struct {
 	RemoteNodes       []RemoteNode
 	Permissions       map[Permission]bool
 	StrictValidation  bool
-	Metrics           MetricsAccess // "private" or "public"
-	Terminal          TerminalConfig
-	Audit             AuditConfig
-	Session           SessionConfig
-	SSE               SSEConfig
+	// CORSAllowedOrigins lists explicit origins for CORS. When empty, all
+	// origins are allowed but AllowCredentials is disabled (spec-compliant).
+	// When set, only listed origins are allowed and AllowCredentials is enabled.
+	CORSAllowedOrigins []string
+	Metrics            MetricsAccess // "private" or "public"
+	Terminal           TerminalConfig
+	Audit              AuditConfig
+	Session            SessionConfig
+	SSE                SSEConfig
 }
 
 // TerminalConfig contains configuration for the web-based terminal feature.
@@ -368,6 +372,7 @@ type PathsConfig struct {
 	Executable         string
 	LogDir             string
 	ArtifactDir        string
+	DAGStateDir        string
 	DataDir            string
 	ToolsDir           string
 	SuspendFlagsDir    string

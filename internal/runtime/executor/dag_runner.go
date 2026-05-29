@@ -61,9 +61,9 @@ type SubDAGExecutor struct {
 
 	// Process tracking for ALL executions
 	mu              sync.Mutex
-	cmds            map[string]*osexec.Cmd // runID -> cmd for local processes
-	distributedRuns map[string]bool        // runID -> true for distributed runs
-	dagCtx          exec.Context           // for DB access when cancelling distributed runs
+	processes       map[string]*cmdutil.ManagedProcess // runID -> local process
+	distributedRuns map[string]bool                    // runID -> true for distributed runs
+	dagCtx          exec.Context                       // for DB access when cancelling distributed runs
 
 	// killed should be closed when Kill is called
 	killed     chan struct{}
@@ -110,7 +110,7 @@ func NewSubDAGExecutor(ctx context.Context, childName string) (*SubDAGExecutor, 
 				DAG:             dag,
 				tempFile:        tempFile,
 				coordinatorCli:  rCtx.CoordinatorCli,
-				cmds:            make(map[string]*osexec.Cmd),
+				processes:       make(map[string]*cmdutil.ManagedProcess),
 				distributedRuns: make(map[string]bool),
 				dagCtx:          rCtx,
 				killed:          make(chan struct{}),
@@ -127,7 +127,7 @@ func NewSubDAGExecutor(ctx context.Context, childName string) (*SubDAGExecutor, 
 	return &SubDAGExecutor{
 		DAG:             dag,
 		coordinatorCli:  rCtx.CoordinatorCli,
-		cmds:            make(map[string]*osexec.Cmd),
+		processes:       make(map[string]*cmdutil.ManagedProcess),
 		distributedRuns: make(map[string]bool),
 		dagCtx:          rCtx,
 		killed:          make(chan struct{}),
@@ -145,7 +145,7 @@ func NewSubDAGExecutorForDAG(ctx context.Context, dag *core.DAG) (*SubDAGExecuto
 	return &SubDAGExecutor{
 		DAG:             dag,
 		coordinatorCli:  rCtx.CoordinatorCli,
-		cmds:            make(map[string]*osexec.Cmd),
+		processes:       make(map[string]*cmdutil.ManagedProcess),
 		distributedRuns: make(map[string]bool),
 		dagCtx:          rCtx,
 		killed:          make(chan struct{}),
@@ -493,7 +493,7 @@ func (e *SubDAGExecutor) Cleanup(ctx context.Context) error {
 	ctx = logger.WithValues(ctx, tag.File(e.tempFile))
 	logger.Info(ctx, "Cleaning up temporary DAG file")
 
-	if err := os.Remove(e.tempFile); err != nil && !os.IsNotExist(err) {
+	if err := fileutil.Remove(e.tempFile); err != nil && !os.IsNotExist(err) {
 		logger.Error(ctx, "Failed to remove temporary DAG file", tag.File(e.tempFile), tag.Error(err))
 		return fmt.Errorf("failed to remove temp file: %w", err)
 	}
@@ -515,6 +515,9 @@ func (e *SubDAGExecutor) Execute(ctx context.Context, runParams RunParams, workD
 		e.distributedRuns[runParams.RunID] = true
 		e.mu.Unlock()
 
+		if err := e.cancellationErr(ctx); err != nil {
+			return nil, err
+		}
 		return e.dispatch(ctx, runParams)
 	}
 
@@ -547,6 +550,9 @@ func (e *SubDAGExecutor) Retry(ctx context.Context, runParams RunParams, stepNam
 		e.distributedRuns[runParams.RunID] = true
 		e.mu.Unlock()
 
+		if err := e.cancellationErr(ctx); err != nil {
+			return nil, err
+		}
 		if err := e.dispatchRetryToCoordinator(ctx, runParams, stepName); err != nil {
 			return nil, fmt.Errorf("distributed step retry failed: %w", err)
 		}
@@ -569,23 +575,23 @@ func (e *SubDAGExecutor) runLocalCommand(ctx context.Context, runID string, cmd 
 	// Ensure we clear command reference when done
 	defer func() {
 		e.mu.Lock()
-		delete(e.cmds, runID)
+		delete(e.processes, runID)
 		e.mu.Unlock()
 	}()
 
 	logger.Info(ctx, "Executing sub DAG locally")
 
-	// Start the command first to initialize cmd.Process
-	if err := cmd.Start(); err != nil {
+	process, err := cmdutil.StartManagedProcess(cmd)
+	if err != nil {
 		return nil, fmt.Errorf("failed to start sub dag-run: %w", err)
 	}
+	defer func() { _ = process.Release() }()
 
-	// Store command reference for Kill AFTER starting, so cmd.Process is already set
 	e.mu.Lock()
-	e.cmds[runID] = cmd
+	e.processes[runID] = process
 	e.mu.Unlock()
 
-	waitErr := cmd.Wait()
+	waitErr := process.Wait()
 	if waitErr != nil {
 		logger.Error(ctx, "Sub DAG execution returned error", tag.Error(waitErr))
 	}
@@ -629,7 +635,7 @@ func (e *SubDAGExecutor) materializeLocalWorkspace(runParams RunParams) (string,
 		return "", nil, fmt.Errorf("create local action workspace: %w", err)
 	}
 	cleanup := func() {
-		_ = os.RemoveAll(tmp)
+		_ = fileutil.RemoveAll(tmp)
 	}
 	dest := filepath.Join(tmp, "workspace")
 	if err := workspacebundle.Extract(e.workspaceSeed.Archive, dest, e.workspaceSeed.Descriptor, workspacebundle.DefaultLimits()); err != nil {
@@ -657,6 +663,9 @@ func (e *SubDAGExecutor) dispatch(ctx context.Context, runParams RunParams) (*ex
 
 // dispatchToCoordinator builds and dispatches a task to the coordinator.
 func (e *SubDAGExecutor) dispatchToCoordinator(ctx context.Context, runParams RunParams) error {
+	if err := e.cancellationErr(ctx); err != nil {
+		return err
+	}
 	if e.coordinatorCli == nil {
 		return fmt.Errorf("no coordinator client configured for distributed execution")
 	}
@@ -665,11 +674,17 @@ func (e *SubDAGExecutor) dispatchToCoordinator(ctx context.Context, runParams Ru
 		if !ok {
 			return fmt.Errorf("coordinator client does not support workspace bundles")
 		}
+		if err := e.cancellationErr(ctx); err != nil {
+			return err
+		}
 		if err := client.PutWorkspaceBundle(ctx, e.workspaceSeed.Descriptor, e.workspaceSeed.Archive); err != nil {
 			return fmt.Errorf("upload workspace bundle: %w", err)
 		}
 	}
 
+	if err := e.cancellationErr(ctx); err != nil {
+		return err
+	}
 	task, err := e.BuildCoordinatorTask(ctx, runParams)
 	if err != nil {
 		return fmt.Errorf("failed to build coordinator task: %w", err)
@@ -683,6 +698,9 @@ func (e *SubDAGExecutor) dispatchToCoordinator(ctx context.Context, runParams Ru
 		slog.Any("worker-selector", task.WorkerSelector),
 	)
 
+	if err := e.cancellationErr(ctx); err != nil {
+		return err
+	}
 	if err := e.coordinatorCli.Dispatch(ctx, task); err != nil {
 		return fmt.Errorf("failed to dispatch task: %w", err)
 	}
@@ -691,6 +709,9 @@ func (e *SubDAGExecutor) dispatchToCoordinator(ctx context.Context, runParams Ru
 }
 
 func (e *SubDAGExecutor) dispatchRetryToCoordinator(ctx context.Context, runParams RunParams, stepName string) error {
+	if err := e.cancellationErr(ctx); err != nil {
+		return err
+	}
 	if e.coordinatorCli == nil {
 		return fmt.Errorf("no coordinator client configured for distributed execution")
 	}
@@ -714,8 +735,23 @@ func (e *SubDAGExecutor) dispatchRetryToCoordinator(ctx context.Context, runPara
 		slog.Any("worker-selector", task.WorkerSelector),
 	)
 
+	if err := e.cancellationErr(ctx); err != nil {
+		return err
+	}
 	if err := e.coordinatorCli.Dispatch(ctx, task); err != nil {
 		return fmt.Errorf("failed to dispatch retry task: %w", err)
+	}
+	return nil
+}
+
+func (e *SubDAGExecutor) cancellationErr(ctx context.Context) error {
+	select {
+	case <-e.killed:
+		return errSubDAGCancelled
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(errSubDAGCancelled, err)
 	}
 	return nil
 }
@@ -983,6 +1019,12 @@ func extractOutputValuesFromNodes(nodes []*exec.Node) map[string]any {
 
 // Kill terminates all running sub DAG processes (both local and distributed)
 func (e *SubDAGExecutor) Kill(sig os.Signal) error {
+	return e.Stop(cmdutil.TerminationFromSignal(sig))
+}
+
+// Stop terminates all running sub DAG processes (both local and distributed)
+// according to the requested lifecycle intent.
+func (e *SubDAGExecutor) Stop(intent cmdutil.TerminationIntent) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1034,19 +1076,21 @@ func (e *SubDAGExecutor) Kill(sig os.Signal) error {
 	}
 
 	// Kill local processes
-	for runID, cmd := range e.cmds {
-		if cmd != nil && cmd.Process != nil {
-			if err := cmdutil.KillProcessGroup(cmd, sig); err != nil {
+	for runID, process := range e.processes {
+		if process != nil {
+			if _, err := process.Stop(cmdutil.StopRequest{Intent: intent}); err != nil {
 				errs = append(errs, err)
-				logger.Warn(ctx, "Failed to kill local sub DAG process",
+				logger.Warn(ctx, "Failed to stop local sub DAG process",
 					tag.RunID(runID),
 					tag.DAG(e.DAG.Name),
 					tag.Error(err),
 				)
 			} else {
-				logger.Info(ctx, "Requested kill for local sub DAG process",
+				logger.Info(ctx, "Requested stop for local sub DAG process",
 					tag.RunID(runID),
 					tag.DAG(e.DAG.Name),
+					slog.String("stop-mode", string(intent.Mode)),
+					tag.Signal(intent.SignalName()),
 				)
 			}
 		}

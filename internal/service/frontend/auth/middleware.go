@@ -4,6 +4,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"net"
@@ -13,6 +14,21 @@ import (
 	"github.com/dagucloud/dagu/internal/auth"
 	"github.com/dagucloud/dagu/internal/service/frontend/api/pathutil"
 )
+
+// rawRemoteAddrKey is the context key for the pre-RealIP remote address.
+type rawRemoteAddrKey struct{}
+
+// PreserveRawRemoteAddr stores r.RemoteAddr in the request context before
+// chi's middleware.RealIP (or any other middleware) can overwrite it.
+// It must be registered before middleware.RealIP in the middleware chain so
+// that LoginRateLimitMiddleware can derive the rate-limit key from the true
+// TCP source address rather than an attacker-controlled forwarded header.
+func PreserveRawRemoteAddr(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), rawRemoteAddrKey{}, r.RemoteAddr)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
 
 // Options configures the authentication middleware.
 type Options struct {
@@ -29,11 +45,21 @@ type Options struct {
 	// APIKeyValidator validates API keys with roles.
 	// When set, API keys with the "dagu_" prefix are accepted as an authentication method.
 	APIKeyValidator APIKeyValidator
+	// RequiredAPIKeySurface, when set, requires API keys to include this surface.
+	RequiredAPIKeySurface auth.APIKeySurface
+	// OnDenied is called when the middleware rejects a request after auth evaluation.
+	OnDenied func(r *http.Request, reason string, apiKey *auth.APIKey)
 	// AuthRequired indicates whether authentication is required.
 	// When false (e.g., auth mode "none"), credentials are validated if provided
 	// but unauthenticated requests are allowed through.
 	AuthRequired bool
 }
+
+const (
+	DenialReasonAPIKeySurfaceDenied = "api_key_surface_denied"
+	DenialReasonAuthFailed          = "auth_failed"
+	DenialReasonMissingCredentials  = "missing_credentials"
+)
 
 // QueryTokenMiddleware converts a "token" query parameter into an Authorization
 // Bearer header. This bridges browser APIs that cannot set custom headers
@@ -130,6 +156,10 @@ func Middleware(opts Options) func(next http.Handler) http.Handler {
 			if jwtEnabled || apiKeyEnabled {
 				bearerToken = extractBearerToken(r)
 			}
+			denialReason := DenialReasonMissingCredentials
+			if bearerToken != "" {
+				denialReason = DenialReasonAuthFailed
+			}
 
 			// Try JWT token authentication if enabled (for builtin auth mode)
 			if jwtEnabled && bearerToken != "" {
@@ -147,13 +177,19 @@ func Middleware(opts Options) func(next http.Handler) http.Handler {
 			if apiKeyEnabled && bearerToken != "" && strings.HasPrefix(bearerToken, "dagu_") {
 				apiKey, err := opts.APIKeyValidator.ValidateAPIKey(r.Context(), bearerToken)
 				if err == nil {
+					apiKey = auth.NormalizeAPIKeyMetadata(apiKey)
+					if opts.RequiredAPIKeySurface != "" && !auth.HasAPIKeySurface(apiKey.AllowedSurfaces, opts.RequiredAPIKeySurface) {
+						callDenied(opts, r, DenialReasonAPIKeySurfaceDenied, apiKey)
+						http.Error(w, "API key is not allowed for this surface", http.StatusForbidden)
+						return
+					}
 					syntheticUser := &auth.User{
 						ID:              "apikey:" + apiKey.ID,
 						Username:        "apikey:" + apiKey.Name,
 						Role:            apiKey.Role,
 						WorkspaceAccess: auth.CloneWorkspaceAccess(apiKey.WorkspaceAccess),
 					}
-					ctx := auth.WithUser(r.Context(), syntheticUser)
+					ctx := auth.WithAPIKey(auth.WithUser(r.Context(), syntheticUser), apiKey)
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}
@@ -176,6 +212,7 @@ func Middleware(opts Options) func(next http.Handler) http.Handler {
 						return
 					}
 					// Invalid credentials - always reject
+					callDenied(opts, r, DenialReasonAuthFailed, nil)
 					requireBasicAuth(w, opts.Realm)
 					return
 				}
@@ -190,12 +227,20 @@ func Middleware(opts Options) func(next http.Handler) http.Handler {
 
 			// Auth is required - send appropriate challenge
 			if opts.BasicAuthEnabled {
+				callDenied(opts, r, denialReason, nil)
 				requireBasicAuth(w, opts.Realm)
 				return
 			}
 
+			callDenied(opts, r, denialReason, nil)
 			requireBearerAuth(w, opts.Realm)
 		})
+	}
+}
+
+func callDenied(opts Options, r *http.Request, reason string, apiKey *auth.APIKey) {
+	if opts.OnDenied != nil {
+		opts.OnDenied(r, reason, apiKey)
 	}
 }
 
@@ -224,19 +269,22 @@ func requireBearerAuth(w http.ResponseWriter, realm string) {
 
 // GetClientIP extracts the client IP address from the request.
 // It checks X-Forwarded-For and X-Real-IP headers for proxied requests.
+// Port suffixes (e.g. from HAProxy source-port annotation) are stripped so
+// that all connections from the same client IP share one rate-limit bucket.
 func GetClientIP(r *http.Request) string {
 	// Check X-Forwarded-For header first (for proxies)
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		// Take the first IP in the chain
+		raw := xff
 		if before, _, ok := strings.Cut(xff, ","); ok {
-			return strings.TrimSpace(before)
+			raw = before
 		}
-		return strings.TrimSpace(xff)
+		return stripPort(strings.TrimSpace(raw))
 	}
 
 	// Check X-Real-IP header
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+		return stripPort(strings.TrimSpace(xri))
 	}
 
 	// Fall back to RemoteAddr - use net.SplitHostPort for proper IPv6 handling
@@ -244,6 +292,17 @@ func GetClientIP(r *http.Request) string {
 	if err != nil {
 		// Return as-is if parsing fails (e.g., no port present)
 		return r.RemoteAddr
+	}
+	return host
+}
+
+// stripPort removes a trailing ":port" from an IP string.
+// It handles bare IPv4 ("1.2.3.4:1234"), bracketed IPv6 ("[::1]:1234"),
+// and plain addresses without a port.
+func stripPort(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr // no port present; return unchanged
 	}
 	return host
 }

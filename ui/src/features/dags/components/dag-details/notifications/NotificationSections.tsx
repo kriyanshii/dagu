@@ -1022,27 +1022,6 @@ export function DAGSubscriptionsSection({
   );
 }
 
-export function NotificationChannelsUnavailableCard({
-  showDAGLocalNote = true,
-}: {
-  showDAGLocalNote?: boolean;
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center gap-2">
-          <Bell className="h-4 w-4 text-muted-foreground" />
-          <CardTitle className="text-sm">Notification Channels</CardTitle>
-        </div>
-      </CardHeader>
-      <CardContent className="text-sm text-muted-foreground">
-        Notification channels and rules require an active Dagu license or trial.
-        {showDAGLocalNote && ' Custom destinations remain available.'}
-      </CardContent>
-    </Card>
-  );
-}
-
 type DAGLocalTargetsSectionProps = {
   draft: DraftSettings;
   testingTargetId: string | null;

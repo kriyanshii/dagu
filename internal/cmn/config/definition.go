@@ -7,15 +7,16 @@ package config
 // Fields are organized into logical groups for clarity.
 type Definition struct {
 	// Server settings
-	Host         string  `mapstructure:"host"`
-	Port         int     `mapstructure:"port"`
-	PublicURL    string  `mapstructure:"public_url"`
-	BasePath     string  `mapstructure:"base_path"`
-	APIBasePath  string  `mapstructure:"api_base_path"`
-	APIBaseURL   string  `mapstructure:"api_base_url"` // Deprecated: use APIBasePath
-	Headless     *bool   `mapstructure:"headless"`
-	CheckUpdates *bool   `mapstructure:"check_updates"`
-	TLS          *TLSDef `mapstructure:"tls"`
+	Host               string   `mapstructure:"host"`
+	Port               int      `mapstructure:"port"`
+	PublicURL          string   `mapstructure:"public_url"`
+	BasePath           string   `mapstructure:"base_path"`
+	APIBasePath        string   `mapstructure:"api_base_path"`
+	APIBaseURL         string   `mapstructure:"api_base_url"` // Deprecated: use APIBasePath
+	Headless           *bool    `mapstructure:"headless"`
+	CheckUpdates       *bool    `mapstructure:"check_updates"`
+	TLS                *TLSDef  `mapstructure:"tls"`
+	CORSAllowedOrigins []string `mapstructure:"cors_allowed_origins"`
 
 	// Core settings
 	Debug                  bool     `mapstructure:"debug"`
@@ -187,6 +188,7 @@ type PathsDef struct {
 	Executable         string `mapstructure:"executable"`
 	LogDir             string `mapstructure:"log_dir"`
 	ArtifactDir        string `mapstructure:"artifact_dir"`
+	DAGStateDir        string `mapstructure:"dag_state_dir"`
 	DataDir            string `mapstructure:"data_dir"`
 	ToolsDir           string `mapstructure:"tools_dir"`
 	SuspendFlagsDir    string `mapstructure:"suspend_flags_dir"`

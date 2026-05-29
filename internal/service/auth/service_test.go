@@ -6,15 +6,13 @@ package auth
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dagucloud/dagu/internal/auth"
-	"github.com/dagucloud/dagu/internal/persis/fileapikey"
-	"github.com/dagucloud/dagu/internal/persis/fileuser"
+	persiststore "github.com/dagucloud/dagu/internal/persis/store"
+	"github.com/dagucloud/dagu/internal/persis/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,30 +27,14 @@ func mustTokenSecret(s string) auth.TokenSecret {
 
 func setupTestService(t *testing.T) (*Service, func()) {
 	t.Helper()
-
-	tmpDir, err := os.MkdirTemp("", "auth-service-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-
-	store, err := fileuser.New(tmpDir)
-	if err != nil {
-		_ = os.RemoveAll(tmpDir)
-		t.Fatalf("failed to create store: %v", err)
-	}
-
+	store, err := persiststore.NewUserStore(testutil.NewMemoryBackend().Collection("users"))
+	require.NoError(t, err)
 	config := Config{
 		TokenSecret: mustTokenSecret("test-secret-key-for-jwt-signing"),
 		TokenTTL:    time.Hour,
 		BcryptCost:  4, // Low cost for faster tests
 	}
-
-	svc := New(store, config)
-	cleanup := func() {
-		_ = os.RemoveAll(tmpDir)
-	}
-
-	return svc, cleanup
+	return New(store, config), func() {}
 }
 
 func TestService_CreateUser(t *testing.T) {
@@ -589,11 +571,7 @@ func TestService_ValidateToken_MalformedToken(t *testing.T) {
 
 func TestService_ValidateToken_WrongSecret(t *testing.T) {
 	// Create service with one secret
-	tmpDir, err := os.MkdirTemp("", "auth-service-test-*")
-	require.NoError(t, err)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	store, err := fileuser.New(tmpDir)
+	store, err := persiststore.NewUserStore(testutil.NewMemoryBackend().Collection("users"))
 	require.NoError(t, err)
 
 	config1 := Config{
@@ -629,11 +607,7 @@ func TestService_ValidateToken_WrongSecret(t *testing.T) {
 }
 
 func TestService_ValidateToken_MissingSecret(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "auth-service-test-*")
-	require.NoError(t, err)
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	store, err := fileuser.New(tmpDir)
+	store, err := persiststore.NewUserStore(testutil.NewMemoryBackend().Collection("users"))
 	require.NoError(t, err)
 
 	// Create service without secret
@@ -663,31 +637,124 @@ func TestService_CreateUser_InvalidRole(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid role")
 }
 
+func TestService_GetUserFromToken_PasswordChangeInvalidatesToken(t *testing.T) {
+	svc, cleanup := setupTestService(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	user, err := svc.CreateUser(ctx, CreateUserInput{
+		Username: "testuser",
+		Password: "password123",
+		Role:     auth.RoleAdmin,
+	})
+	require.NoError(t, err)
+
+	// Issue token before password change.
+	tokenResult, err := svc.GenerateToken(user)
+	require.NoError(t, err)
+
+	// Token is valid before password change.
+	_, err = svc.GetUserFromToken(ctx, tokenResult.Token)
+	require.NoError(t, err, "token should be valid before password change")
+
+	// Change password — stamps PasswordChangedAt on the user record.
+	err = svc.ChangePassword(ctx, user.ID, "password123", "newpassword456")
+	require.NoError(t, err)
+
+	// Old token must now be rejected.
+	_, err = svc.GetUserFromToken(ctx, tokenResult.Token)
+	assert.ErrorIs(t, err, ErrInvalidToken, "old token must be rejected after password change")
+}
+
+func TestService_GetUserFromToken_NewTokenValidAfterPasswordChange(t *testing.T) {
+	svc, cleanup := setupTestService(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	user, err := svc.CreateUser(ctx, CreateUserInput{
+		Username: "testuser",
+		Password: "password123",
+		Role:     auth.RoleAdmin,
+	})
+	require.NoError(t, err)
+
+	err = svc.ChangePassword(ctx, user.ID, "password123", "newpassword456")
+	require.NoError(t, err)
+
+	// Fetch updated user (has PasswordChangedAt set) and issue fresh token.
+	updatedUser, err := svc.GetUser(ctx, user.ID)
+	require.NoError(t, err)
+
+	newToken, err := svc.GenerateToken(updatedUser)
+	require.NoError(t, err)
+
+	// New token must be accepted.
+	_, err = svc.GetUserFromToken(ctx, newToken.Token)
+	require.NoError(t, err, "token issued after password change should be valid")
+}
+
+func TestService_GetUserFromToken_ResetPasswordInvalidatesToken(t *testing.T) {
+	svc, cleanup := setupTestService(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	user, err := svc.CreateUser(ctx, CreateUserInput{
+		Username: "victim",
+		Password: "password123",
+		Role:     auth.RoleViewer,
+	})
+	require.NoError(t, err)
+
+	tokenResult, err := svc.GenerateToken(user)
+	require.NoError(t, err)
+
+	// Admin resets password.
+	err = svc.ResetPassword(ctx, user.ID, "adminreset789")
+	require.NoError(t, err)
+
+	// Old token must be rejected.
+	_, err = svc.GetUserFromToken(ctx, tokenResult.Token)
+	assert.ErrorIs(t, err, ErrInvalidToken, "token must be rejected after admin password reset")
+}
+
+func TestService_GetUserFromToken_NoPasswordChangeTokenStillValid(t *testing.T) {
+	svc, cleanup := setupTestService(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// User never changes password — PasswordChangedAt stays nil.
+	user, err := svc.CreateUser(ctx, CreateUserInput{
+		Username: "testuser",
+		Password: "password123",
+		Role:     auth.RoleViewer,
+	})
+	require.NoError(t, err)
+
+	tokenResult, err := svc.GenerateToken(user)
+	require.NoError(t, err)
+
+	// Token must remain valid when password never changed.
+	_, err = svc.GetUserFromToken(ctx, tokenResult.Token)
+	require.NoError(t, err, "token should remain valid when user never changed password")
+}
+
 func setupTestServiceWithAPIKeys(t *testing.T) (*Service, func()) {
 	t.Helper()
-
-	tmpDir, err := os.MkdirTemp("", "auth-service-test-*")
-	require.NoError(t, err, "failed to create temp dir")
-
-	userStore, err := fileuser.New(tmpDir)
+	backend := testutil.NewMemoryBackend()
+	userStore, err := persiststore.NewUserStore(backend.Collection("users"))
 	require.NoError(t, err, "failed to create user store")
-
-	apiKeyDir := filepath.Join(tmpDir, "apikeys")
-	apiKeyStore, err := fileapikey.New(apiKeyDir)
+	apiKeyStore, err := persiststore.NewAPIKeyStore(backend.Collection("apikeys"))
 	require.NoError(t, err, "failed to create API key store")
-
 	config := Config{
 		TokenSecret: mustTokenSecret("test-secret-key-for-jwt-signing"),
 		TokenTTL:    time.Hour,
 		BcryptCost:  4, // Low cost for faster tests
 	}
-
-	svc := New(userStore, config, WithAPIKeyStore(apiKeyStore))
-	cleanup := func() {
-		_ = os.RemoveAll(tmpDir)
-	}
-
-	return svc, cleanup
+	return New(userStore, config, WithAPIKeyStore(apiKeyStore)), func() {}
 }
 
 func TestService_CreateAPIKey(t *testing.T) {

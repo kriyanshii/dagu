@@ -23,7 +23,6 @@ type UseNotificationSettingsArgs = {
   fileName: string;
   query: string;
   workspaceName?: string;
-  reusableChannelsLicensed: boolean;
 };
 
 type NotificationRouteSet = components['schemas']['NotificationRouteSet'];
@@ -43,7 +42,6 @@ export function useNotificationSettings({
   fileName,
   query,
   workspaceName,
-  reusableChannelsLicensed,
 }: UseNotificationSettingsArgs) {
   const [draft, setDraft] = useState<DraftSettings>(defaultDraft);
   const [hasDAGSettings, setHasDAGSettings] = useState(false);
@@ -65,18 +63,17 @@ export function useNotificationSettings({
         `${apiURL}/dags/${encodeURIComponent(fileName)}/notifications${query}`,
         { headers: authHeaders() }
       );
-      const channelRequest = reusableChannelsLicensed
-        ? fetch(`${apiURL}/notification-channels${query}`, {
-            headers: authHeaders(),
-          })
-        : Promise.resolve<Response | null>(null);
-      const globalRoutesRequest = reusableChannelsLicensed
-        ? fetch(`${apiURL}/notification-routes/global${query}`, {
-            headers: authHeaders(),
-          })
-        : Promise.resolve<Response | null>(null);
+      const channelRequest = fetch(`${apiURL}/notification-channels${query}`, {
+        headers: authHeaders(),
+      });
+      const globalRoutesRequest = fetch(
+        `${apiURL}/notification-routes/global${query}`,
+        {
+          headers: authHeaders(),
+        }
+      );
       const workspaceRoutesRequest =
-        reusableChannelsLicensed && workspaceName
+        workspaceName
           ? fetch(
               `${apiURL}/notification-routes/workspaces/${encodeURIComponent(workspaceName)}${query}`,
               { headers: authHeaders() }
@@ -107,47 +104,41 @@ export function useNotificationSettings({
         setHasDAGSettings(true);
       }
 
-      if (!channelsResponse) {
-        setChannels([]);
-        setGlobalRoutes(null);
-        setWorkspaceRoutes(null);
-      } else {
-        if (!channelsResponse.ok) {
-          throw new Error(
-            await readError(channelsResponse, 'Failed to load channels')
-          );
-        }
-        const channelData =
-          (await channelsResponse.json()) as components['schemas']['NotificationChannelListResponse'];
-        setChannels(channelData.channels.map(draftChannelFromAPI));
+      if (!channelsResponse.ok) {
+        throw new Error(
+          await readError(channelsResponse, 'Failed to load channels')
+        );
+      }
+      const channelData =
+        (await channelsResponse.json()) as components['schemas']['NotificationChannelListResponse'];
+      setChannels(channelData.channels.map(draftChannelFromAPI));
 
-        if (!globalRoutesResponse?.ok) {
+      if (!globalRoutesResponse.ok) {
+        throw new Error(
+          await readError(
+            globalRoutesResponse,
+            'Failed to load inherited notification rules'
+          )
+        );
+      }
+      setGlobalRoutes(
+        (await globalRoutesResponse.json()) as NotificationRouteSet
+      );
+
+      if (workspaceRoutesResponse) {
+        if (!workspaceRoutesResponse.ok) {
           throw new Error(
             await readError(
-              globalRoutesResponse as Response,
-              'Failed to load inherited notification rules'
+              workspaceRoutesResponse,
+              'Failed to load workspace notification rules'
             )
           );
         }
-        setGlobalRoutes(
-          (await globalRoutesResponse.json()) as NotificationRouteSet
+        setWorkspaceRoutes(
+          (await workspaceRoutesResponse.json()) as NotificationRouteSet
         );
-
-        if (workspaceRoutesResponse) {
-          if (!workspaceRoutesResponse.ok) {
-            throw new Error(
-              await readError(
-                workspaceRoutesResponse,
-                'Failed to load workspace notification rules'
-              )
-            );
-          }
-          setWorkspaceRoutes(
-            (await workspaceRoutesResponse.json()) as NotificationRouteSet
-          );
-        } else {
-          setWorkspaceRoutes(null);
-        }
+      } else {
+        setWorkspaceRoutes(null);
       }
       setTestResults([]);
     } catch (err) {
@@ -157,7 +148,7 @@ export function useNotificationSettings({
     } finally {
       setIsLoading(false);
     }
-  }, [apiURL, fileName, query, reusableChannelsLicensed, workspaceName]);
+  }, [apiURL, fileName, query, workspaceName]);
 
   useEffect(() => {
     fetchData();

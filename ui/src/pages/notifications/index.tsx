@@ -39,13 +39,9 @@ import { Switch } from '@/components/ui/switch';
 import { AppBarContext } from '@/contexts/AppBarContext';
 import { useClient, useQuery } from '@/hooks/api';
 import { whenEnabled } from '@/hooks/queryUtils';
-import { useLicense } from '@/hooks/useLicense';
 import { cn } from '@/lib/utils';
 import { WorkspaceKind, workspaceNameForSelection } from '@/lib/workspace';
-import {
-  NotificationChannelsSection,
-  NotificationChannelsUnavailableCard,
-} from '@/features/dags/components/dag-details/notifications/NotificationSections';
+import { NotificationChannelsSection } from '@/features/dags/components/dag-details/notifications/NotificationSections';
 import {
   blankChannel,
   channelInput,
@@ -1004,10 +1000,7 @@ function apiErrorMessage(error: unknown, fallback: string): string | null {
 
 export function NotificationRulesPage() {
   const client = useClient();
-  const license = useLicense();
   const appBarContext = useContext(AppBarContext);
-  const reusableChannelsLicensed =
-    !license.community && (license.valid || license.gracePeriod);
   const workspaceSelection = appBarContext.workspaceSelection;
   const selectedWorkspaceName = workspaceNameForSelection(workspaceSelection);
   const canConfigureWorkspaceRoutes =
@@ -1035,11 +1028,11 @@ export function NotificationRulesPage() {
     isLoading: channelsLoading,
   } = useQuery(
     '/notification-channels',
-    whenEnabled(reusableChannelsLicensed, {
+    {
       params: {
         query: { remoteNode },
       },
-    }),
+    },
     {
       revalidateOnFocus: false,
       revalidateOnMount: true,
@@ -1053,11 +1046,11 @@ export function NotificationRulesPage() {
     mutate: mutateGlobalRoutes,
   } = useQuery(
     '/notification-routes/global',
-    whenEnabled(reusableChannelsLicensed, {
+    {
       params: {
         query: { remoteNode },
       },
-    }),
+    },
     {
       revalidateOnFocus: false,
       revalidateOnMount: true,
@@ -1071,7 +1064,7 @@ export function NotificationRulesPage() {
     mutate: mutateWorkspaceRoutes,
   } = useQuery(
     '/notification-routes/workspaces/{workspaceName}',
-    whenEnabled(reusableChannelsLicensed && canConfigureWorkspaceRoutes, {
+    whenEnabled(canConfigureWorkspaceRoutes, {
       params: {
         path: { workspaceName: selectedWorkspaceName },
         query: { remoteNode },
@@ -1084,10 +1077,9 @@ export function NotificationRulesPage() {
   );
 
   const isLoading =
-    reusableChannelsLicensed &&
-    (channelsLoading ||
-      globalRoutesLoading ||
-      (canConfigureWorkspaceRoutes && workspaceRoutesLoading));
+    channelsLoading ||
+    globalRoutesLoading ||
+    (canConfigureWorkspaceRoutes && workspaceRoutesLoading);
   const loadError =
     apiErrorMessage(channelsLoadError, 'Failed to load channels') ??
     apiErrorMessage(globalRoutesLoadError, 'Failed to load Global rules') ??
@@ -1104,27 +1096,19 @@ export function NotificationRulesPage() {
   }, [activeScope, canConfigureWorkspaceRoutes]);
 
   useEffect(() => {
-    if (!reusableChannelsLicensed) {
-      setChannels([]);
-      return;
-    }
     if (channelsData) {
       setChannels((channelsData.channels || []).map(draftChannelFromAPI));
     }
-  }, [channelsData, reusableChannelsLicensed]);
+  }, [channelsData]);
 
   useEffect(() => {
-    if (!reusableChannelsLicensed) {
-      setGlobalRoutes({ ...blankRouteSet, routes: [] });
-      return;
-    }
     if (globalRoutesData) {
       setGlobalRoutes(routeSetDraftFromAPI(globalRoutesData));
     }
-  }, [globalRoutesData, reusableChannelsLicensed]);
+  }, [globalRoutesData]);
 
   useEffect(() => {
-    if (!reusableChannelsLicensed || !canConfigureWorkspaceRoutes) {
+    if (!canConfigureWorkspaceRoutes) {
       setWorkspaceRoutes({ ...blankRouteSet, routes: [] });
       return;
     }
@@ -1133,12 +1117,10 @@ export function NotificationRulesPage() {
     }
   }, [
     canConfigureWorkspaceRoutes,
-    reusableChannelsLicensed,
     workspaceRoutesData,
   ]);
 
   const saveGlobalRoutes = async () => {
-    if (!reusableChannelsLicensed) return;
     setIsSavingGlobalRoutes(true);
     setError(null);
     setNotice(null);
@@ -1174,7 +1156,7 @@ export function NotificationRulesPage() {
   };
 
   const saveWorkspaceRoutes = async () => {
-    if (!reusableChannelsLicensed || !canConfigureWorkspaceRoutes) return;
+    if (!canConfigureWorkspaceRoutes) return;
     setIsSavingWorkspaceRoutes(true);
     setError(null);
     setNotice(null);
@@ -1248,7 +1230,6 @@ export function NotificationRulesPage() {
     ? 'Global'
     : activeTitle;
   const canAddActiveRoute =
-    reusableChannelsLicensed &&
     activeChannels.length > 0 &&
     !activeWorkspaceInheritsGlobal &&
     hasUnusedChannel(activeChannels, activeDraft.routes);
@@ -1282,61 +1263,52 @@ export function NotificationRulesPage() {
       <StatusCard error={error ?? loadError} notice={notice} />
       {isLoading && <LoadingCard label="Refreshing notification rules..." />}
 
-      {reusableChannelsLicensed ? (
-        <>
-          <NotificationRulesHeader
-            canAddRoute={canAddActiveRoute}
-            saving={activeSaving}
-            onAddRoute={addActiveRoute}
-            onSave={saveActiveRoutes}
-          />
+      <NotificationRulesHeader
+        canAddRoute={canAddActiveRoute}
+        saving={activeSaving}
+        onAddRoute={addActiveRoute}
+        onSave={saveActiveRoutes}
+      />
 
-          <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
-            <ScopeSelector
-              activeScope={activeScope}
-              workspaceName={selectedWorkspaceName}
-              canConfigureWorkspaceRoutes={canConfigureWorkspaceRoutes}
-              globalRoutes={globalRoutes}
-              workspaceRoutes={workspaceRoutes}
-              onChange={setActiveScope}
-            />
+      <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
+        <ScopeSelector
+          activeScope={activeScope}
+          workspaceName={selectedWorkspaceName}
+          canConfigureWorkspaceRoutes={canConfigureWorkspaceRoutes}
+          globalRoutes={globalRoutes}
+          workspaceRoutes={workspaceRoutes}
+          onChange={setActiveScope}
+        />
 
-            <RouteBuilder
-              title={activeTitle}
-              description={activeDescription}
-              draft={activeDraft}
-              channels={channels}
-              channelsHref="/notification-channels"
-              showWorkspaceInclude={
-                activeScope === 'workspace' && canConfigureWorkspaceRoutes
-              }
-              emptyText={activeEmptyText}
-              onAddRoute={addActiveRoute}
-              onChange={updateActiveRoutes}
-            />
+        <RouteBuilder
+          title={activeTitle}
+          description={activeDescription}
+          draft={activeDraft}
+          channels={channels}
+          channelsHref="/notification-channels"
+          showWorkspaceInclude={
+            activeScope === 'workspace' && canConfigureWorkspaceRoutes
+          }
+          emptyText={activeEmptyText}
+          onAddRoute={addActiveRoute}
+          onChange={updateActiveRoutes}
+        />
 
-            <RoutePreviewPanel
-              scopeLabel={previewScopeLabel}
-              draft={previewDraft}
-              channels={channels}
-            />
-          </div>
+        <RoutePreviewPanel
+          scopeLabel={previewScopeLabel}
+          draft={previewDraft}
+          channels={channels}
+        />
+      </div>
 
-          <ChannelHelpPanel />
-        </>
-      ) : (
-        <NotificationChannelsUnavailableCard showDAGLocalNote={false} />
-      )}
+      <ChannelHelpPanel />
     </div>
   );
 }
 
 export function NotificationChannelsPage() {
   const client = useClient();
-  const license = useLicense();
   const appBarContext = useContext(AppBarContext);
-  const reusableChannelsLicensed =
-    !license.community && (license.valid || license.gracePeriod);
   const remoteNode = appBarContext.selectedRemoteNode || 'local';
   const [smtpDraft, setSMTPDraft] = useState<SMTPDraft>(blankSMTPDraft);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -1375,19 +1347,18 @@ export function NotificationChannelsPage() {
     mutate: mutateChannels,
   } = useQuery(
     '/notification-channels',
-    whenEnabled(reusableChannelsLicensed, {
+    {
       params: {
         query: { remoteNode },
       },
-    }),
+    },
     {
       revalidateOnFocus: false,
       revalidateOnMount: true,
     }
   );
 
-  const isLoading =
-    settingsLoading || (reusableChannelsLicensed && channelsLoading);
+  const isLoading = settingsLoading || channelsLoading;
   const loadError =
     apiErrorMessage(settingsLoadError, 'Failed to load email delivery') ??
     apiErrorMessage(channelsLoadError, 'Failed to load channels');
@@ -1403,14 +1374,10 @@ export function NotificationChannelsPage() {
   }, [settingsData]);
 
   useEffect(() => {
-    if (!reusableChannelsLicensed) {
-      setChannels([]);
-      return;
-    }
     if (channelsData) {
       setChannels((channelsData.channels || []).map(draftChannelFromAPI));
     }
-  }, [channelsData, reusableChannelsLicensed]);
+  }, [channelsData]);
 
   const saveSettings = async () => {
     setIsSavingSettings(true);
@@ -1446,7 +1413,6 @@ export function NotificationChannelsPage() {
   };
 
   const addChannel = () => {
-    if (!reusableChannelsLicensed) return;
     setChannels((current) => [
       ...current,
       blankChannel(NotificationProviderType.email),
@@ -1465,7 +1431,6 @@ export function NotificationChannelsPage() {
   };
 
   const saveChannel = async (index: number) => {
-    if (!reusableChannelsLicensed) return;
     const channel = channels[index];
     if (!channel) return;
     setSavingChannelIndex(index);
@@ -1505,7 +1470,6 @@ export function NotificationChannelsPage() {
   };
 
   const deleteChannel = async () => {
-    if (!reusableChannelsLicensed) return;
     if (deleteChannelIndex === null) return;
     const channel = channels[deleteChannelIndex];
     if (!channel) return;
@@ -1647,18 +1611,14 @@ export function NotificationChannelsPage() {
         </CardContent>
       </Card>
 
-      {reusableChannelsLicensed ? (
-        <NotificationChannelsSection
-          channels={channels}
-          savingChannelIndex={savingChannelIndex}
-          onAdd={addChannel}
-          onUpdate={updateChannel}
-          onSave={saveChannel}
-          onDelete={setDeleteChannelIndex}
-        />
-      ) : (
-        <NotificationChannelsUnavailableCard showDAGLocalNote={false} />
-      )}
+      <NotificationChannelsSection
+        channels={channels}
+        savingChannelIndex={savingChannelIndex}
+        onAdd={addChannel}
+        onUpdate={updateChannel}
+        onSave={saveChannel}
+        onDelete={setDeleteChannelIndex}
+      />
 
       <ConfirmDialog
         title="Delete Channel"

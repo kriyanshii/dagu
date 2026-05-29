@@ -5,9 +5,11 @@ package scheduler
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/dagucloud/dagu/internal/cmn/procutil"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/stretchr/testify/assert"
@@ -111,6 +113,50 @@ func TestZombieDetectorDetectAndCleanZombies_StaleEntryRepairsMatchingAttempt(t 
 	attempt.AssertExpectations(t)
 }
 
+func TestZombieDetectorDetectAndCleanZombies_StaleEntryWithAliveLocalPIDSkipsRepair(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dagRunStore := &mockDAGRunStore{}
+	procStore := &mockProcStore{}
+	detector := NewZombieDetector(dagRunStore, procStore, time.Second, 1)
+
+	dag := &core.DAG{
+		Name: "test-dag",
+		Steps: []core.Step{
+			{Name: "step1"},
+		},
+	}
+	entry := testRootProcEntry(dag.ProcGroup(), dag.Name, "run-1", "attempt-1", false)
+	pidStartedAt, ok := procutil.StartTime(os.Getpid())
+	require.True(t, ok)
+	status := &exec.DAGRunStatus{
+		Name:         dag.Name,
+		DAGRunID:     "run-1",
+		AttemptID:    "attempt-1",
+		Status:       core.Running,
+		WorkerID:     "local",
+		PID:          exec.PID(os.Getpid()),
+		PIDStartedAt: pidStartedAt,
+		Nodes:        exec.NewNodesFromSteps(dag.Steps),
+	}
+	status.Nodes[0].Status = core.NodeRunning
+	attempt := &exec.MockDAGRunAttempt{}
+
+	procStore.On("ListAllEntries", ctx).Return([]exec.ProcEntry{entry}, nil).Once()
+	dagRunStore.On("FindAttempt", mock.Anything, exec.NewDAGRunRef(dag.Name, "run-1")).Return(attempt, nil).Once()
+	attempt.On("ReadStatus", mock.Anything).Return(status, nil).Once()
+
+	detector.detectAndCleanZombies(ctx)
+
+	procStore.AssertExpectations(t)
+	dagRunStore.AssertExpectations(t)
+	attempt.AssertExpectations(t)
+	attempt.AssertNotCalled(t, "ReadDAG", mock.Anything)
+	attempt.AssertNotCalled(t, "Write", mock.Anything, mock.Anything)
+	procStore.AssertNotCalled(t, "RemoveIfStale", mock.Anything, mock.Anything)
+}
+
 func TestZombieDetectorDetectAndCleanZombies_StaleEntryWithFreshSiblingRemovesOnlyStale(t *testing.T) {
 	t.Parallel()
 
@@ -147,7 +193,6 @@ func TestZombieDetectorDetectAndCleanZombies_SubDAGUsesRootScopedLookup(t *testi
 	}
 	entry := exec.ProcEntry{
 		GroupName: dag.ProcGroup(),
-		FilePath:  "/tmp/stale-sub.proc",
 		Meta: exec.ProcMeta{
 			StartedAt:    time.Now().Add(-time.Minute).Unix(),
 			Name:         dag.Name,
@@ -270,7 +315,6 @@ func TestZombieDetectorDetectAndCleanZombies_StaleEntryWithCorruptedStatusIsRemo
 func testRootProcEntry(groupName, dagName, dagRunID, attemptID string, fresh bool) exec.ProcEntry {
 	return exec.ProcEntry{
 		GroupName: groupName,
-		FilePath:  "/tmp/" + dagRunID + "_" + attemptID + ".proc",
 		Meta: exec.ProcMeta{
 			StartedAt:    time.Now().Add(-time.Minute).Unix(),
 			Name:         dagName,
@@ -459,6 +503,18 @@ func (m *mockProcStore) LatestFreshEntryByDAGName(ctx context.Context, groupName
 	}
 	entry := args.Get(0).(exec.ProcEntry)
 	return &entry, args.Error(1)
+}
+
+func (m *mockProcStore) LatestHeartbeat(ctx context.Context, groupName string, dagRun exec.DAGRunRef) (*exec.ProcHeartbeat, error) {
+	args := m.Called(ctx, groupName, dagRun)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	if heartbeat, ok := args.Get(0).(*exec.ProcHeartbeat); ok {
+		return heartbeat, args.Error(1)
+	}
+	heartbeat := args.Get(0).(exec.ProcHeartbeat)
+	return &heartbeat, args.Error(1)
 }
 
 func (m *mockProcStore) ListAllEntries(ctx context.Context) ([]exec.ProcEntry, error) {

@@ -17,7 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
-	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -33,11 +33,9 @@ import (
 	"github.com/dagucloud/dagu/internal/agent"
 	"github.com/dagucloud/dagu/internal/agentoauth"
 	authmodel "github.com/dagucloud/dagu/internal/auth"
-	"github.com/dagucloud/dagu/internal/auth/tokensecret"
 	"github.com/dagucloud/dagu/internal/cmn/backoff"
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/cmn/dirlock"
 	"github.com/dagucloud/dagu/internal/cmn/eval"
 	"github.com/dagucloud/dagu/internal/cmn/fileutil"
 	"github.com/dagucloud/dagu/internal/cmn/logger"
@@ -49,27 +47,6 @@ import (
 	"github.com/dagucloud/dagu/internal/gitsync"
 	"github.com/dagucloud/dagu/internal/license"
 	_ "github.com/dagucloud/dagu/internal/llm/allproviders" // Register LLM providers
-	"github.com/dagucloud/dagu/internal/persis/fileagentconfig"
-	"github.com/dagucloud/dagu/internal/persis/fileagentmodel"
-	"github.com/dagucloud/dagu/internal/persis/fileagentoauth"
-	"github.com/dagucloud/dagu/internal/persis/fileagentskill"
-	"github.com/dagucloud/dagu/internal/persis/fileagentsoul"
-	"github.com/dagucloud/dagu/internal/persis/fileapikey"
-	"github.com/dagucloud/dagu/internal/persis/fileaudit"
-	"github.com/dagucloud/dagu/internal/persis/filebaseconfig"
-	"github.com/dagucloud/dagu/internal/persis/filedoc"
-	"github.com/dagucloud/dagu/internal/persis/fileeventstore"
-	"github.com/dagucloud/dagu/internal/persis/fileincident"
-	"github.com/dagucloud/dagu/internal/persis/filememory"
-	"github.com/dagucloud/dagu/internal/persis/filenotification"
-	"github.com/dagucloud/dagu/internal/persis/fileremotenode"
-	"github.com/dagucloud/dagu/internal/persis/filesecret"
-	"github.com/dagucloud/dagu/internal/persis/filesession"
-	"github.com/dagucloud/dagu/internal/persis/filetokensecret"
-	"github.com/dagucloud/dagu/internal/persis/fileupgradecheck"
-	"github.com/dagucloud/dagu/internal/persis/fileuser"
-	"github.com/dagucloud/dagu/internal/persis/filewebhook"
-	"github.com/dagucloud/dagu/internal/persis/fileworkspace"
 	"github.com/dagucloud/dagu/internal/remotenode"
 	"github.com/dagucloud/dagu/internal/runtime"
 	"github.com/dagucloud/dagu/internal/service/audit"
@@ -113,33 +90,35 @@ type RouteRegistrar func(context.Context, chi.Router, string)
 
 // Server represents the HTTP server for the frontend application.
 type Server struct {
-	apiV1               *apiv1.API
-	agentAPI            *agent.API
-	agentConfigStore    *fileagentconfig.Store
-	config              *config.Config
-	httpServer          *http.Server
-	funcsConfig         funcsConfig
-	builtinOIDCCfg      *auth.BuiltinOIDCConfig
-	authService         *authservice.Service
-	auditService        *audit.Service
-	auditStore          *fileaudit.Store
-	eventService        *eventstore.Service
-	incidentService     *incidentservice.Service
-	notificationService *notificationservice.Service
-	syncService         gitsync.Service
-	listener            net.Listener
-	appStream           *sse.AppStreamService
-	sseMultiplexer      *sse.Multiplexer
-	terminalManager     *terminal.Manager
-	metricsRegistry     *prometheus.Registry
-	tunnelAPIOpts       []apiv1.APIOption
-	tunnelService       *tunnel.Service
-	dagStore            exec.DAGStore
-	licenseManager      *license.Manager
-	remoteNodeResolver  *remotenode.Resolver
-	upgradeStore        upgrade.CacheStore
-	agentAPICallback    func(*agent.API)
-	routeRegistrars     []RouteRegistrar
+	apiV1                 *apiv1.API
+	agentAPI              *agent.API
+	agentConfigStore      agent.ConfigStore
+	config                *config.Config
+	httpServer            *http.Server
+	funcsConfig           funcsConfig
+	builtinOIDCCfg        *auth.BuiltinOIDCConfig
+	authService           *authservice.Service
+	auditService          *audit.Service
+	auditStore            AuditStore
+	eventService          *eventstore.Service
+	incidentService       *incidentservice.Service
+	notificationService   *notificationservice.Service
+	incidentStateFile     MonitorStateFileFunc
+	notificationStateFile MonitorStateFileFunc
+	syncService           gitsync.Service
+	listener              net.Listener
+	appStream             *sse.AppStreamService
+	sseMultiplexer        *sse.Multiplexer
+	terminalManager       *terminal.Manager
+	metricsRegistry       *prometheus.Registry
+	tunnelAPIOpts         []apiv1.APIOption
+	tunnelService         *tunnel.Service
+	dagStore              exec.DAGStore
+	licenseManager        *license.Manager
+	remoteNodeResolver    *remotenode.Resolver
+	upgradeStore          upgrade.CacheStore
+	agentAPICallback      func(*agent.API)
+	routeRegistrars       []RouteRegistrar
 }
 
 // ServerOption is a functional option for configuring the Server.
@@ -200,7 +179,7 @@ func (srv *Server) RegisterRoutes(fn RouteRegistrar) {
 
 // NewServer constructs a Server from the provided configuration, stores, and services.
 // Returns an error if initialization fails (e.g., when builtin auth fails to initialize).
-func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs exec.DAGRunStore, qs exec.QueueStore, ps exec.ProcStore, drm runtime.Manager, cc coordinator.Client, sr exec.ServiceRegistry, mr *prometheus.Registry, collector *telemetry.Collector, rs *resource.Service, opts ...ServerOption) (*Server, error) {
+func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs exec.DAGRunStore, qs exec.QueueStore, ps exec.ProcStore, drm runtime.Manager, cc coordinator.Client, sr exec.ServiceRegistry, mr *prometheus.Registry, collector *telemetry.Collector, rs *resource.Service, stores StoreFactories, opts ...ServerOption) (*Server, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -217,13 +196,19 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		oidcButtonLabel string
 		setupRequired   bool
 	)
+	if stores.SnapshotStoreFactory != nil {
+		apiOpts = append(apiOpts, apiv1.WithSnapshotStoreFactory(stores.SnapshotStoreFactory))
+	}
+	if stores.WorkspaceBaseConfigStoreFactory != nil {
+		apiOpts = append(apiOpts, apiv1.WithWorkspaceBaseConfigStoreFactory(stores.WorkspaceBaseConfigStoreFactory))
+	}
 	evaluatedBasePath := evaluateConfiguredBasePath(ctx, cfg.Server.BasePath)
 
-	auditSvc, auditStore, err := initAuditService(cfg)
+	auditSvc, auditStore, err := initAuditService(cfg, stores.AuditStoreFactory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize audit service: %w", err)
 	}
-	eventSvc, err := initEventService(cfg)
+	eventSvc, err := initEventService(cfg, stores.EventStoreFactory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize event service: %w", err)
 	}
@@ -232,8 +217,8 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		apiOpts = append(apiOpts, apiv1.WithSyncService(syncSvc))
 	}
 
-	if cfg.Paths.BaseConfig != "" {
-		baseConfigStore, bcErr := filebaseconfig.New(cfg.Paths.BaseConfig)
+	if cfg.Paths.BaseConfig != "" && stores.BaseConfigStoreFactory != nil {
+		baseConfigStore, bcErr := stores.BaseConfigStoreFactory(cfg.Paths.BaseConfig)
 		if bcErr != nil {
 			logger.Warn(ctx, "Failed to create base config store", tag.Error(bcErr))
 		} else {
@@ -241,53 +226,38 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		}
 	}
 
-	agentConfigStore, err := fileagentconfig.New(cfg.Paths.DataDir)
-	if err != nil {
-		logger.Warn(ctx, "Failed to create agent config store", tag.Error(err))
-	}
-
-	var agentModelStore *fileagentmodel.Store
-	if agentConfigStore != nil {
-		agentModelStore, err = fileagentmodel.New(filepath.Join(cfg.Paths.DataDir, "agent", "models"))
-		if err != nil {
-			logger.Warn(ctx, "Failed to create agent model store", tag.Error(err))
-		}
-	}
-
-	// Seed built-in knowledge references to data dir (not git-synced).
-	referencesDir := fileagentskill.SeedReferences(
-		filepath.Join(cfg.Paths.DataDir, "agent", "references"),
-	)
-
-	var agentSoulStore agent.SoulStore
-	soulsDir := filepath.Join(cfg.Paths.DAGsDir, "souls")
-	if _, err := fileagentsoul.SeedExampleSouls(ctx, soulsDir); err != nil {
-		logger.Warn(ctx, "Failed to seed example souls", tag.Error(err))
-	}
-	if soulStore, soulErr := fileagentsoul.New(ctx, soulsDir); soulErr != nil {
-		logger.Warn(ctx, "Failed to create agent soul store", tag.Error(soulErr))
-	} else {
-		agentSoulStore = soulStore
-	}
-
-	docStore := filedoc.New(cfg.Paths.DocsDir)
-
-	var memoryStore agent.MemoryStore
 	cacheLimits := cfg.Cache.Limits()
 	memoryCache := fileutil.NewCache[string]("agent_memory", cacheLimits.DAG.Limit, cacheLimits.DAG.TTL)
 	memoryCache.StartEviction(ctx)
 	if collector != nil {
 		collector.RegisterCache(memoryCache)
 	}
-	if ms, err := filememory.New(cfg.Paths.DAGsDir, filememory.WithFileCache(memoryCache)); err != nil {
-		logger.Warn(ctx, "Failed to create memory store", tag.Error(err))
-	} else {
-		memoryStore = ms
+	var agentStores agent.RuntimeStores
+	if stores.AgentStoresFactory != nil {
+		agentStores = stores.AgentStoresFactory(ctx, cfg, AgentStoresOptions{
+			MemoryCache:      memoryCache,
+			SeedReferences:   true,
+			SeedExampleSouls: true,
+		})
+	}
+	agentConfigStore := agentStores.ConfigStore
+	agentModelStore := agentStores.ModelStore
+	agentSoulStore := agentStores.SoulStore
+	memoryStore := agentStores.MemoryStore
+	referencesDir := agentStores.ReferencesDir
+	agentOAuthManager := agentStores.OAuthManager
+
+	var docStore agent.DocStore
+	if stores.DocStoreFactory != nil {
+		docStore = stores.DocStoreFactory(cfg)
 	}
 
 	var authSvc *authservice.Service
 	if cfg.Server.Auth.Mode == config.AuthModeBuiltin {
-		result, isSetupRequired, err := initBuiltinAuthService(ctx, cfg, collector)
+		if stores.BuiltinAuthFactory == nil {
+			return nil, errors.New("builtin auth persistence is not configured")
+		}
+		result, isSetupRequired, err := stores.BuiltinAuthFactory(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize builtin auth service: %w", err)
 		}
@@ -342,7 +312,6 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 	var (
 		remoteNodeResolver *remotenode.Resolver
 		encryptor          *crypto.Encryptor
-		agentOAuthManager  *agentoauth.Manager
 		licenseChecker     license.Checker
 	)
 	encKey, encErr := crypto.ResolveKey(cfg.Paths.DataDir)
@@ -353,8 +322,8 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		encryptor, encErr = crypto.NewEncryptor(encKey)
 		if encErr != nil {
 			logger.Warn(ctx, "Failed to create encryptor for encrypted stores", tag.Error(encErr))
-		} else {
-			rnStore, rnErr := fileremotenode.New(cfg.Paths.RemoteNodesDir, encryptor)
+		} else if stores.RemoteNodeStoreFactory != nil {
+			rnStore, rnErr := stores.RemoteNodeStoreFactory(cfg, encryptor)
 			if rnErr != nil {
 				logger.Warn(ctx, "Failed to create remote node store", tag.Error(rnErr))
 			} else {
@@ -377,52 +346,33 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		remoteNodes = names
 	}
 
-	if encryptor != nil {
-		secretStore, secretErr := filesecret.New(filepath.Join(cfg.Paths.DataDir, "secrets"), encryptor)
-		if secretErr != nil {
-			logger.Warn(ctx, "Failed to create secret store", tag.Error(secretErr))
-		} else {
-			apiOpts = append(apiOpts, apiv1.WithSecretStore(secretStore))
-		}
-
-		store, err := fileagentoauth.New(filepath.Join(cfg.Paths.DataDir, "agent", "oauth"), encryptor)
-		if err != nil {
-			logger.Warn(ctx, "Failed to create agent OAuth store", tag.Error(err))
-		} else {
-			agentOAuthManager = agentoauth.NewManager(store)
-			apiOpts = append(apiOpts, apiv1.WithAgentOAuthManager(agentOAuthManager))
-		}
+	if agentStores.SecretStore != nil {
+		apiOpts = append(apiOpts, apiv1.WithSecretStore(agentStores.SecretStore))
+	}
+	if agentOAuthManager != nil {
+		apiOpts = append(apiOpts, apiv1.WithAgentOAuthManager(agentOAuthManager))
 	}
 
 	var notificationSvc *notificationservice.Service
-	if encryptor != nil {
-		store, err := filenotification.New(
-			filepath.Join(cfg.Paths.DataDir, "notifications", "dags"),
-			filenotification.WithEncryptor(encryptor),
-		)
+	if encryptor != nil && stores.NotificationStoreFactory != nil {
+		store, err := stores.NotificationStoreFactory(cfg, encryptor)
 		if err != nil {
 			logger.Warn(ctx, "Failed to create notification settings store", tag.Error(err))
 		} else {
 			notificationSvc = notificationservice.New(
 				store,
 				dr,
-				notificationservice.WithReusableChannelsEnabled(func() bool {
-					return license.HasActiveLicense(licenseChecker)
-				}),
 				notificationservice.WithPublicURL(cfg.Server.PublicURL),
 			)
 			apiOpts = append(apiOpts, apiv1.WithNotificationService(notificationSvc))
 		}
-	} else {
+	} else if encryptor == nil {
 		logger.Warn(ctx, "Notification settings store is disabled because encrypted storage is not available")
 	}
 
 	var incidentSvc *incidentservice.Service
-	if encryptor != nil {
-		store, err := fileincident.New(
-			filepath.Join(cfg.Paths.DataDir, "incidents"),
-			fileincident.WithEncryptor(encryptor),
-		)
+	if encryptor != nil && stores.IncidentStoreFactory != nil {
+		store, err := stores.IncidentStoreFactory(cfg, encryptor)
 		if err != nil {
 			logger.Warn(ctx, "Failed to create incident settings store", tag.Error(err))
 		} else {
@@ -435,16 +385,20 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 			)
 			apiOpts = append(apiOpts, apiv1.WithIncidentService(incidentSvc))
 		}
-	} else {
+	} else if encryptor == nil {
 		logger.Warn(ctx, "Incident settings store is disabled because encrypted storage is not available")
 	}
 
 	// Initialize workspace store
-	wsStore, wsErr := fileworkspace.New(cfg.Paths.WorkspacesDir)
-	if wsErr != nil {
-		logger.Warn(ctx, "Failed to create workspace store", tag.Error(wsErr))
-	} else {
-		apiOpts = append(apiOpts, apiv1.WithWorkspaceStore(wsStore))
+	var wsStore workspacepkg.Store
+	if stores.WorkspaceStoreFactory != nil {
+		var wsErr error
+		wsStore, wsErr = stores.WorkspaceStoreFactory(cfg)
+		if wsErr != nil {
+			logger.Warn(ctx, "Failed to create workspace store", tag.Error(wsErr))
+		} else {
+			apiOpts = append(apiOpts, apiv1.WithWorkspaceStore(wsStore))
+		}
 	}
 
 	auditEnabled := func() bool {
@@ -459,7 +413,7 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 
 	var agentAPI *agent.API
 	if agentConfigStore != nil {
-		agentAPI, err = initAgentAPI(ctx, agentConfigStore, agentModelStore, agentSoulStore, agentOAuthManager, &cfg.Paths, referencesDir, cfg.Server.Session.MaxPerUser, dr, drs, auditSvc, auditEnabled, eventSvc, memoryStore, docStore, wsStore, newRemoteNodeAdapter(remoteNodeResolver))
+		agentAPI, err = initAgentAPI(ctx, agentConfigStore, agentModelStore, agentSoulStore, agentOAuthManager, cfg, referencesDir, dr, drs, auditSvc, auditEnabled, eventSvc, memoryStore, docStore, wsStore, newRemoteNodeAdapter(remoteNodeResolver), stores.AgentSessionStoreFactory)
 		if err != nil {
 			logger.Warn(ctx, "Failed to initialize agent API", tag.Error(err))
 		}
@@ -469,8 +423,8 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		upgradeStore      upgrade.CacheStore
 		updateInfoChecker UpdateChecker
 	)
-	if cfg.Server.CheckUpdates {
-		upgradeStore, err = fileupgradecheck.New(cfg.Paths.DataDir)
+	if cfg.Server.CheckUpdates && stores.UpgradeCheckStoreFactory != nil {
+		upgradeStore, err = stores.UpgradeCheckStoreFactory(cfg)
 		if err != nil {
 			logger.Warn(ctx, "Failed to create upgrade check store", tag.Error(err))
 		} else {
@@ -481,21 +435,23 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 	// Note: SSO/OIDC gating is applied after opts are processed (see below)
 
 	srv := &Server{
-		config:              cfg,
-		agentAPI:            agentAPI,
-		agentConfigStore:    agentConfigStore,
-		builtinOIDCCfg:      builtinOIDCCfg,
-		authService:         authSvc,
-		auditService:        auditSvc,
-		auditStore:          auditStore,
-		eventService:        eventSvc,
-		incidentService:     incidentSvc,
-		notificationService: notificationSvc,
-		syncService:         syncSvc,
-		metricsRegistry:     mr,
-		dagStore:            dr,
-		remoteNodeResolver:  remoteNodeResolver,
-		upgradeStore:        upgradeStore,
+		config:                cfg,
+		agentAPI:              agentAPI,
+		agentConfigStore:      agentConfigStore,
+		builtinOIDCCfg:        builtinOIDCCfg,
+		authService:           authSvc,
+		auditService:          auditSvc,
+		auditStore:            auditStore,
+		eventService:          eventSvc,
+		incidentService:       incidentSvc,
+		notificationService:   notificationSvc,
+		incidentStateFile:     stores.IncidentMonitorStateFileFunc,
+		notificationStateFile: stores.NotificationMonitorStateFileFunc,
+		syncService:           syncSvc,
+		metricsRegistry:       mr,
+		dagStore:              dr,
+		remoteNodeResolver:    remoteNodeResolver,
+		upgradeStore:          upgradeStore,
 		funcsConfig: funcsConfig{
 			NavbarColor:           cfg.UI.NavbarColor,
 			NavbarTitle:           cfg.UI.NavbarTitle,
@@ -634,11 +590,6 @@ func (u *updateChecker) GetUpdateInfo() (bool, string) {
 	return cache.UpdateAvailable, cache.LatestVersion
 }
 
-type builtinAuthResult struct {
-	AuthService *authservice.Service
-	UserStore   authmodel.UserStore
-}
-
 // setupChecker implements SetupRequiredChecker by counting users via the auth service.
 // Once users exist, caches the result to avoid hitting the store on every page load.
 type setupChecker struct {
@@ -665,167 +616,17 @@ func (s *setupChecker) IsSetupRequired(ctx context.Context) bool {
 	return true
 }
 
-// initBuiltinAuthService creates the auth store and authentication service.
-// Uses the token secret provider chain to resolve the JWT signing secret
-// (auto-generating and persisting one if not configured).
-func initBuiltinAuthService(ctx context.Context, cfg *config.Config, collector *telemetry.Collector) (*builtinAuthResult, bool, error) {
-	// Resolve token secret via provider chain
-	tokenSecret, err := buildTokenSecretProvider(ctx, cfg).Resolve(ctx)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to resolve token secret: %w", err)
-	}
-
-	// Create individual stores with caching
-	limits := cfg.Cache.Limits()
-
-	userCache := fileutil.NewCache[*authmodel.User]("user", limits.User.Limit, limits.User.TTL)
-	userCache.StartEviction(ctx)
-	if collector != nil {
-		collector.RegisterCache(userCache)
-	}
-	userStore, err := fileuser.New(cfg.Paths.UsersDir, fileuser.WithFileCache(userCache))
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to create user store: %w", err)
-	}
-
-	apiKeyCache := fileutil.NewCache[*authmodel.APIKey]("api_key", limits.APIKey.Limit, limits.APIKey.TTL)
-	apiKeyCache.StartEviction(ctx)
-	if collector != nil {
-		collector.RegisterCache(apiKeyCache)
-	}
-	apiKeyStore, err := fileapikey.New(cfg.Paths.APIKeysDir, fileapikey.WithFileCache(apiKeyCache))
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to create API key store: %w", err)
-	}
-
-	webhookCache := fileutil.NewCache[*authmodel.Webhook]("webhook", limits.Webhook.Limit, limits.Webhook.TTL)
-	webhookCache.StartEviction(ctx)
-	if collector != nil {
-		collector.RegisterCache(webhookCache)
-	}
-	var webhookEncryptor *crypto.Encryptor
-	encKey, encErr := crypto.ResolveKey(cfg.Paths.DataDir)
-	if encErr != nil {
-		logger.Warn(ctx, "Failed to resolve encryption key for webhook store", tag.Error(encErr))
-	} else {
-		webhookEncryptor, encErr = crypto.NewEncryptor(encKey)
-		if encErr != nil {
-			logger.Warn(ctx, "Failed to create encryptor for webhook store", tag.Error(encErr))
-		}
-	}
-	webhookOpts := []filewebhook.Option{filewebhook.WithFileCache(webhookCache)}
-	if webhookEncryptor != nil {
-		webhookOpts = append(webhookOpts, filewebhook.WithEncryptor(webhookEncryptor))
-	}
-	webhookStore, err := filewebhook.New(cfg.Paths.WebhooksDir, webhookOpts...)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to create webhook store: %w", err)
-	}
-
-	authSvc := authservice.New(userStore, authservice.Config{
-		TokenSecret: tokenSecret,
-		TokenTTL:    cfg.Server.Auth.Builtin.Token.TTL,
-	},
-		authservice.WithAPIKeyStore(apiKeyStore),
-		authservice.WithWebhookStore(webhookStore),
-	)
-
-	// Check if setup page is needed (no users exist yet)
-	count, err := authSvc.CountUsers(ctx)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to count users: %w", err)
-	}
-	setupRequired := count == 0
-
-	// Auto-provision initial admin if configured and no users exist.
-	if setupRequired && cfg.Server.Auth.Builtin.InitialAdmin.IsConfigured() {
-		ia := cfg.Server.Auth.Builtin.InitialAdmin
-
-		// Use dirlock for concurrent protection (same pattern as Setup API handler).
-		lock := dirlock.New(cfg.Paths.UsersDir, &dirlock.LockOptions{
-			StaleThreshold: 30 * time.Second,
-			RetryInterval:  50 * time.Millisecond,
-		})
-		if err := lock.Lock(ctx); err != nil {
-			return nil, false, fmt.Errorf("failed to acquire lock for initial admin provisioning: %w", err)
-		}
-		defer func() { _ = lock.Unlock() }()
-
-		// Re-check under lock to prevent race with concurrent Setup API call.
-		count, err = authSvc.CountUsers(ctx)
-		if err != nil {
-			return nil, false, fmt.Errorf("failed to re-check user count: %w", err)
-		}
-
-		if count == 0 {
-			if _, err := authSvc.CreateUser(ctx, authservice.CreateUserInput{
-				Username: ia.Username,
-				Password: ia.Password,
-				Role:     authmodel.RoleAdmin,
-			}); err != nil {
-				return nil, false, fmt.Errorf("failed to auto-provision initial admin user: %w", err)
-			}
-			logger.Info(ctx, "Auto-provisioned initial admin user")
-		}
-		setupRequired = false
-	}
-
-	logger.Info(ctx, "Builtin auth initialized",
-		slog.Bool("setupRequired", setupRequired),
-	)
-
-	return &builtinAuthResult{
-		AuthService: authSvc,
-		UserStore:   userStore,
-	}, setupRequired, nil
-}
-
-// buildTokenSecretProvider constructs the token secret provider chain.
-// Priority: 1. Static from config/env, 2. File-based (auto-generate if missing).
-func buildTokenSecretProvider(ctx context.Context, cfg *config.Config) authmodel.TokenSecretProvider {
-	var providers []authmodel.TokenSecretProvider
-
-	// File provider directory
-	authDir := filepath.Join(cfg.Paths.DataDir, "auth")
-
-	// Static provider from config/env (highest priority)
-	if cfg.Server.Auth.Builtin.Token.Secret != "" {
-		staticProvider, err := tokensecret.NewStatic(cfg.Server.Auth.Builtin.Token.Secret)
-		if err != nil {
-			logger.Warn(ctx, "Invalid token secret from config, falling back to file-based secret",
-				tag.Error(err))
-		} else {
-			providers = append(providers, staticProvider)
-
-			// Warn if a file-based secret also exists with a different value.
-			// Read errors are ignored — the file may not exist yet on first startup.
-			secretPath := filepath.Join(authDir, "token_secret")
-			if data, readErr := os.ReadFile(secretPath); readErr == nil { //nolint:gosec // path is constructed from trusted config dir + constant filename
-				fileSecret := strings.TrimSpace(string(data))
-				if fileSecret != "" && fileSecret != cfg.Server.Auth.Builtin.Token.Secret {
-					logger.Warn(ctx, "Token secret in config differs from file-based secret — config value takes priority; "+
-						"removing it from config will switch to the file-based secret and invalidate existing sessions",
-						slog.String("file", secretPath))
-				}
-			}
-		}
-	}
-
-	// File provider (auto-generate if missing)
-	providers = append(providers, filetokensecret.New(authDir))
-
-	return tokensecret.NewChain(providers...)
-}
-
-// initAuditService creates a file-based audit store and service.
-func initAuditService(cfg *config.Config) (*audit.Service, *fileaudit.Store, error) {
-	if !cfg.Server.Audit.Enabled {
+// initAuditService creates the configured audit store and service.
+func initAuditService(cfg *config.Config, factory AuditStoreFactory) (*audit.Service, AuditStore, error) {
+	if factory == nil {
 		return nil, nil, nil
 	}
-
-	store, err := fileaudit.New(filepath.Join(cfg.Paths.AdminLogsDir, "audit"), cfg.Server.Audit.RetentionDays)
+	store, err := factory(cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create audit store: %w", err)
+	}
+	if store == nil {
+		return nil, nil, nil
 	}
 
 	return audit.New(store), store, nil
@@ -860,20 +661,25 @@ func initSyncService(ctx context.Context, cfg *config.Config) gitsync.Service {
 
 // initAgentAPI creates and returns an agent API.
 // The API uses the config store to check enabled status and resolve providers via the model store.
-func initAgentAPI(ctx context.Context, store *fileagentconfig.Store, modelStore agent.ModelStore, soulStore agent.SoulStore, oauthManager *agentoauth.Manager, paths *config.PathsConfig, referencesDir string, sessionMaxPerUser int, dagStore exec.DAGStore, dagRunStore exec.DAGRunStore, auditSvc *audit.Service, auditEnabled func() bool, eventSvc *eventstore.Service, memoryStore agent.MemoryStore, docStore agent.DocStore, workspaceStore workspacepkg.Store, remoteResolver agent.RemoteContextResolver) (*agent.API, error) {
-	sessStore, err := filesession.New(paths.SessionsDir, filesession.WithMaxPerUser(sessionMaxPerUser))
-	if err != nil {
-		logger.Warn(ctx, "Failed to create session store, persistence disabled", tag.Error(err))
+func initAgentAPI(ctx context.Context, configStore agent.ConfigStore, modelStore agent.ModelStore, soulStore agent.SoulStore, oauthManager *agentoauth.Manager, cfg *config.Config, referencesDir string, dagStore exec.DAGStore, dagRunStore exec.DAGRunStore, auditSvc *audit.Service, auditEnabled func() bool, eventSvc *eventstore.Service, memoryStore agent.MemoryStore, docStore agent.DocStore, workspaceStore workspacepkg.Store, remoteResolver agent.RemoteContextResolver, sessionFactory AgentSessionStoreFactory) (*agent.API, error) {
+	var sessStore agent.SessionStore
+	if sessionFactory != nil {
+		var err error
+		sessStore, err = sessionFactory(cfg)
+		if err != nil {
+			logger.Warn(ctx, "Failed to create session store, persistence disabled", tag.Error(err))
+		}
 	}
+	paths := &cfg.Paths
 
 	hooks := agent.NewHooks()
-	hooks.OnBeforeToolExec(newAgentPolicyHook(store, auditSvc, auditEnabled))
+	hooks.OnBeforeToolExec(newAgentPolicyHook(configStore, auditSvc, auditEnabled))
 	if auditSvc != nil {
 		hooks.OnAfterToolExec(newAgentAuditHook(auditSvc, auditEnabled))
 	}
 
 	api := agent.NewAPI(agent.APIConfig{
-		ConfigStore:           store,
+		ConfigStore:           configStore,
 		ModelStore:            modelStore,
 		SoulStore:             soulStore,
 		WorkingDir:            paths.DAGsDir,
@@ -908,13 +714,16 @@ func initAgentAPI(ctx context.Context, store *fileagentconfig.Store, modelStore 
 	return api, nil
 }
 
-func initEventService(cfg *config.Config) (*eventstore.Service, error) {
-	if cfg == nil || !cfg.EventStore.Enabled {
+func initEventService(cfg *config.Config, factory EventStoreFactory) (*eventstore.Service, error) {
+	if factory == nil {
 		return nil, nil
 	}
-	store, err := fileeventstore.New(cfg.Paths.EventStoreDir)
+	store, err := factory(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if store == nil {
+		return nil, nil
 	}
 	return eventstore.New(store), nil
 }
@@ -1029,6 +838,7 @@ func skipPathsMiddleware(mw func(http.Handler) http.Handler, skip map[string]str
 func (srv *Server) Serve(ctx context.Context) error {
 	r := chi.NewMux()
 	apiV1BasePath := srv.configureAPIPath(ctx)
+	r.Use(auth.PreserveRawRemoteAddr)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Compress(5))
 	if srv.config.Server.AccessLog != config.AccessLogNone {
@@ -1057,12 +867,18 @@ func (srv *Server) Serve(ctx context.Context) error {
 		r.Use(logMiddleware)
 	}
 	r.Use(middleware.Recoverer)
+	r.Use(securityHeadersMiddleware(srv.config.Server.TLS != nil))
+	corsOrigins := srv.config.Server.CORSAllowedOrigins
+	allowCredentials := len(corsOrigins) > 0 && !slices.Contains(corsOrigins, "*")
+	if !allowCredentials {
+		corsOrigins = []string{"*"}
+	}
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   corsOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization", "Content-Encoding", "Accept", "MCP-Protocol-Version", "Mcp-Session-Id", "Last-Event-ID"},
 		ExposedHeaders:   []string{"Mcp-Session-Id"},
-		AllowCredentials: true,
+		AllowCredentials: allowCredentials,
 		MaxAge:           300,
 	}))
 	r.Use(middleware.RedirectSlashes)
@@ -1117,7 +933,13 @@ func (srv *Server) startNotificationMonitor(ctx context.Context) {
 	if srv.notificationService == nil || srv.eventService == nil {
 		return
 	}
-	stateFile := filepath.Join(srv.config.Paths.DataDir, "notifications", "monitor-state.json")
+	if srv.notificationStateFile == nil {
+		return
+	}
+	stateFile := srv.notificationStateFile(srv.config)
+	if stateFile == "" {
+		return
+	}
 	monitor := chatbridge.NewNotificationMonitor(
 		srv.eventService,
 		stateFile,
@@ -1132,7 +954,13 @@ func (srv *Server) startIncidentMonitor(ctx context.Context) {
 	if srv.incidentService == nil || srv.eventService == nil {
 		return
 	}
-	stateFile := filepath.Join(srv.config.Paths.DataDir, "incidents", "monitor-state.json")
+	if srv.incidentStateFile == nil {
+		return
+	}
+	stateFile := srv.incidentStateFile(srv.config)
+	if stateFile == "" {
+		return
+	}
 	monitor := chatbridge.NewNotificationMonitor(
 		srv.eventService,
 		stateFile,
@@ -1364,12 +1192,16 @@ func (srv *Server) setupMCPRoute(ctx context.Context, r *chi.Mux) {
 	mcpPath := pathutil.BuildPublicEndpointPath(srv.funcsConfig.BasePath, "mcp")
 	mcpHandler := dagumcp.NewHTTPHandler(srv.apiV1)
 	authOpts := srv.buildStreamAuthOptions("Dagu MCP")
+	authOpts.RequiredAPIKeySurface = authmodel.APIKeySurfaceMCP
+	authOpts.OnDenied = srv.logMCPAuthDenied
 
 	r.Group(func(r chi.Router) {
+		r.Use(srv.mcpAuditSeedMiddleware())
 		r.Use(auth.QueryTokenMiddleware())
 		r.Use(auth.ClientIPMiddleware())
 		r.Use(auth.Middleware(authOpts))
 		r.Use(srv.injectDefaultStreamUserMiddleware())
+		r.Use(srv.mcpAuditSubjectMiddleware())
 		r.Use(clearWriteDeadlineMiddleware)
 		r.Handle(mcpPath, mcpHandler)
 	})
@@ -1608,16 +1440,18 @@ func (srv *Server) buildStreamAuthOptions(realm string) auth.Options {
 	// include Basic auth automatically after the user authenticates once.
 	if authCfg.Mode == config.AuthModeBasic {
 		return auth.Options{
-			Realm:            realm,
-			BasicAuthEnabled: true,
-			AuthRequired:     true,
-			Creds:            map[string]string{authCfg.Basic.Username: authCfg.Basic.Password},
+			Realm:                 realm,
+			BasicAuthEnabled:      true,
+			AuthRequired:          true,
+			RequiredAPIKeySurface: authmodel.APIKeySurfaceREST,
+			Creds:                 map[string]string{authCfg.Basic.Username: authCfg.Basic.Password},
 		}
 	}
 
 	opts := auth.Options{
-		Realm:        realm,
-		AuthRequired: true,
+		Realm:                 realm,
+		AuthRequired:          true,
+		RequiredAPIKeySurface: authmodel.APIKeySurfaceREST,
 	}
 
 	if authCfg.Mode == config.AuthModeBuiltin && srv.authService != nil {

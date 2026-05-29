@@ -13,7 +13,7 @@ import (
 	dagucrypto "github.com/dagucloud/dagu/internal/cmn/crypto"
 	"github.com/dagucloud/dagu/internal/license"
 	notificationmodel "github.com/dagucloud/dagu/internal/notification"
-	"github.com/dagucloud/dagu/internal/persis/filenotification"
+	filenotification "github.com/dagucloud/dagu/internal/persis/file/notification"
 	"github.com/dagucloud/dagu/internal/service/eventstore"
 	"github.com/dagucloud/dagu/internal/service/frontend"
 	"github.com/dagucloud/dagu/internal/test"
@@ -21,12 +21,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNotificationChannels_RequireActiveLicense(t *testing.T) {
+func TestNotificationChannels_AvailableWithoutLicense(t *testing.T) {
 	t.Parallel()
 
 	server := test.SetupServer(t)
-	server.Client().Get("/api/v1/notification-channels").
-		ExpectStatus(http.StatusForbidden).Send(t)
+	resp := server.Client().Get("/api/v1/notification-channels").
+		ExpectStatus(http.StatusOK).Send(t)
+
+	var result api.NotificationChannelListResponse
+	resp.Unmarshal(t, &result)
+	assert.Empty(t, result.Channels)
 }
 
 func TestNotificationChannels_AcceptExistingLicenseWithoutFeatureClaim(t *testing.T) {
@@ -43,20 +47,22 @@ func TestNotificationChannels_AcceptExistingLicenseWithoutFeatureClaim(t *testin
 	assert.Empty(t, result.Channels)
 }
 
-func TestNotificationRoutes_RequireActiveLicense(t *testing.T) {
+func TestNotificationRoutes_AvailableWithoutLicense(t *testing.T) {
 	t.Parallel()
 
 	server := test.SetupServer(t)
-	server.Client().Get("/api/v1/notification-routes/global").
-		ExpectStatus(http.StatusForbidden).Send(t)
+	resp := server.Client().Get("/api/v1/notification-routes/global").
+		ExpectStatus(http.StatusOK).Send(t)
+
+	var result api.NotificationRouteSet
+	resp.Unmarshal(t, &result)
+	assert.Equal(t, api.NotificationRouteScopeGlobal, result.Scope)
 }
 
 func TestNotificationRoutes_GlobalAndWorkspaceRouteSets(t *testing.T) {
 	t.Parallel()
 
-	server := test.SetupServer(t,
-		test.WithServerOptions(frontend.WithLicenseManager(license.NewTestManager())),
-	)
+	server := test.SetupServer(t)
 
 	channelResp := server.Client().Post("/api/v1/notification-channels", api.NotificationChannelInput{
 		Name:    "Ops Webhook",
@@ -172,35 +178,34 @@ func testValue[T any](value *T) T {
 	return *value
 }
 
-func TestDAGNotifications_UnlicensedSubscriptionUpdates(t *testing.T) {
+func TestDAGNotifications_SubscriptionUpdatesWithoutLicense(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name              string
-		subscriptions     *[]api.NotificationSubscriptionInput
-		wantStatus        int
-		wantSubscriptions int
+		name                 string
+		subscriptions        *[]api.NotificationSubscriptionInput
+		wantSubscriptionIDs  []string
+		wantSubscriptionRefs []string
 	}{
 		{
-			name:              "omitted subscriptions preserves existing reusable subscription",
-			subscriptions:     nil,
-			wantStatus:        http.StatusOK,
-			wantSubscriptions: 1,
+			name:                 "omitted subscriptions preserves existing reusable subscription",
+			subscriptions:        nil,
+			wantSubscriptionIDs:  []string{"subscription-1"},
+			wantSubscriptionRefs: []string{"channel-1"},
 		},
 		{
-			name:              "empty subscriptions is still gated",
-			subscriptions:     &[]api.NotificationSubscriptionInput{},
-			wantStatus:        http.StatusForbidden,
-			wantSubscriptions: 1,
+			name:          "empty subscriptions clears existing reusable subscriptions",
+			subscriptions: &[]api.NotificationSubscriptionInput{},
 		},
 		{
-			name: "non-empty subscriptions is gated",
+			name: "non-empty subscriptions replaces reusable subscriptions",
 			subscriptions: &[]api.NotificationSubscriptionInput{{
+				Id:        new("subscription-2"),
 				ChannelId: "channel-1",
 				Enabled:   true,
 			}},
-			wantStatus:        http.StatusForbidden,
-			wantSubscriptions: 1,
+			wantSubscriptionIDs:  []string{"subscription-2"},
+			wantSubscriptionRefs: []string{"channel-1"},
 		},
 	}
 
@@ -217,21 +222,26 @@ func TestDAGNotifications_UnlicensedSubscriptionUpdates(t *testing.T) {
 				Enabled: true,
 				Events:  []api.NotificationEventType{api.NotificationEventTypeDagRunFailed},
 				Targets: []api.NotificationTargetInput{},
-				// nil means an older/unlicensed client is not managing reusable
-				// subscriptions; non-nil means it is trying to replace them.
+				// nil means an older client is not managing reusable subscriptions;
+				// non-nil means it is trying to replace them.
 				Subscriptions: tt.subscriptions,
-			}).ExpectStatus(tt.wantStatus).Send(t)
+			}).ExpectStatus(http.StatusOK).Send(t)
 
-			if tt.wantStatus == http.StatusOK {
-				var settings api.DAGNotificationSettings
-				response.Unmarshal(t, &settings)
-				require.Len(t, settings.Subscriptions, tt.wantSubscriptions)
+			var apiSettings api.DAGNotificationSettings
+			response.Unmarshal(t, &apiSettings)
+			require.Len(t, apiSettings.Subscriptions, len(tt.wantSubscriptionIDs))
+			for i, wantID := range tt.wantSubscriptionIDs {
+				assert.Equal(t, wantID, apiSettings.Subscriptions[i].Id)
+				assert.Equal(t, tt.wantSubscriptionRefs[i], apiSettings.Subscriptions[i].ChannelId)
 			}
 
 			settings, err := store.GetByDAGName(context.Background(), dagName)
 			require.NoError(t, err)
-			require.Len(t, settings.Subscriptions, tt.wantSubscriptions)
-			assert.Equal(t, "subscription-1", settings.Subscriptions[0].ID)
+			require.Len(t, settings.Subscriptions, len(tt.wantSubscriptionIDs))
+			for i, wantID := range tt.wantSubscriptionIDs {
+				assert.Equal(t, wantID, settings.Subscriptions[i].ID)
+				assert.Equal(t, tt.wantSubscriptionRefs[i], settings.Subscriptions[i].ChannelID)
+			}
 		})
 	}
 }

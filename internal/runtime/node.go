@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,6 +21,7 @@ import (
 
 	"syscall"
 
+	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
 	"github.com/dagucloud/dagu/internal/cmn/collections"
 	"github.com/dagucloud/dagu/internal/cmn/eval"
 	"github.com/dagucloud/dagu/internal/cmn/fileutil"
@@ -46,6 +48,7 @@ type Node struct {
 	id           int
 	mu           sync.RWMutex
 	cmd          executor.Executor
+	execCancel   context.CancelFunc
 	done         atomic.Bool
 	retryPolicy  RetryPolicy
 	cmdEvaluated atomic.Bool
@@ -176,117 +179,7 @@ func (n *Node) ShouldContinue(ctx context.Context) bool {
 }
 
 func (n *Node) Execute(ctx context.Context, onSetup ...func()) error {
-	ctx, cancel, stepTimeout := n.setupContextWithTimeout(ctx)
-	defer cancel()
-
-	cmd, err := n.setupExecutor(ctx)
-	if err != nil {
-		n.SetError(fmt.Errorf("failed to set up step: %w", err))
-		return err
-	}
-
-	// Notify after executor setup so SubRuns (set for subDAG steps) are
-	// persisted to storage before the executor starts running.
-	for _, fn := range onSetup {
-		if fn != nil {
-			fn()
-		}
-	}
-
-	// Ensure executor cleanup happens (releases connections, etc.)
-	defer func() {
-		if closeErr := executor.CloseExecutor(cmd); closeErr != nil {
-			logger.Warn(ctx, "Failed to close executor",
-				tag.Step(n.Name()),
-				tag.Error(closeErr))
-		}
-	}()
-
-	// Check if executor supports chat message handling
-	chatHandler, _ := cmd.(executor.ChatMessageHandler)
-
-	// Set chat context from prior steps
-	if chatHandler != nil {
-		if messages := n.GetChatMessages(); len(messages) > 0 {
-			chatHandler.SetContext(messages)
-		}
-	}
-
-	// Pass push-back context to executors that support iterative feedback.
-	if pbHandler, ok := cmd.(executor.PushBackAware); ok {
-		state := n.State()
-		if state.ApprovalIteration > 0 {
-			pbHandler.SetPushBackContext(state.PushBackInputs, state.ApprovalIteration)
-		}
-	}
-	if pbHandler, ok := cmd.(executor.PushBackPreviousStdoutAware); ok {
-		state := n.State()
-		if state.ApprovalIteration > 0 {
-			pbHandler.SetPushBackPreviousStdout(state.PushBackPreviousStdout)
-		}
-	}
-
-	flusher := n.startOutputFlusher()
-	defer func() {
-		n.stopOutputFlusher(flusher)
-	}()
-
-	exitCode, err := n.runCommand(ctx, cmd, stepTimeout)
-	n.SetError(err)
-	n.SetExitCode(exitCode)
-
-	// Capture chat messages after execution
-	if chatHandler != nil {
-		n.SetChatMessages(chatHandler.GetMessages())
-	}
-
-	// Capture sub-runs from executors that spawn sub-DAGs (like chat with tools)
-	if subRunProvider, ok := cmd.(executor.SubRunProvider); ok {
-		// For repeated executions, accumulate previous sub-runs before setting new ones
-		if n.IsRepeated() && len(n.State().SubRuns) > 0 {
-			n.AddSubRunsRepeated(n.State().SubRuns...)
-		}
-
-		subRuns := subRunProvider.GetSubRuns()
-		// Convert exec.SubDAGRun to runtime.SubDAGRun
-		runtimeSubRuns := make([]SubDAGRun, len(subRuns))
-		for i, sr := range subRuns {
-			runtimeSubRuns[i] = SubDAGRun(sr)
-		}
-		n.SetSubRuns(runtimeSubRuns) // May be empty if no tool calls this iteration
-	}
-
-	// Capture tool definitions from chat executors for UI visibility
-	if toolDefProvider, ok := cmd.(executor.ToolDefinitionProvider); ok {
-		toolDefs := toolDefProvider.GetToolDefinitions()
-		if len(toolDefs) > 0 {
-			n.SetToolDefinitions(toolDefs)
-		}
-	}
-
-	if outputsProvider, ok := cmd.(executor.OutputsProvider); ok {
-		outputs := outputsProvider.GetOutputs()
-		if len(outputs) > 0 {
-			value, err := serializeOutputsValue(ctx, outputs)
-			if err != nil {
-				return err
-			}
-			n.setOutputsValue(value)
-		}
-	}
-
-	if err := n.captureOutput(ctx); err != nil {
-		return err
-	}
-
-	statusErr := n.determineNodeStatus(cmd)
-
-	// Prefer the execution error over the status determination error,
-	// since the execution error describes the root cause.
-	if execErr := n.Error(); execErr != nil {
-		return execErr
-	}
-	return statusErr
+	return NewStepExecutor().Execute(ctx, n, onSetup...)
 }
 
 // setupContextWithTimeout configures the execution context with step-level timeout if specified.
@@ -297,14 +190,34 @@ func (n *Node) setupContextWithTimeout(ctx context.Context) (context.Context, co
 	if step.Timeout > 0 {
 		stepTimeout = step.Timeout
 		ctx, cancel := context.WithTimeout(ctx, stepTimeout)
+		n.setExecCancel(cancel)
 		logger.Info(ctx, "Step execution started with timeout",
 			tag.Timeout(stepTimeout),
 		)
-		return ctx, cancel, stepTimeout
+		return ctx, func() {
+			cancel()
+			n.clearExecCancel()
+		}, stepTimeout
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
-	return ctx, cancel, 0
+	n.setExecCancel(cancel)
+	return ctx, func() {
+		cancel()
+		n.clearExecCancel()
+	}, 0
+}
+
+func (n *Node) setExecCancel(cancel context.CancelFunc) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.execCancel = cancel
+}
+
+func (n *Node) clearExecCancel() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.execCancel = nil
 }
 
 // flusherControl coordinates shutdown of the output flusher goroutine.
@@ -1013,33 +926,59 @@ func (n *Node) evaluateCommandArgs(ctx context.Context) error {
 }
 
 func (n *Node) Signal(ctx context.Context, sig os.Signal, allowOverride bool) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.Stop(ctx, cmdutil.TerminationFromSignal(sig), allowOverride)
+}
 
+// Stop requests that the node's executor stop according to lifecycle intent.
+func (n *Node) Stop(ctx context.Context, intent cmdutil.TerminationIntent, allowOverride bool) {
+	n.mu.Lock()
 	status := n.Status()
-	if status == core.NodeRunning && n.cmd != nil {
-		killSignal := n.signalToSend(sig, allowOverride)
-		logger.Info(ctx, "Sending signal",
-			tag.Signal(killSignal.String()),
+	if status != core.NodeRunning {
+		n.mu.Unlock()
+		return
+	}
+
+	stopIntent := n.stopIntentToSend(intent, allowOverride)
+	isTermination := stopIntent.IsTermination()
+	if isTermination {
+		n.SetStatus(core.NodeAborted)
+	}
+	cancel := n.execCancel
+	cmd := n.cmd
+	n.mu.Unlock()
+
+	if isTermination && cancel != nil && cmd == nil {
+		cancel()
+	}
+	if cmd == nil {
+		return
+	}
+
+	logger.Info(ctx, "Requesting step stop",
+		slog.String("stop-mode", string(stopIntent.Mode)),
+		tag.Signal(stopIntent.SignalName()),
+		tag.Step(n.Name()),
+	)
+	if err := stopExecutor(cmd, stopIntent); err != nil {
+		logger.Error(ctx, "Failed to stop step",
+			tag.Error(err),
 			tag.Step(n.Name()),
 		)
-		if signal.IsTerminationSignalOS(killSignal) {
-			n.SetStatus(core.NodeAborted)
-		}
-		if err := n.cmd.Kill(killSignal); err != nil {
-			logger.Error(ctx, "Failed to send signal",
-				tag.Error(err),
-				tag.Step(n.Name()),
-			)
-		}
 	}
 }
 
-func (n *Node) signalToSend(sig os.Signal, allowOverride bool) os.Signal {
+func (n *Node) stopIntentToSend(intent cmdutil.TerminationIntent, allowOverride bool) cmdutil.TerminationIntent {
 	if allowOverride && n.SignalOnStop() != "" {
-		return syscall.Signal(signal.GetSignalNum(n.SignalOnStop()))
+		return intent.WithSignal(syscall.Signal(signal.GetSignalNum(n.SignalOnStop())))
 	}
-	return sig
+	return intent
+}
+
+func stopExecutor(cmd executor.Executor, intent cmdutil.TerminationIntent) error {
+	if stopper, ok := cmd.(executor.Stopper); ok {
+		return stopper.Stop(intent)
+	}
+	return cmd.Kill(intent.Signal)
 }
 
 func (n *Node) Cancel() {

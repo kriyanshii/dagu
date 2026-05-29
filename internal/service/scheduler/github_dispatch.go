@@ -19,8 +19,8 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/internal/core"
 	coreexec "github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/internal/githubdispatch"
 	"github.com/dagucloud/dagu/internal/license"
-	"github.com/dagucloud/dagu/internal/persis/filegithubdispatch"
 )
 
 const (
@@ -38,9 +38,9 @@ type githubDispatchClient interface {
 }
 
 type githubDispatchTracker interface {
-	Upsert(filegithubdispatch.TrackedJob) error
-	Delete(string) error
-	List() ([]filegithubdispatch.TrackedJob, error)
+	Upsert(context.Context, githubdispatch.TrackedJob) error
+	Delete(context.Context, string) error
+	List(context.Context) ([]githubdispatch.TrackedJob, error)
 }
 
 type githubDispatchLicenseManager interface {
@@ -222,14 +222,14 @@ func (w *githubDispatchWorker) processJob(ctx context.Context, creds githubDispa
 		return err
 	}
 
-	tracked := filegithubdispatch.TrackedJob{
+	tracked := githubdispatch.TrackedJob{
 		JobID:     job.ID,
 		DAGName:   job.DAGName,
 		DAGRunID:  runID,
 		Phase:     githubDispatchPendingAccept,
 		UpdatedAt: w.now().UTC(),
 	}
-	if err := w.tracker.Upsert(tracked); err != nil {
+	if err := w.tracker.Upsert(ctx, tracked); err != nil {
 		return fmt.Errorf("persist tracked job: %w", err)
 	}
 	return w.acceptTrackedJob(ctx, creds, tracked)
@@ -245,7 +245,7 @@ func (w *githubDispatchWorker) processCancelJob(ctx context.Context, creds githu
 	})
 }
 
-func (w *githubDispatchWorker) acceptTrackedJob(ctx context.Context, creds githubDispatchCredentials, tracked filegithubdispatch.TrackedJob) error {
+func (w *githubDispatchWorker) acceptTrackedJob(ctx context.Context, creds githubDispatchCredentials, tracked githubdispatch.TrackedJob) error {
 	if err := w.client.AcceptGitHubDispatch(ctx, tracked.JobID, license.AcceptGitHubDispatchRequest{
 		LicenseID: creds.licenseID,
 		ServerID:  creds.serverID,
@@ -256,11 +256,11 @@ func (w *githubDispatchWorker) acceptTrackedJob(ctx context.Context, creds githu
 	}
 	tracked.Phase = githubDispatchAccepted
 	tracked.UpdatedAt = w.now().UTC()
-	return w.tracker.Upsert(tracked)
+	return w.tracker.Upsert(ctx, tracked)
 }
 
 func (w *githubDispatchWorker) reportTrackedJobs(ctx context.Context, creds githubDispatchCredentials) error {
-	tracked, err := w.tracker.List()
+	tracked, err := w.tracker.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list tracked jobs: %w", err)
 	}
@@ -276,7 +276,7 @@ func (w *githubDispatchWorker) reportTrackedJobs(ctx context.Context, creds gith
 	return nil
 }
 
-func (w *githubDispatchWorker) handleTrackedJob(ctx context.Context, creds githubDispatchCredentials, tracked filegithubdispatch.TrackedJob) error {
+func (w *githubDispatchWorker) handleTrackedJob(ctx context.Context, creds githubDispatchCredentials, tracked githubdispatch.TrackedJob) error {
 	if tracked.Phase == githubDispatchPendingAccept {
 		if err := w.acceptTrackedJob(ctx, creds, tracked); err != nil {
 			return err
@@ -308,7 +308,7 @@ func (w *githubDispatchWorker) handleTrackedJob(ctx context.Context, creds githu
 	}); err != nil {
 		return err
 	}
-	return w.tracker.Delete(tracked.JobID)
+	return w.tracker.Delete(ctx, tracked.JobID)
 }
 
 func summarizeDispatchStatus(status *coreexec.DAGRunStatus) string {

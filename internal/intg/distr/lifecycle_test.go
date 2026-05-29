@@ -42,20 +42,26 @@ steps:
 			if err != nil {
 				return false
 			}
-			if status.Status == core.Running {
-				dagRunID = status.DAGRunID
-				return true
+			if status.Status != core.Running {
+				return false
+			}
+			for _, node := range status.Nodes {
+				if node.Step.Name == "long-task" && node.Status == core.NodeRunning {
+					dagRunID = status.DAGRunID
+					return true
+				}
 			}
 			return false
-		}, 10*time.Second, 1000*time.Millisecond, "DAG should start running")
+		}, distrTestTimeout(20*time.Second), 200*time.Millisecond, "long-task should start running")
 
 		startTime := time.Now()
 		require.NoError(t, f.stop(dagRunID))
 
 		status := f.waitForStatusIn([]core.Status{core.Aborted, core.Failed}, 15*time.Second)
+		f.waitForRunReleasedFromWorkers(dagRunID, 10*time.Second)
 
 		elapsed := time.Since(startTime)
-		assert.Less(t, elapsed, 10*time.Second, "cancellation should be quick")
+		assert.Less(t, elapsed, distrTestTimeout(10*time.Second), "cancellation should complete within distributed timeout")
 		assert.Contains(t, []core.Status{core.Aborted, core.Failed}, status.Status)
 	})
 }
@@ -159,6 +165,7 @@ steps:
 
 		rootRef := exec.NewDAGRunRef(f.dagWrapper.Name, runID)
 		var subRunID string
+		subDAGCancelTimeout := distrTestTimeout(30 * time.Second)
 		require.Eventually(t, func() bool {
 			attempt, err := f.dagWrapper.DAGRunStore.FindAttempt(ctx, rootRef)
 			if err != nil {
@@ -177,12 +184,12 @@ steps:
 				return subRunID != ""
 			}
 			return false
-		}, 30*time.Second, 100*time.Millisecond, "expected parent DAG to start sub DAG before cancellation")
+		}, subDAGCancelTimeout, 100*time.Millisecond, "expected parent DAG to start sub DAG before cancellation")
 
 		require.Eventually(t, func() bool {
 			status, err := f.dagWrapper.DAGRunMgr.FindSubDAGRunStatus(ctx, rootRef, subRunID)
 			return err == nil && status != nil && status.Status == core.Running
-		}, 30*time.Second, 100*time.Millisecond, "expected sub DAG to reach running state before cancellation")
+		}, subDAGCancelTimeout, 100*time.Millisecond, "expected sub DAG to reach running state before cancellation")
 
 		require.NoError(t, f.stop(runID))
 
@@ -191,14 +198,14 @@ steps:
 		select {
 		case err := <-errCh:
 			require.NoError(t, err)
-		case <-time.After(30 * time.Second):
-			t.Fatal("timed out waiting for parent DAG cancellation")
+		case <-time.After(subDAGCancelTimeout):
+			require.FailNow(t, "timed out waiting for parent DAG cancellation")
 		}
 
 		require.Eventually(t, func() bool {
 			subStatus, err := f.dagWrapper.DAGRunMgr.FindSubDAGRunStatus(ctx, rootRef, subRunID)
 			return err == nil && subStatus != nil && subStatus.Status == core.Aborted
-		}, 30*time.Second, 100*time.Millisecond, "expected sub DAG to become aborted after parent cancellation")
+		}, subDAGCancelTimeout, 100*time.Millisecond, "expected sub DAG to become aborted after parent cancellation")
 	})
 }
 
@@ -347,7 +354,7 @@ steps:
 			}
 			parallelNode := st.Nodes[0]
 			return parallelNode.Status == core.NodeRunning
-		}, 5*time.Second, 100*time.Millisecond)
+		}, distrTestTimeout(5*time.Second), 100*time.Millisecond)
 
 		require.Eventually(t, func() bool {
 			workerInfo, err := f.coordinatorClient.GetWorkers(f.coord.Context)
@@ -357,7 +364,7 @@ steps:
 				runningTasks += len(w.RunningTasks)
 			}
 			return runningTasks > 0
-		}, 5*time.Second, 100*time.Millisecond)
+		}, distrTestTimeout(5*time.Second), 100*time.Millisecond)
 
 		agent.Signal(f.coord.Context, os.Signal(syscall.SIGINT))
 

@@ -7,8 +7,8 @@ package cmdutil
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -21,30 +21,10 @@ func SetupCommand(cmd *exec.Cmd) {
 
 // setupCommand configures Windows-specific command attributes
 func setupCommand(cmd *exec.Cmd) {
-	// Windows doesn't support process groups in the same way as Unix
-	// No special configuration needed
-}
-
-// KillProcessGroup kills the process and its subprocess tree on Windows systems
-func KillProcessGroup(cmd *exec.Cmd, sig os.Signal) error {
-	if cmd != nil && cmd.Process != nil {
-		// Kill the entire process tree to ensure child processes are terminated
-		return killProcessTree(uint32(cmd.Process.Pid))
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	return nil
-}
-
-// KillMultipleProcessGroups kills multiple processes on Windows systems
-func KillMultipleProcessGroups(cmds map[string]*exec.Cmd, sig os.Signal) error {
-	var lastErr error
-	for _, cmd := range cmds {
-		if cmd != nil && cmd.Process != nil {
-			if err := killProcessTree(uint32(cmd.Process.Pid)); err != nil {
-				lastErr = err
-			}
-		}
-	}
-	return lastErr
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
 }
 
 // killProcessTree kills a process and its subprocess tree on Windows

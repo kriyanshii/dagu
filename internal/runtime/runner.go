@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
 	"github.com/dagucloud/dagu/internal/cmn/eval"
 	"github.com/dagucloud/dagu/internal/cmn/logger"
 	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/cmn/signal"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"go.opentelemetry.io/otel"
@@ -56,6 +56,7 @@ type Runner struct {
 	onAbort         *core.Step
 	dagRunID        string
 	messagesHandler ChatMessagesHandler
+	stepExecutor    *StepExecutor
 	onWait          *core.Step
 	forcedStatus    *core.Status
 
@@ -96,6 +97,7 @@ func New(cfg *Config) *Runner {
 		onAbort:              cfg.OnAbort,
 		dagRunID:             cfg.DAGRunID,
 		messagesHandler:      cfg.MessagesHandler,
+		stepExecutor:         NewStepExecutor(),
 		pause:                time.Millisecond * 100,
 		onWait:               cfg.OnWait,
 		forcedStatus:         cfg.ForcedStatus,
@@ -837,9 +839,9 @@ func (r *Runner) execNode(ctx context.Context, node *Node, progressCh chan *Node
 	if progressCh != nil && node.Step().SubDAG != nil {
 		// Send an additional progress notification after the executor is set up
 		// so that SubRuns are persisted to storage before the subDAG starts running.
-		return node.Execute(ctx, func() { progressCh <- node })
+		return r.stepExecutor.Execute(ctx, node, func() { progressCh <- node })
 	}
-	return node.Execute(ctx)
+	return r.stepExecutor.Execute(ctx, node)
 }
 
 // Signal sends a signal to the runner.
@@ -848,7 +850,14 @@ func (r *Runner) execNode(ctx context.Context, node *Node, progressCh chan *Node
 func (r *Runner) Signal(
 	ctx context.Context, plan *Plan, sig os.Signal, done chan bool, allowOverride bool,
 ) {
-	isTermination := signal.IsTerminationSignalOS(sig)
+	r.Stop(ctx, plan, cmdutil.TerminationFromSignal(sig), done, allowOverride)
+}
+
+// Stop requests that all active nodes stop according to lifecycle intent.
+func (r *Runner) Stop(
+	ctx context.Context, plan *Plan, intent cmdutil.TerminationIntent, done chan bool, allowOverride bool,
+) {
+	isTermination := intent.IsTermination()
 
 	// Set canceled flag FIRST so execution loops see it immediately.
 	// This prevents a race where the execution loop checks isCanceled()
@@ -867,7 +876,7 @@ func (r *Runner) Signal(
 			)
 			continue
 		}
-		node.Signal(ctx, sig, allowOverride)
+		node.Stop(ctx, intent, allowOverride)
 	}
 
 	if done != nil && isTermination {
@@ -1055,7 +1064,7 @@ func (r *Runner) runEventHandler(ctx context.Context, plan *Plan, node *Node, ex
 
 	node.SetStatus(core.NodeRunning)
 
-	if err := node.Execute(ctx); err != nil {
+	if err := r.stepExecutor.Execute(ctx, node); err != nil {
 		node.SetStatus(core.NodeFailed)
 		return err
 	}

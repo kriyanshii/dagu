@@ -16,17 +16,24 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis/filedagrun"
+	"github.com/dagucloud/dagu/internal/persis/file"
 	"github.com/dagucloud/dagu/internal/service/coordinator"
 	"github.com/dagucloud/dagu/internal/service/scheduler"
 	"github.com/stretchr/testify/require"
 )
 
-func rescheduleEventuallyTimeout(base time.Duration) time.Duration {
+// SubprocessRunTimeout returns a timeout appropriate for waiting on the result
+// of a subprocess-executed DAG run. On Windows, process creation is
+// significantly slower so a larger multiplier is used.
+func SubprocessRunTimeout(base time.Duration) time.Duration {
 	if runtime.GOOS == "windows" {
 		return base * 20
 	}
 	return base
+}
+
+func rescheduleEventuallyTimeout(base time.Duration) time.Duration {
+	return SubprocessRunTimeout(base)
 }
 
 func CreateInlineDAGRunForReschedule(t *testing.T, server Server, dagName string, enqueue bool) (string, string) {
@@ -106,11 +113,7 @@ func AssertInlineRescheduledRunParams(t *testing.T, server Server, dagName, dagR
 }
 
 func latestStoredAttemptStatus(server Server, dagName, dagRunID string) (*exec.DAGRunStatus, error) {
-	store := filedagrun.New(
-		server.Config.Paths.DAGRunsDir,
-		filedagrun.WithLatestStatusToday(server.Config.Server.LatestStatusToday),
-		filedagrun.WithLocation(server.Config.Core.Location),
-	)
+	store := file.NewDAGRunStore(server.Config)
 
 	attempt, err := store.FindAttempt(server.Context, exec.NewDAGRunRef(dagName, dagRunID))
 	if err != nil {
@@ -123,11 +126,7 @@ func latestStoredAttemptStatus(server Server, dagName, dagRunID string) (*exec.D
 func WaitForAttemptSnapshot(t *testing.T, server Server, dagName, dagRunID string) exec.DAGRunAttempt {
 	t.Helper()
 
-	store := filedagrun.New(
-		server.Config.Paths.DAGRunsDir,
-		filedagrun.WithLatestStatusToday(server.Config.Server.LatestStatusToday),
-		filedagrun.WithLocation(server.Config.Core.Location),
-	)
+	store := file.NewDAGRunStore(server.Config)
 
 	var attempt exec.DAGRunAttempt
 	require.Eventually(t, func() bool {

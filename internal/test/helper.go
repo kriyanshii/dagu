@@ -30,12 +30,9 @@ import (
 	"github.com/dagucloud/dagu/internal/core"
 	exec1 "github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/core/spec"
-	"github.com/dagucloud/dagu/internal/persis/filebaseconfig"
-	"github.com/dagucloud/dagu/internal/persis/filedag"
-	"github.com/dagucloud/dagu/internal/persis/filedagrun"
-	"github.com/dagucloud/dagu/internal/persis/filedistributed"
-	"github.com/dagucloud/dagu/internal/persis/filequeue"
-	"github.com/dagucloud/dagu/internal/persis/fileserviceregistry"
+	"github.com/dagucloud/dagu/internal/dagstate"
+	"github.com/dagucloud/dagu/internal/persis/file"
+	"github.com/dagucloud/dagu/internal/persis/store"
 	runtimepkg "github.com/dagucloud/dagu/internal/runtime"
 	"github.com/dagucloud/dagu/internal/runtime/agent"
 	"github.com/dagucloud/dagu/internal/service/frontend"
@@ -270,37 +267,32 @@ func Setup(t *testing.T, opts ...HelperOption) Helper {
 	ctx = config.WithConfig(ctx, cfg)
 
 	if cfg.Paths.BaseConfig != "" {
-		baseConfigStore, err := filebaseconfig.New(
+		baseConfigStore, err := file.NewBaseConfigStore(
 			cfg.Paths.BaseConfig,
-			filebaseconfig.WithSkipDefault(cfg.Core.SkipExamples),
+			file.WithBaseConfigSkipDefault(cfg.Core.SkipExamples),
 		)
 		require.NoError(t, err)
 		require.NoError(t, baseConfigStore.Initialize())
 	}
 
-	dagStore := filedag.New(
-		cfg.Paths.DAGsDir,
-		filedag.WithFlagsBaseDir(cfg.Paths.SuspendFlagsDir),
-		filedag.WithBaseConfig(cfg.Paths.BaseConfig),
-		filedag.WithWorkspaceBaseConfigDir(workspace.BaseConfigDir(cfg.Paths.DAGsDir)),
-		filedag.WithSkipExamples(true),
-	)
-	runStore := filedagrun.New(
-		cfg.Paths.DAGRunsDir,
-		filedagrun.WithArtifactDir(cfg.Paths.ArtifactDir),
-	)
+	dagStore, err := file.NewDAGStore(cfg, file.WithDAGSkipExamples(true))
+	require.NoError(t, err)
+	runStore := file.NewDAGRunStore(cfg)
 	procStore := newProcStore(cfg)
-	queueStore := filequeue.New(cfg.Paths.QueueDir)
-	serviceMonitor := fileserviceregistry.New(cfg.Paths.ServiceRegistryDir)
+	queueStore := store.NewQueueStore(file.NewCollection(cfg.Paths.QueueDir))
+	stateStore := store.NewDAGStateStore(file.NewCollection(cfg.Paths.DAGStateDir))
+	serviceMonitor := file.NewServiceRegistry(cfg)
 	distributedDir := filepath.Join(cfg.Paths.DataDir, "distributed")
-	var dispatchStoreOpts []filedistributed.DispatchTaskStoreOption
+	var dispatchStoreOpts []store.DispatchTaskStoreOption
 	if options.StaleLeaseThreshold > 0 {
-		dispatchStoreOpts = append(dispatchStoreOpts, filedistributed.WithDispatchReservationTTL(options.StaleLeaseThreshold))
+		dispatchStoreOpts = append(dispatchStoreOpts, store.WithDispatchReservationTTL(options.StaleLeaseThreshold))
 	}
-	dispatchTaskStore := filedistributed.NewDispatchTaskStore(distributedDir, dispatchStoreOpts...)
-	workerHeartbeatStore := filedistributed.NewWorkerHeartbeatStore(distributedDir)
-	dagRunLeaseStore := filedistributed.NewDAGRunLeaseStore(distributedDir)
-	activeDistributedRunStore := filedistributed.NewActiveDistributedRunStore(distributedDir)
+	dispatchTaskStore := store.NewDispatchTaskStore(file.NewCollection(distributedDir), dispatchStoreOpts...)
+	workerHeartbeatStore := store.NewWorkerHeartbeatStore(file.NewCollection(filepath.Join(distributedDir, "workers")))
+	leaseCollection := file.NewCollection(filepath.Join(distributedDir, "leases"))
+	activeRunCollection := file.NewCollection(filepath.Join(distributedDir, "active-runs"))
+	dagRunLeaseStore := store.NewDAGRunLeaseStore(leaseCollection)
+	activeDistributedRunStore := store.NewActiveDistributedRunStore(activeRunCollection)
 
 	drm := runtimepkg.NewManager(runStore, procStore, cfg)
 
@@ -313,6 +305,7 @@ func Setup(t *testing.T, opts ...HelperOption) Helper {
 		DAGRunStore:               runStore,
 		ProcStore:                 procStore,
 		QueueStore:                queueStore,
+		StateStore:                stateStore,
 		ServiceRegistry:           serviceMonitor,
 		DispatchTaskStore:         dispatchTaskStore,
 		WorkerHeartbeatStore:      workerHeartbeatStore,
@@ -519,6 +512,7 @@ type Helper struct {
 	DAGRunMgr                 runtimepkg.Manager
 	ProcStore                 exec1.ProcStore
 	QueueStore                exec1.QueueStore
+	StateStore                dagstate.Store
 	ServiceRegistry           exec1.ServiceRegistry
 	DispatchTaskStore         exec1.DispatchTaskStore
 	WorkerHeartbeatStore      exec1.WorkerHeartbeatStore
@@ -721,7 +715,7 @@ func (d *DAG) ReadOutputs(t *testing.T) map[string]string {
 		if err != nil {
 			return err
 		}
-		if info.Name() == filedagrun.OutputsFile {
+		if info.Name() == file.DAGRunOutputsFileName {
 			outputsPath = path
 			return filepath.SkipAll
 		}
@@ -1050,6 +1044,24 @@ func buildCurrentExecutable(t *testing.T, root string) string {
 	t.Helper()
 
 	builtExecutableOnce.Do(func() {
+		// On CI the build step already compiles .local/bin/dagu[.exe] from the
+		// current commit before tests run. Reusing that binary avoids a redundant
+		// compilation and — on Windows — prevents Windows Defender from scanning a
+		// freshly-compiled executable on first use, which can add 30–60 s of
+		// latency and cause flaky worker-registration timeouts. We only take this
+		// shortcut under CI=true to avoid using a stale binary during local dev
+		// (where the developer may not have rebuilt after changing cmd/).
+		if os.Getenv("CI") == "true" {
+			prebuilt := filepath.Join(root, ".local", "bin", "dagu")
+			if runtime.GOOS == "windows" {
+				prebuilt += ".exe"
+			}
+			if _, err := os.Stat(prebuilt); err == nil {
+				builtExecutablePath = prebuilt
+				return
+			}
+		}
+
 		tmpDir, err := os.MkdirTemp("", "dagu-test-bin-*")
 		if err != nil {
 			builtExecutableErr = fmt.Errorf("failed to create temp dir for test executable: %w", err)

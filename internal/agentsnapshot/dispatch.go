@@ -5,19 +5,17 @@ package agentsnapshot
 
 import (
 	"context"
-	"path/filepath"
+	"errors"
 
 	"github.com/dagucloud/dagu/internal/agent"
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/core"
 	coreexec "github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/core/spec"
-	"github.com/dagucloud/dagu/internal/persis/fileagentconfig"
-	"github.com/dagucloud/dagu/internal/persis/fileagentmodel"
-	"github.com/dagucloud/dagu/internal/persis/fileagentsoul"
-	"github.com/dagucloud/dagu/internal/persis/filememory"
 	"github.com/dagucloud/dagu/internal/workspace"
 )
+
+type StoreFactory func(context.Context, config.PathsConfig) (agent.SnapshotStores, error)
 
 // BuildFromPaths builds a worker snapshot from fresh filesystem-backed stores.
 func BuildFromPaths(
@@ -25,6 +23,7 @@ func BuildFromPaths(
 	dag *core.DAG,
 	paths config.PathsConfig,
 	dagStore coreexec.DAGStore,
+	storeFactory StoreFactory,
 ) ([]byte, error) {
 	var resolve agent.DAGResolver
 	if dagStore != nil {
@@ -45,32 +44,15 @@ func BuildFromPaths(
 		return nil, nil
 	}
 
-	configStore, err := fileagentconfig.New(paths.DataDir)
+	if storeFactory == nil {
+		return nil, errors.New("agentsnapshot: snapshot store factory is not configured")
+	}
+	stores, err := storeFactory(ctx, paths)
 	if err != nil {
 		return nil, err
 	}
 
-	modelStore, err := fileagentmodel.New(filepath.Join(paths.DataDir, "agent", "models"))
-	if err != nil {
-		return nil, err
-	}
-
-	soulStore, err := fileagentsoul.New(ctx, filepath.Join(paths.DAGsDir, "souls"))
-	if err != nil {
-		return nil, err
-	}
-
-	memoryStore, err := filememory.New(paths.DAGsDir)
-	if err != nil {
-		return nil, err
-	}
-
-	return agent.BuildSnapshotForDAG(ctx, dag, agent.SnapshotStores{
-		ConfigStore: configStore,
-		ModelStore:  modelStore,
-		SoulStore:   soulStore,
-		MemoryStore: memoryStore,
-	}, agent.SnapshotBuildOptions{
+	return agent.BuildSnapshotForDAG(ctx, dag, stores, agent.SnapshotBuildOptions{
 		ResolveDAG: resolve,
 		MaxBytes:   agent.DefaultSnapshotMaxBytes,
 	})

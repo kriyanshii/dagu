@@ -19,6 +19,7 @@ import (
 
 	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
 	"github.com/dagucloud/dagu/internal/cmn/eval"
+	"github.com/dagucloud/dagu/internal/cmn/fileutil"
 	"github.com/dagucloud/dagu/internal/cmn/logger"
 	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/internal/core"
@@ -30,12 +31,13 @@ import (
 var errNoCommandSpecified = fmt.Errorf("no command specified")
 
 var _ executor.Executor = (*commandExecutor)(nil)
+var _ executor.Stopper = (*commandExecutor)(nil)
 var _ executor.ExitCoder = (*commandExecutor)(nil)
 
 type commandExecutor struct {
 	mu         sync.Mutex
 	config     *commandConfig
-	cmd        *exec.Cmd
+	process    *cmdutil.ManagedProcess
 	scriptFile string
 	exitCode   int
 	// stderrTail stores a rolling tail of recent stderr lines
@@ -58,7 +60,7 @@ func (e *commandExecutor) Run(ctx context.Context) error {
 		}
 		e.scriptFile = scriptFile
 		defer func() {
-			_ = os.Remove(scriptFile)
+			_ = fileutil.Remove(scriptFile)
 		}()
 	}
 	// Wrap stderr with a tailing writer so we can include recent
@@ -75,8 +77,6 @@ func (e *commandExecutor) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create command: %w", err)
 	}
 
-	e.cmd = cmd
-
 	// Ensure the working directory exists
 	if cmd.Dir != "" {
 		if err := os.MkdirAll(cmd.Dir, 0750); err != nil {
@@ -85,7 +85,8 @@ func (e *commandExecutor) Run(ctx context.Context) error {
 		}
 	}
 
-	if err := e.cmd.Start(); err != nil {
+	process, err := cmdutil.StartManagedProcess(cmd)
+	if err != nil {
 		e.exitCode = exitCodeFromError(err)
 		e.mu.Unlock()
 		if tail := e.stderrTail.Tail(); tail != "" {
@@ -94,36 +95,28 @@ func (e *commandExecutor) Run(ctx context.Context) error {
 		}
 		return err
 	}
+	e.process = process
 	if guard := resourcelimit.FromContext(ctx); guard != nil {
-		if err := guard.AssignProcess(e.cmd.Process.Pid); err != nil {
+		if err := guard.AssignProcess(process.PID()); err != nil {
 			logger.Warn(ctx, "Resource limits requested but process assignment failed", tag.Error(err))
 		}
 	}
-	stopParentExitWatcher, err := cmdutil.StartParentExitWatcher(e.cmd)
-	if err != nil {
-		cmd := e.cmd
-		e.exitCode = 1
-		e.mu.Unlock()
-		_ = cmdutil.KillProcessGroup(cmd, os.Kill)
-		_ = cmd.Wait()
-		return fmt.Errorf("failed to start parent exit watcher: %w", err)
-	}
 	e.mu.Unlock()
-	defer stopParentExitWatcher()
+	defer func() { _ = process.Release() }()
 
 	// Wait for the command to finish or the context to be cancelled.
 	// This ensures timeout is enforced even if cmd.Wait() blocks due to
 	// stuck I/O or unkillable child processes.
 	waitDone := make(chan error, 1)
 	go func() {
-		waitDone <- e.cmd.Wait()
+		waitDone <- process.Wait()
 	}()
 
 	select {
 	case <-ctx.Done():
 		// Context cancelled (timeout or manual cancellation)
 		// Kill the process to ensure it doesn't hang
-		_ = e.Kill(os.Kill)
+		_ = e.stop(cmdutil.StopRequest{Intent: cmdutil.ForceTermination(), Reason: cmdutil.StopReasonTimeout})
 		// Wait for cmd.Wait() to return after killing
 		<-waitDone
 		e.exitCode = 124 // Standard timeout exit code
@@ -150,10 +143,22 @@ func (e *commandExecutor) SetStderr(out io.Writer) {
 }
 
 func (e *commandExecutor) Kill(sig os.Signal) error {
+	return e.Stop(cmdutil.TerminationFromSignal(sig))
+}
+
+func (e *commandExecutor) Stop(intent cmdutil.TerminationIntent) error {
+	return e.stop(cmdutil.StopRequest{Intent: intent})
+}
+
+func (e *commandExecutor) stop(req cmdutil.StopRequest) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	return cmdutil.KillProcessGroup(e.cmd, sig)
+	if e.process == nil {
+		return nil
+	}
+	_, err := e.process.Stop(req)
+	return err
 }
 
 // annotateStderrTail writes the full script to the stderr log with the

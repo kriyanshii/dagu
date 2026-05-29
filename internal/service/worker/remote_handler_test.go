@@ -5,6 +5,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,10 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/stringutil"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/internal/dagstate"
+	"github.com/dagucloud/dagu/internal/persis/file"
+	"github.com/dagucloud/dagu/internal/persis/store"
+	"github.com/dagucloud/dagu/internal/persis/testutil"
 	"github.com/dagucloud/dagu/internal/proto/convert"
 	"github.com/dagucloud/dagu/internal/runtime/remote"
 	"github.com/dagucloud/dagu/internal/runtime/transform"
@@ -446,6 +451,36 @@ func (m *mockRemoteCoordinatorClient) RequestCancel(ctx context.Context, dagName
 	return nil
 }
 
+type mockRemoteStateCoordinatorClient struct {
+	*mockRemoteCoordinatorClient
+	handler *coordinator.Handler
+}
+
+func newMockRemoteStateCoordinatorClient(stateStore dagstate.Store) *mockRemoteStateCoordinatorClient {
+	return &mockRemoteStateCoordinatorClient{
+		mockRemoteCoordinatorClient: newMockRemoteCoordinatorClient(),
+		handler: coordinator.NewHandler(coordinator.HandlerConfig{
+			StateStore: stateStore,
+		}),
+	}
+}
+
+func (m *mockRemoteStateCoordinatorClient) GetState(ctx context.Context, req *coordinatorv1.GetStateRequest) (*coordinatorv1.GetStateResponse, error) {
+	return m.handler.GetState(ctx, req)
+}
+
+func (m *mockRemoteStateCoordinatorClient) PutState(ctx context.Context, req *coordinatorv1.PutStateRequest) (*coordinatorv1.PutStateResponse, error) {
+	return m.handler.PutState(ctx, req)
+}
+
+func (m *mockRemoteStateCoordinatorClient) DeleteState(ctx context.Context, req *coordinatorv1.DeleteStateRequest) (*coordinatorv1.DeleteStateResponse, error) {
+	return m.handler.DeleteState(ctx, req)
+}
+
+func (m *mockRemoteStateCoordinatorClient) ListState(ctx context.Context, req *coordinatorv1.ListStateRequest) (*coordinatorv1.ListStateResponse, error) {
+	return m.handler.ListState(ctx, req)
+}
+
 // mockRemoteDAGRunAttempt implements execution.DAGRunAttempt for testing
 type mockRemoteDAGRunAttempt struct {
 	id       string
@@ -731,6 +766,44 @@ func TestNewRemoteTaskHandler(t *testing.T) {
 		assert.Nil(t, rh.dagStore)
 		assert.Nil(t, rh.serviceRegistry)
 	})
+
+	t.Run("StateStoreSet", func(t *testing.T) {
+		t.Parallel()
+
+		stateStore := store.NewDAGStateStore(testutil.NewMemoryBackend().Collection("dag_state"))
+		handler := NewRemoteTaskHandler(RemoteTaskHandlerConfig{
+			WorkerID:          "worker-state",
+			CoordinatorClient: newMockRemoteCoordinatorClient(),
+			StateStore:        stateStore,
+		})
+
+		rh, ok := handler.(*remoteTaskHandler)
+		require.True(t, ok)
+		assert.Equal(t, stateStore, rh.stateStore)
+	})
+
+	t.Run("StateStoreDefaultsToCoordinatorStateClient", func(t *testing.T) {
+		t.Parallel()
+
+		stateStore := store.NewDAGStateStore(testutil.NewMemoryBackend().Collection("dag_state"))
+		client := newMockRemoteStateCoordinatorClient(stateStore)
+		handler := NewRemoteTaskHandler(RemoteTaskHandlerConfig{
+			WorkerID:          "worker-state-client",
+			CoordinatorClient: client,
+		})
+
+		rh, ok := handler.(*remoteTaskHandler)
+		require.True(t, ok)
+		require.NotNil(t, rh.stateStore)
+
+		ref := dagstate.Ref{Scope: dagstate.ScopeDAG, Namespace: "daily-agent", Key: "cursor"}
+		_, err := rh.stateStore.Put(context.Background(), ref, json.RawMessage(`{"last_id":123}`), dagstate.PutOptions{})
+		require.NoError(t, err)
+
+		got, err := stateStore.Get(context.Background(), ref)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"last_id":123}`, string(got.Value))
+	})
 }
 
 func TestCreateRemoteHandlers(t *testing.T) {
@@ -794,6 +867,9 @@ func TestAgentStoresFromSnapshot_HydratesSnapshotStores(t *testing.T) {
 				DataDir: t.TempDir(),
 			},
 		},
+		agentStoresFactory: func(ctx context.Context, cfg *config.Config) agent.RuntimeStores {
+			return file.NewAgentStores(ctx, cfg)
+		},
 	}
 	payload, err := agent.MarshalSnapshot(&agent.Snapshot{
 		Config: &agent.Config{
@@ -819,25 +895,25 @@ func TestAgentStoresFromSnapshot_HydratesSnapshotStores(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	stores, err := handler.agentStoresFromSnapshot(payload)
+	stores, err := handler.agentStoresFromSnapshot(context.Background(), payload)
 	require.NoError(t, err)
-	require.NotNil(t, stores.configStore)
-	require.NotNil(t, stores.modelStore)
-	require.NotNil(t, stores.soulStore)
-	require.NotNil(t, stores.memoryStore)
-	require.NotNil(t, stores.secretStore)
-	assert.Nil(t, stores.oauthManager)
+	require.NotNil(t, stores.ConfigStore)
+	require.NotNil(t, stores.ModelStore)
+	require.NotNil(t, stores.SoulStore)
+	require.NotNil(t, stores.MemoryStore)
+	require.NotNil(t, stores.SecretStore)
+	assert.Nil(t, stores.OAuthManager)
 
-	cfg, err := stores.configStore.Load(context.Background())
+	cfg, err := stores.ConfigStore.Load(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "model-default", cfg.DefaultModelID)
-	model, err := stores.modelStore.GetByID(context.Background(), "model-default")
+	model, err := stores.ModelStore.GetByID(context.Background(), "model-default")
 	require.NoError(t, err)
 	assert.Equal(t, "gpt-5.4", model.Model)
-	soul, err := stores.soulStore.GetByID(context.Background(), "helper")
+	soul, err := stores.SoulStore.GetByID(context.Background(), "helper")
 	require.NoError(t, err)
 	assert.Equal(t, "Helper", soul.Name)
-	globalMemory, err := stores.memoryStore.LoadGlobalMemory(context.Background())
+	globalMemory, err := stores.MemoryStore.LoadGlobalMemory(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "global memory", globalMemory)
 }

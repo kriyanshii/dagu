@@ -877,7 +877,7 @@ max_clean_up_time_sec: 30
 
 llm:
   provider: anthropic
-  model: claude-sonnet-4-20250514
+  model: claude-sonnet-4-6
   system: "Override system prompt"
 
 steps:
@@ -903,7 +903,7 @@ steps:
 		// LLM overridden
 		require.NotNil(t, dag.LLM)
 		assert.Equal(t, "anthropic", dag.LLM.Provider)
-		assert.Equal(t, "claude-sonnet-4-20250514", dag.LLM.Model)
+		assert.Equal(t, "claude-sonnet-4-6", dag.LLM.Model)
 		assert.Equal(t, "Override system prompt", dag.LLM.System)
 
 		// Env still inherited from base (since not specified in override DAG)
@@ -2420,6 +2420,69 @@ steps:
 
 		// DAG-level defaults should override base config defaults
 		require.Equal(t, 600*time.Second, dag.Steps[0].Timeout)
+	})
+
+	t.Run("BaseConfigStepsInheritedWhenChildOmitsSteps", func(t *testing.T) {
+		t.Parallel()
+
+		base := createTempYAMLFile(t, `
+steps:
+  - name: base-step
+    run: echo "base"
+`)
+		child := createTempYAMLFile(t, `
+description: child DAG
+`)
+		dag, err := spec.Load(context.Background(), child, spec.WithBaseConfig(base))
+		require.NoError(t, err)
+		require.Len(t, dag.Steps, 1)
+		require.Equal(t, "base-step", dag.Steps[0].Name)
+		require.Equal(t, "echo \"base\"", dag.Steps[0].Commands[0].CmdWithArgs)
+	})
+
+	t.Run("BaseConfigHandlerPartialOverrideKeepsInheritedFields", func(t *testing.T) {
+		t.Parallel()
+
+		base := createTempYAMLFile(t, `
+handler_on:
+  failure:
+    run: echo "base failure"
+    timeout_sec: 300
+    env:
+      - BASE_ONLY: base
+`)
+		child := createTempYAMLFile(t, `
+handler_on:
+  failure:
+    run: echo "child failure"
+
+steps:
+  - name: step1
+    run: echo "test"
+`)
+		dag, err := spec.Load(context.Background(), child, spec.WithBaseConfig(base))
+		require.NoError(t, err)
+		require.NotNil(t, dag.HandlerOn.Failure)
+		require.Equal(t, "echo \"child failure\"", dag.HandlerOn.Failure.Commands[0].CmdWithArgs)
+		require.Equal(t, 300*time.Second, dag.HandlerOn.Failure.Timeout)
+		require.Contains(t, dag.HandlerOn.Failure.Env, "BASE_ONLY=base")
+	})
+
+	t.Run("BaseConfigScheduleWarningsCollectedOnce", func(t *testing.T) {
+		t.Parallel()
+
+		base := createTempYAMLFile(t, `
+schedule: "*/33 * * * *"
+`)
+		child := createTempYAMLFile(t, `
+steps:
+  - name: step1
+    run: echo "test"
+`)
+		dag, err := spec.Load(context.Background(), child, spec.WithBaseConfig(base))
+		require.NoError(t, err)
+		require.Len(t, dag.BuildWarnings, 1)
+		require.Contains(t, dag.BuildWarnings[0], "not every 33 minutes")
 	})
 
 	t.Run("BaseConfigDefaultsAllowExplicitClears", func(t *testing.T) {

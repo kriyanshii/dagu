@@ -417,7 +417,7 @@ func markConfiguredWorkingDirsExplicit(dag *core.DAG) {
 
 // loadDAGsFromFile loads all DAGs from a multi-document YAML file.
 func loadDAGsFromFile(ctx BuildContext, filePath string, baseDef *dag, baseRaw []byte) ([]*core.DAG, error) {
-	data, err := os.ReadFile(filePath) //nolint:gosec
+	data, err := fileutil.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file %q: %w", filePath, err)
 	}
@@ -515,7 +515,7 @@ func readBaseDefinitionData(opts BuildOpts) ([]byte, string, error) {
 		return nil, "", nil
 	}
 
-	baseRaw, err := os.ReadFile(opts.Base) //nolint:gosec
+	baseRaw, err := fileutil.ReadFile(opts.Base)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, "", nil
@@ -552,7 +552,7 @@ func processDAGDocument(
 		return nil, err
 	}
 
-	docCtx, dest, err := prepareDocumentContext(ctx, baseDef, spec)
+	docCtx, _, err := prepareDocumentContext(ctx, baseDef, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -565,21 +565,18 @@ func processDAGDocument(
 	if err != nil {
 		return nil, err
 	}
-	if err := merge(dest, dag); err != nil {
-		return nil, err
-	}
 	if len(baseRaw) > 0 {
-		dest.BaseConfigData = baseRaw
+		dag.BaseConfigData = baseRaw
 	}
-	applyHistoryRetentionOverride(dest, spec.HistRetentionDays != nil, spec.HistRetentionRuns != nil)
+	applyHistoryRetentionOverride(dag, spec.HistRetentionDays != nil, spec.HistRetentionRuns != nil)
 
-	dest.Location = filePath
-	dest.SourceFile = filePath
-	dest.YamlData, err = documentYAML(ctx.index, doc, fullData)
+	dag.Location = filePath
+	dag.SourceFile = filePath
+	dag.YamlData, err = documentYAML(ctx.index, doc, fullData)
 	if err != nil {
 		return nil, err
 	}
-	return dest, nil
+	return dag, nil
 }
 
 // loadEffectiveBaseDefinition returns the base definition that applies to a document.
@@ -607,7 +604,7 @@ func readWorkspaceBaseDefinitionData(opts BuildOpts, doc map[string]any) ([]byte
 		return nil, nil
 	}
 
-	data, err := os.ReadFile(filepath.Join(opts.WorkspaceBaseConfigDir, workspaceName, workspace.BaseConfigFileName)) //nolint:gosec
+	data, err := fileutil.ReadFile(filepath.Join(opts.WorkspaceBaseConfigDir, workspaceName, workspace.BaseConfigFileName))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -1094,7 +1091,7 @@ func (*mergeTransformer) Transformer(
 
 // readYAMLFile reads the contents of the file into a map.
 func readYAMLFile(file string) (cfg map[string]any, err error) {
-	data, err := os.ReadFile(file) //nolint:gosec
+	data, err := fileutil.ReadFile(file)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file %q: %v", file, err)
 	}

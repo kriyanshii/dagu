@@ -20,7 +20,7 @@ import (
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/service/worker"
-	"github.com/dagucloud/dagu/internal/test"
+	"github.com/dagucloud/dagu/internal/test/intgharness"
 	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,10 +40,7 @@ func delayedAfterAckFailureTimeout(mode workerMode) time.Duration {
 }
 
 func waitForReleaseFileScript(path string) string {
-	return test.ForOS(
-		fmt.Sprintf("while [ ! -f %s ]; do\n  sleep 0.05\ndone", test.PosixQuote(path)),
-		fmt.Sprintf("while (-not (Test-Path %s)) {\n  Start-Sleep -Milliseconds 50\n}", test.PowerShellQuote(path)),
-	)
+	return intgharness.PortableCommands().WaitForFile(path)
 }
 
 // TestDistributedRun_WorkerCrash_MarkedFailed verifies that a hard-killed worker
@@ -83,7 +80,7 @@ steps:
 	lease := waitForLease(t, f, status.AttemptKey, 5*time.Second)
 	require.Equal(t, "crash-worker", lease.WorkerID)
 
-	require.NoError(t, cmdutil.KillProcessGroup(workerCmd, os.Kill))
+	require.NoError(t, cmdutil.TerminateProcessGroup(workerCmd, cmdutil.ForceTermination()))
 
 	finalStatus := f.waitForStatus(core.Failed, 20*time.Second)
 	assert.Equal(t, core.Failed, finalStatus.Status)
@@ -413,11 +410,12 @@ steps:
 		lease, err = f.coord.DAGRunLeaseStore.Get(f.coord.Context, status.AttemptKey)
 		return err == nil && lease != nil
 	}, distrTestTimeout(5*time.Second), 100*time.Millisecond, "shared lease should exist while run is active")
+	leaseObservedAt := time.Now()
 	assert.Equal(t, status.AttemptKey, lease.AttemptKey)
 	assert.Equal(t, status.AttemptID, lease.AttemptID)
 	assert.Equal(t, "worker-1", lease.WorkerID)
 	assert.Equal(t, "test-coordinator", lease.Owner.ID)
-	assert.WithinDuration(t, time.Now(), time.UnixMilli(lease.LastHeartbeatAt), 5*time.Second)
+	assert.WithinDuration(t, leaseObservedAt, time.UnixMilli(lease.LastHeartbeatAt), distrTestTimeout(5*time.Second))
 
 	require.NoError(t, os.WriteFile(releaseFile, []byte("ok"), 0600))
 	finalStatus := f.waitForStatus(core.Succeeded, 20*time.Second)
@@ -426,7 +424,7 @@ steps:
 	require.Eventually(t, func() bool {
 		_, err := f.coord.DAGRunLeaseStore.Get(f.coord.Context, status.AttemptKey)
 		return errors.Is(err, exec.ErrDAGRunLeaseNotFound)
-	}, 10*time.Second, 100*time.Millisecond, "shared lease should be removed after completion")
+	}, distrTestTimeout(10*time.Second), 100*time.Millisecond, "shared lease should be removed after completion")
 }
 
 func testDistributedRunAckedTaskWithoutInitialStatus(t *testing.T, mode workerMode) {
@@ -456,15 +454,16 @@ steps:
 
 	labels := map[string]string{"test": "true"}
 	var (
-		crashWorker *worker.Worker
-		abandonOnce sync.Once
+		crashWorker   *worker.Worker
+		abandonedTask = make(chan *coordinatorv1.Task, 1)
 	)
-	afterAckHook := func(context.Context, *coordinatorv1.Task) bool {
-		triggered := false
-		abandonOnce.Do(func() {
-			triggered = true
-		})
-		return triggered
+	afterAckHook := func(ctx context.Context, task *coordinatorv1.Task) bool {
+		select {
+		case abandonedTask <- task:
+		default:
+		}
+		<-ctx.Done()
+		return true
 	}
 
 	switch mode {
@@ -481,13 +480,27 @@ steps:
 	f.waitForQueued()
 	f.startScheduler(30 * time.Second)
 
+	var task *coordinatorv1.Task
+	select {
+	case task = <-abandonedTask:
+	case <-time.After(distrTestTimeout(15 * time.Second)):
+		t.Fatal("timed out waiting for worker to accept and abandon task")
+	}
+	require.NotNil(t, task)
+	require.Equal(t, "ack-orphan-test", task.Target)
+
 	lease := waitForAnyLease(t, f, 5*time.Second)
 	require.Equal(t, "crash-worker", lease.WorkerID)
+	require.Equal(t, lease.AttemptKey, task.AttemptKey)
 
 	queuedStatus, err := f.latestStatus()
 	require.NoError(t, err)
 	require.Equal(t, core.Queued, queuedStatus.Status)
 	require.Equal(t, lease.AttemptKey, queuedStatus.AttemptKey)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), distrTestTimeout(5*time.Second))
+	defer cancel()
+	require.NoError(t, crashWorker.Stop(stopCtx))
 
 	finalStatus := f.waitForStatus(core.Failed, delayedAfterAckFailureTimeout(mode))
 	require.Equal(t, core.Failed, finalStatus.Status)
@@ -743,7 +756,7 @@ func startWorkerProcess(t *testing.T, f *testFixture, workerID, labels string) (
 		}
 
 		if cmd.Process != nil {
-			_ = cmdutil.KillProcessGroup(cmd, os.Kill)
+			_ = cmdutil.TerminateProcessGroup(cmd, cmdutil.ForceTermination())
 		}
 		select {
 		case <-done:
@@ -759,6 +772,8 @@ func startWorkerProcess(t *testing.T, f *testFixture, workerID, labels string) (
 
 func waitForLease(t *testing.T, f *testFixture, attemptKey string, timeout time.Duration) exec.DAGRunLease {
 	t.Helper()
+
+	timeout = distrTestTimeout(timeout)
 
 	var lease *exec.DAGRunLease
 	require.Eventually(t, func() bool {
@@ -815,6 +830,8 @@ func readSubDAGRunStatus(
 
 func waitForAnyLease(t *testing.T, f *testFixture, timeout time.Duration) exec.DAGRunLease {
 	t.Helper()
+
+	timeout = distrTestTimeout(timeout)
 
 	var lease exec.DAGRunLease
 	require.Eventually(t, func() bool {

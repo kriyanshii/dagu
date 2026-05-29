@@ -62,9 +62,6 @@ func (a *API) ListNotificationRoutes(ctx context.Context, _ api.ListNotification
 	if err := a.requireNotificationManagement(ctx); err != nil {
 		return nil, err
 	}
-	if err := a.requireLicensedReusableNotificationChannels(); err != nil {
-		return nil, err
-	}
 	routeSets, err := a.notificationService.ListRouteSets(ctx)
 	if err != nil {
 		return nil, err
@@ -78,9 +75,6 @@ func (a *API) GetGlobalNotificationRoutes(ctx context.Context, _ api.GetGlobalNo
 	if err := a.requireNotificationManagement(ctx); err != nil {
 		return nil, err
 	}
-	if err := a.requireLicensedReusableNotificationChannels(); err != nil {
-		return nil, err
-	}
 	routeSet, err := a.notificationService.GetRouteSet(ctx, notificationmodel.RouteScopeGlobal, "")
 	if err != nil {
 		return nil, err
@@ -90,9 +84,6 @@ func (a *API) GetGlobalNotificationRoutes(ctx context.Context, _ api.GetGlobalNo
 
 func (a *API) UpdateGlobalNotificationRoutes(ctx context.Context, request api.UpdateGlobalNotificationRoutesRequestObject) (api.UpdateGlobalNotificationRoutesResponseObject, error) {
 	if err := a.requireNotificationManagement(ctx); err != nil {
-		return nil, err
-	}
-	if err := a.requireLicensedReusableNotificationChannels(); err != nil {
 		return nil, err
 	}
 	if request.Body == nil {
@@ -121,9 +112,6 @@ func (a *API) GetWorkspaceNotificationRoutes(ctx context.Context, request api.Ge
 	if err := a.requireNotificationManagement(ctx); err != nil {
 		return nil, err
 	}
-	if err := a.requireLicensedReusableNotificationChannels(); err != nil {
-		return nil, err
-	}
 	workspaceName, err := a.resolveNotificationRouteWorkspace(ctx, string(request.WorkspaceName))
 	if err != nil {
 		return nil, err
@@ -140,9 +128,6 @@ func (a *API) GetWorkspaceNotificationRoutes(ctx context.Context, request api.Ge
 
 func (a *API) UpdateWorkspaceNotificationRoutes(ctx context.Context, request api.UpdateWorkspaceNotificationRoutesRequestObject) (api.UpdateWorkspaceNotificationRoutesResponseObject, error) {
 	if err := a.requireNotificationManagement(ctx); err != nil {
-		return nil, err
-	}
-	if err := a.requireLicensedReusableNotificationChannels(); err != nil {
 		return nil, err
 	}
 	if request.Body == nil {
@@ -179,9 +164,6 @@ func (a *API) ListNotificationChannels(ctx context.Context, _ api.ListNotificati
 	if err := a.requireNotificationManagement(ctx); err != nil {
 		return nil, err
 	}
-	if err := a.requireLicensedReusableNotificationChannels(); err != nil {
-		return nil, err
-	}
 	channels, err := a.notificationService.ListChannels(ctx)
 	if err != nil {
 		return nil, err
@@ -193,9 +175,6 @@ func (a *API) ListNotificationChannels(ctx context.Context, _ api.ListNotificati
 
 func (a *API) CreateNotificationChannel(ctx context.Context, request api.CreateNotificationChannelRequestObject) (api.CreateNotificationChannelResponseObject, error) {
 	if err := a.requireNotificationManagement(ctx); err != nil {
-		return nil, err
-	}
-	if err := a.requireLicensedReusableNotificationChannels(); err != nil {
 		return nil, err
 	}
 	if request.Body == nil {
@@ -223,9 +202,6 @@ func (a *API) GetNotificationChannel(ctx context.Context, request api.GetNotific
 	if err := a.requireNotificationManagement(ctx); err != nil {
 		return nil, err
 	}
-	if err := a.requireLicensedReusableNotificationChannels(); err != nil {
-		return nil, err
-	}
 	channel, err := a.notificationService.GetChannel(ctx, request.ChannelId)
 	if err != nil {
 		if errors.Is(err, notificationmodel.ErrChannelNotFound) {
@@ -238,9 +214,6 @@ func (a *API) GetNotificationChannel(ctx context.Context, request api.GetNotific
 
 func (a *API) UpdateNotificationChannel(ctx context.Context, request api.UpdateNotificationChannelRequestObject) (api.UpdateNotificationChannelResponseObject, error) {
 	if err := a.requireNotificationManagement(ctx); err != nil {
-		return nil, err
-	}
-	if err := a.requireLicensedReusableNotificationChannels(); err != nil {
 		return nil, err
 	}
 	if request.Body == nil {
@@ -275,9 +248,6 @@ func (a *API) UpdateNotificationChannel(ctx context.Context, request api.UpdateN
 
 func (a *API) DeleteNotificationChannel(ctx context.Context, request api.DeleteNotificationChannelRequestObject) (api.DeleteNotificationChannelResponseObject, error) {
 	if err := a.requireNotificationManagement(ctx); err != nil {
-		return nil, err
-	}
-	if err := a.requireLicensedReusableNotificationChannels(); err != nil {
 		return nil, err
 	}
 	if err := a.notificationService.DeleteChannel(ctx, request.ChannelId); err != nil {
@@ -328,11 +298,6 @@ func (a *API) UpdateDAGNotifications(ctx context.Context, request api.UpdateDAGN
 	}
 	if err := a.ensureDAGExists(ctx, request.FileName); err != nil {
 		return nil, err
-	}
-	if request.Body.Subscriptions != nil {
-		if err := a.requireLicensedReusableNotificationChannels(); err != nil {
-			return nil, err
-		}
 	}
 
 	settings := notificationSettingsFromRequest(request.FileName, request.Body)

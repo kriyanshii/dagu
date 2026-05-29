@@ -14,9 +14,9 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis/filedagrun"
-	"github.com/dagucloud/dagu/internal/persis/fileproc"
-	"github.com/dagucloud/dagu/internal/persis/filequeue"
+	"github.com/dagucloud/dagu/internal/persis/file"
+	"github.com/dagucloud/dagu/internal/persis/file/dagrun"
+	"github.com/dagucloud/dagu/internal/persis/store"
 	"github.com/dagucloud/dagu/internal/runtime"
 	"github.com/stretchr/testify/require"
 )
@@ -97,17 +97,12 @@ func newHASchedulerFixture(t *testing.T) *haSchedulerFixture {
 		DefaultExecMode: config.ExecutionModeLocal,
 	}
 
-	dagRunStore := filedagrun.New(
+	dagRunStore := dagrun.New(
 		cfg.Paths.DAGRunsDir,
-		filedagrun.WithArtifactDir(cfg.Paths.ArtifactDir),
+		dagrun.WithArtifactDir(cfg.Paths.ArtifactDir),
 	)
-	queueStore := filequeue.New(cfg.Paths.QueueDir)
-	procStore := fileproc.New(
-		cfg.Paths.ProcDir,
-		fileproc.WithHeartbeatInterval(cfg.Proc.HeartbeatInterval),
-		fileproc.WithHeartbeatSyncInterval(cfg.Proc.HeartbeatSyncInterval),
-		fileproc.WithStaleThreshold(cfg.Proc.StaleThreshold),
-	)
+	queueStore := store.NewQueueStore(file.NewCollection(cfg.Paths.QueueDir))
+	procStore := newSchedulerTestProcStore(cfg.Paths.ProcDir, cfg)
 
 	return &haSchedulerFixture{
 		cfg:         cfg,

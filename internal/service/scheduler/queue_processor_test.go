@@ -19,16 +19,18 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/logger"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis/filedagrun"
-	"github.com/dagucloud/dagu/internal/persis/filedistributed"
-	"github.com/dagucloud/dagu/internal/persis/fileproc"
-	"github.com/dagucloud/dagu/internal/persis/filequeue"
+	"github.com/dagucloud/dagu/internal/persis/file"
+	"github.com/dagucloud/dagu/internal/persis/file/dagrun"
+	"github.com/dagucloud/dagu/internal/persis/file/proc"
+	"github.com/dagucloud/dagu/internal/persis/store"
 	"github.com/dagucloud/dagu/internal/runtime"
 	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+const freshDistributedTestThreshold = time.Hour
 
 type syncBuffer struct {
 	buf  *bytes.Buffer
@@ -53,7 +55,7 @@ type queueFixture struct {
 	logBuffer      *syncBuffer
 	dagRunStore    exec.DAGRunStore
 	leaseStore     exec.DAGRunLeaseStore
-	dispatchStore  *filedistributed.DispatchTaskStore
+	dispatchStore  exec.DispatchTaskStore
 	distributedDir string
 	queueStore     exec.QueueStore
 	procStore      exec.ProcStore
@@ -66,6 +68,8 @@ func newQueueFixture(t *testing.T) *queueFixture {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
+	distributedDir := filepath.Join(tmpDir, "distributed")
+	leaseCollection := file.NewCollection(filepath.Join(distributedDir, "leases"))
 	logBuffer := &syncBuffer{buf: new(bytes.Buffer)}
 	ctx := logger.WithFixedLogger(context.Background(), logger.NewLogger(
 		logger.WithDebug(), logger.WithFormat("text"), logger.WithWriter(logBuffer),
@@ -73,13 +77,25 @@ func newQueueFixture(t *testing.T) *queueFixture {
 
 	return &queueFixture{
 		t: t, ctx: ctx, logBuffer: logBuffer,
-		distributedDir: filepath.Join(tmpDir, "distributed"),
-		dagRunStore:    filedagrun.New(filepath.Join(tmpDir, "dag-runs")),
-		leaseStore:     filedistributed.NewDAGRunLeaseStore(filepath.Join(tmpDir, "distributed")),
-		dispatchStore:  filedistributed.NewDispatchTaskStore(filepath.Join(tmpDir, "distributed")),
-		queueStore:     filequeue.New(filepath.Join(tmpDir, "queue")),
-		procStore:      fileproc.New(filepath.Join(tmpDir, "proc")),
+		distributedDir: distributedDir,
+		dagRunStore:    dagrun.New(filepath.Join(tmpDir, "dag-runs")),
+		leaseStore:     store.NewDAGRunLeaseStore(leaseCollection),
+		dispatchStore:  store.NewDispatchTaskStore(file.NewCollection(distributedDir)),
+		queueStore:     store.NewQueueStore(file.NewCollection(filepath.Join(tmpDir, "queue"))),
+		procStore:      newSchedulerTestProcStore(filepath.Join(tmpDir, "proc"), nil),
 	}
+}
+
+func newSchedulerTestProcStore(procDir string, cfg *config.Config) exec.ProcStore {
+	opts := []proc.StoreOption{}
+	if cfg != nil {
+		opts = append(opts,
+			proc.WithHeartbeatInterval(cfg.Proc.HeartbeatInterval),
+			proc.WithHeartbeatSyncInterval(cfg.Proc.HeartbeatSyncInterval),
+			proc.WithStaleThreshold(cfg.Proc.StaleThreshold),
+		)
+	}
+	return proc.New(procDir, opts...)
 }
 
 func (f *queueFixture) withDAG(name string, maxActiveRuns int) *queueFixture {
@@ -115,9 +131,9 @@ func (f *queueFixture) withProcessor(cfg config.Queues, opts ...QueueProcessorOp
 		NewDAGExecutor(nil, runtime.NewSubCmdBuilder(&config.Config{Paths: config.PathsConfig{Executable: "/usr/bin/dagu"}}), config.ExecutionModeLocal, "", nil),
 		cfg, options...,
 	)
-	f.dispatchStore = filedistributed.NewDispatchTaskStore(
-		f.distributedDir,
-		filedistributed.WithDispatchReservationTTL(f.processor.leaseStaleThresholdOrDefault()),
+	f.dispatchStore = store.NewDispatchTaskStore(
+		file.NewCollection(f.distributedDir),
+		store.WithDispatchReservationTTL(f.processor.leaseStaleThresholdOrDefault()),
 	)
 	f.processor.dispatchTaskStore = f.dispatchStore
 	return f
@@ -237,7 +253,7 @@ func TestQueueProcessor_ConcurrencyLimit(t *testing.T) {
 
 func TestQueueProcessor_CountsFreshDistributedRunsAgainstQueueConcurrency(t *testing.T) {
 	f := newQueueFixture(t).withDAG("distributed-conc-dag", 1).
-		withProcessor(config.Queues{}, WithLeaseStaleThreshold(5*time.Second)).
+		withProcessor(config.Queues{}, WithLeaseStaleThreshold(freshDistributedTestThreshold)).
 		simulateQueue(1, false)
 
 	runningAttempt, err := f.dagRunStore.CreateAttempt(f.ctx, f.dag, time.Now(), "running-run", exec.NewDAGRunAttemptOptions{})
@@ -312,7 +328,7 @@ func TestQueueProcessor_ProcessQueueItems_FailsClosedOnOutstandingDispatchCountE
 
 func TestQueueProcessor_CountsOutstandingDispatchReservationsAgainstQueueConcurrency(t *testing.T) {
 	f := newQueueFixture(t).withDAG("distributed-dispatch-reservation-dag", 1).
-		withProcessor(config.Queues{}, WithLeaseStaleThreshold(5*time.Second)).
+		withProcessor(config.Queues{}, WithLeaseStaleThreshold(freshDistributedTestThreshold)).
 		simulateQueue(1, false)
 
 	f.enqueueRuns(1)
@@ -341,7 +357,7 @@ func TestQueueProcessor_CountsOutstandingDispatchReservationsAgainstQueueConcurr
 
 func TestQueueProcessor_SelectRunnableQueueItemsSkipsOutstandingReservations(t *testing.T) {
 	f := newQueueFixture(t).withDAG("distributed-select-dag", 2).
-		withProcessor(config.Queues{}, WithLeaseStaleThreshold(5*time.Second)).
+		withProcessor(config.Queues{}, WithLeaseStaleThreshold(freshDistributedTestThreshold)).
 		simulateQueue(2, false)
 
 	f.enqueueRuns(2)
@@ -410,7 +426,9 @@ func TestQueueProcessor_StaleOutstandingDispatchReservationsExpire(t *testing.T)
 	assert.Equal(t, "run-1", selectedRef.ID)
 
 	pendingEntries, err := os.ReadDir(filepath.Join(f.distributedDir, "pending"))
-	require.NoError(t, err)
+	if !errors.Is(err, os.ErrNotExist) {
+		require.NoError(t, err)
+	}
 	assert.Empty(t, pendingEntries)
 }
 
@@ -544,7 +562,11 @@ func agePendingDispatchReservationFiles(t *testing.T, distributedDir string, age
 
 		var record map[string]any
 		require.NoError(t, json.Unmarshal(data, &record))
-		record["enqueuedAt"] = targetTime
+		if payload, ok := record["data"].(map[string]any); ok {
+			payload["enqueuedAt"] = targetTime
+		} else {
+			record["enqueuedAt"] = targetTime
+		}
 
 		updated, err := json.Marshal(record)
 		require.NoError(t, err)
@@ -554,7 +576,7 @@ func agePendingDispatchReservationFiles(t *testing.T, distributedDir string, age
 
 func TestQueueProcessor_CheckStartupStatusTreatsRunningStatusAsStarted(t *testing.T) {
 	f := newQueueFixture(t).withDAG("startup-running-dag", 1).
-		withProcessor(config.Queues{}, WithLeaseStaleThreshold(5*time.Second))
+		withProcessor(config.Queues{}, WithLeaseStaleThreshold(freshDistributedTestThreshold))
 
 	run, err := f.dagRunStore.CreateAttempt(f.ctx, f.dag, time.Now(), "running-startup-run", exec.NewDAGRunAttemptOptions{})
 	require.NoError(t, err)
@@ -578,7 +600,7 @@ func TestQueueProcessor_CheckStartupStatusTreatsRunningStatusAsStarted(t *testin
 
 func TestQueueProcessor_CheckStartupStatusTreatsFreshDistributedLeaseAsStarted(t *testing.T) {
 	f := newQueueFixture(t).withDAG("startup-lease-dag", 1).
-		withProcessor(config.Queues{}, WithLeaseStaleThreshold(5*time.Second))
+		withProcessor(config.Queues{}, WithLeaseStaleThreshold(freshDistributedTestThreshold))
 
 	run, err := f.dagRunStore.CreateAttempt(f.ctx, f.dag, time.Now(), "lease-startup-run", exec.NewDAGRunAttemptOptions{})
 	require.NoError(t, err)

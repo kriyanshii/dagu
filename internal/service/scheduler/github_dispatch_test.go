@@ -17,11 +17,10 @@ import (
 	coreexec "github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/core/spec"
 	"github.com/dagucloud/dagu/internal/license"
-	"github.com/dagucloud/dagu/internal/persis/filedag"
-	"github.com/dagucloud/dagu/internal/persis/filedagrun"
-	"github.com/dagucloud/dagu/internal/persis/filegithubdispatch"
-	"github.com/dagucloud/dagu/internal/persis/fileproc"
-	"github.com/dagucloud/dagu/internal/persis/filequeue"
+	"github.com/dagucloud/dagu/internal/persis/file"
+	filedag "github.com/dagucloud/dagu/internal/persis/file/dag"
+	"github.com/dagucloud/dagu/internal/persis/file/dagrun"
+	persiststore "github.com/dagucloud/dagu/internal/persis/store"
 	"github.com/dagucloud/dagu/internal/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,7 +62,7 @@ func TestGitHubDispatchWorker_ProcessAndReportJob(t *testing.T) {
 	t.Parallel()
 
 	env := newDispatchTestEnv(t, "github-ci")
-	tracker := filegithubdispatch.New(filepath.Join(t.TempDir(), "tracker"))
+	tracker := persiststore.NewGitHubDispatchStore(file.NewCollection(filepath.Join(t.TempDir(), "tracker"), file.WithIndentedJSON()))
 	client := &stubDispatchClient{}
 	licenses := newStubDispatchLicenseManager()
 	worker := NewGitHubDispatchWorker(
@@ -106,7 +105,7 @@ func TestGitHubDispatchWorker_ProcessAndReportJob(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, items, 1)
 
-	tracked, err := tracker.List()
+	tracked, err := tracker.List(env.ctx)
 	require.NoError(t, err)
 	require.Len(t, tracked, 1)
 	assert.Equal(t, githubDispatchAccepted, tracked[0].Phase)
@@ -133,7 +132,7 @@ func TestGitHubDispatchWorker_ProcessAndReportJob(t *testing.T) {
 	assert.Equal(t, "job-1", client.finishes[0].jobID)
 	assert.Equal(t, "succeeded", client.finishes[0].req.ResultStatus)
 
-	tracked, err = tracker.List()
+	tracked, err = tracker.List(env.ctx)
 	require.NoError(t, err)
 	assert.Empty(t, tracked)
 }
@@ -142,7 +141,7 @@ func TestGitHubDispatchWorker_CancelCommandDoesNotStopDag(t *testing.T) {
 	t.Parallel()
 
 	env := newDispatchTestEnv(t, "github-deploy")
-	tracker := filegithubdispatch.New(filepath.Join(t.TempDir(), "tracker"))
+	tracker := persiststore.NewGitHubDispatchStore(file.NewCollection(filepath.Join(t.TempDir(), "tracker"), file.WithIndentedJSON()))
 	client := &stubDispatchClient{}
 	licenses := newStubDispatchLicenseManager()
 	runMgr := &stubDispatchRuntimeManager{}
@@ -174,7 +173,7 @@ func TestGitHubDispatchWorker_CancelCommandDoesNotStopDag(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, items)
 
-	tracked, err := tracker.List()
+	tracked, err := tracker.List(env.ctx)
 	require.NoError(t, err)
 	assert.Empty(t, tracked)
 }
@@ -183,7 +182,7 @@ func TestGitHubDispatchWorker_ReportTrackedJobsContinuesAfterError(t *testing.T)
 	t.Parallel()
 
 	env := newDispatchTestEnv(t, "github-report")
-	tracker := filegithubdispatch.New(filepath.Join(t.TempDir(), "tracker"))
+	tracker := persiststore.NewGitHubDispatchStore(file.NewCollection(filepath.Join(t.TempDir(), "tracker"), file.WithIndentedJSON()))
 	client := &stubDispatchClient{
 		finishErrByJobID: map[string]error{
 			"job-1": errors.New("finish failed"),
@@ -229,7 +228,7 @@ func TestGitHubDispatchWorker_ReportTrackedJobsContinuesAfterError(t *testing.T)
 	assert.Equal(t, "job-1", client.finishes[0].jobID)
 	assert.Equal(t, "job-2", client.finishes[1].jobID)
 
-	tracked, err := tracker.List()
+	tracked, err := tracker.List(env.ctx)
 	require.NoError(t, err)
 	require.Len(t, tracked, 1)
 	assert.Equal(t, "job-1", tracked[0].JobID)
@@ -247,7 +246,7 @@ func TestGitHubDispatchWorker_CredentialsEnabledWithoutGitHubFeature(t *testing.
 		&env.runMgr,
 		newStubDispatchLicenseManager(),
 		&stubDispatchClient{},
-		filegithubdispatch.New(filepath.Join(t.TempDir(), "tracker")),
+		persiststore.NewGitHubDispatchStore(file.NewCollection(filepath.Join(t.TempDir(), "tracker"), file.WithIndentedJSON())),
 		nil,
 	)
 
@@ -269,7 +268,7 @@ func TestNewGitHubDispatchWorker_DefaultPollingIntervals(t *testing.T) {
 		&env.runMgr,
 		newStubDispatchLicenseManager(),
 		&stubDispatchClient{},
-		filegithubdispatch.New(filepath.Join(t.TempDir(), "tracker")),
+		persiststore.NewGitHubDispatchStore(file.NewCollection(filepath.Join(t.TempDir(), "tracker"), file.WithIndentedJSON())),
 		nil,
 	)
 
@@ -283,7 +282,7 @@ func TestGitHubDispatchWorker_StartRunsLoopsUntilContextCanceled(t *testing.T) {
 	t.Parallel()
 
 	env := newDispatchTestEnv(t, "github-loop")
-	tracker := filegithubdispatch.New(filepath.Join(t.TempDir(), "tracker"))
+	tracker := persiststore.NewGitHubDispatchStore(file.NewCollection(filepath.Join(t.TempDir(), "tracker"), file.WithIndentedJSON()))
 	client := &loopDispatchClient{pulled: make(chan struct{})}
 	licenses := newStubDispatchLicenseManager()
 	worker := NewGitHubDispatchWorker(
@@ -418,18 +417,13 @@ func newDispatchTestEnv(t *testing.T, dagName string) dispatchTestEnv {
 	dag, err := spec.Load(ctx, dagFile)
 	require.NoError(t, err)
 
-	dagRuns := filedagrun.New(
+	dagRuns := dagrun.New(
 		cfg.Paths.DAGRunsDir,
-		filedagrun.WithArtifactDir(cfg.Paths.ArtifactDir),
-		filedagrun.WithLocation(time.UTC),
+		dagrun.WithArtifactDir(cfg.Paths.ArtifactDir),
+		dagrun.WithLocation(time.UTC),
 	)
-	proc := fileproc.New(
-		cfg.Paths.ProcDir,
-		fileproc.WithHeartbeatInterval(cfg.Proc.HeartbeatInterval),
-		fileproc.WithHeartbeatSyncInterval(cfg.Proc.HeartbeatSyncInterval),
-		fileproc.WithStaleThreshold(cfg.Proc.StaleThreshold),
-	)
-	queue := filequeue.New(cfg.Paths.QueueDir)
+	proc := newSchedulerTestProcStore(cfg.Paths.ProcDir, cfg)
+	queue := persiststore.NewQueueStore(file.NewCollection(cfg.Paths.QueueDir))
 	runMgr := runtime.NewManager(dagRuns, proc, cfg)
 
 	return dispatchTestEnv{
