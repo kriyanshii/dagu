@@ -16,7 +16,7 @@ const useIsAdminMock = vi.fn();
 const useCanAccessSystemStatusMock = vi.fn();
 const useCanViewEventLogsMock = vi.fn();
 const useCanManageWebhooksMock = vi.fn();
-const useCanManageSecretsMock = vi.fn();
+const useCanManageProfilesMock = vi.fn();
 const useCanViewAuditLogsMock = vi.fn();
 const useHasFeatureMock = vi.fn();
 const updatePreferenceMock = vi.fn();
@@ -28,7 +28,7 @@ vi.mock('@/contexts/AuthContext', () => ({
   useCanAccessSystemStatus: () => useCanAccessSystemStatusMock(),
   useCanViewEventLogs: () => useCanViewEventLogsMock(),
   useCanManageWebhooks: () => useCanManageWebhooksMock(),
-  useCanManageSecrets: () => useCanManageSecretsMock(),
+  useCanManageProfiles: () => useCanManageProfilesMock(),
   useCanViewAuditLogs: () => useCanViewAuditLogsMock(),
 }));
 
@@ -148,7 +148,7 @@ beforeEach(() => {
   useCanAccessSystemStatusMock.mockReturnValue(true);
   useCanViewEventLogsMock.mockReturnValue(true);
   useCanManageWebhooksMock.mockReturnValue(true);
-  useCanManageSecretsMock.mockReturnValue(true);
+  useCanManageProfilesMock.mockReturnValue(true);
   useCanViewAuditLogsMock.mockReturnValue(true);
   useHasFeatureMock.mockReturnValue(true);
 });
@@ -240,6 +240,13 @@ describe('sidebar menu', () => {
     expect(
       screen.getByRole('button', { name: 'Toggle Integrations section' })
     ).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('link', { name: 'Profiles' })).toHaveAttribute(
+      'href',
+      '/profiles'
+    );
+    expect(
+      screen.queryByRole('link', { name: 'Secrets' })
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole('link', { name: 'Administration' })
     ).toHaveAttribute('href', '/administration');

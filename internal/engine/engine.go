@@ -17,7 +17,10 @@ import (
 	"github.com/dagucloud/dagu/internal/core"
 	coreexec "github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/dagstate"
+	"github.com/dagucloud/dagu/internal/node"
 	"github.com/dagucloud/dagu/internal/runtime"
+	runtimeexec "github.com/dagucloud/dagu/internal/runtime/executor"
+	"github.com/dagucloud/dagu/internal/runtime/runstate"
 	"github.com/dagucloud/dagu/internal/service/coordinator"
 	"github.com/spf13/viper"
 )
@@ -25,6 +28,7 @@ import (
 type Engine struct {
 	cfg             *config.Config
 	dagRunStore     coreexec.DAGRunStore
+	runStateStore   runstate.Store
 	stateStore      dagstate.Store
 	procStore       coreexec.ProcStore
 	serviceRegistry coreexec.ServiceRegistry
@@ -77,6 +81,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 	return &Engine{
 		cfg:             cfg,
 		dagRunStore:     persistence.DAGRunStore,
+		runStateStore:   persistence.RunStateStore,
 		stateStore:      persistence.StateStore,
 		procStore:       persistence.ProcStore,
 		serviceRegistry: persistence.ServiceRegistry,
@@ -200,6 +205,23 @@ func (e *Engine) coordinatorClient(opts DistributedOptions) (coordinator.Client,
 		return nil, err
 	}
 	return coordinator.New(registry, cfg), nil
+}
+
+func (e *Engine) subWorkflowRunnerFactory(stores AgentStores) func(context.Context) (runtimeexec.SubWorkflowRunner, error) {
+	return node.NewSubWorkflowRunnerFactory(node.SubWorkflowRunnerConfig{
+		DAGRunMgr:         e.dagRunMgr,
+		DAGStore:          e.dagStore,
+		DAGRunStore:       e.dagRunStore,
+		RunStateStore:     e.runStateStore,
+		StateStore:        e.stateStore,
+		AgentStores:       stores,
+		ServiceRegistry:   e.serviceRegistry,
+		PeerConfig:        e.cfg.Core.Peer,
+		DefaultExecMode:   configExecutionMode(e.defaultMode),
+		WorkerID:          "local",
+		DAGRunLogDir:      e.cfg.Paths.LogDir,
+		DAGRunArtifactDir: e.cfg.Paths.ArtifactDir,
+	})
 }
 
 func runStatusToPublic(status *coreexec.DAGRunStatus) (*Status, error) {

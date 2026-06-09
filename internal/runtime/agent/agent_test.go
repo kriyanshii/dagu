@@ -5,6 +5,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -21,9 +22,11 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/sock"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/internal/launcher"
+	"github.com/dagucloud/dagu/internal/persis/file"
 	"github.com/dagucloud/dagu/internal/persis/store"
 	"github.com/dagucloud/dagu/internal/persis/testutil"
-	runtimepkg "github.com/dagucloud/dagu/internal/runtime"
+	profilepkg "github.com/dagucloud/dagu/internal/profile"
 	"github.com/dagucloud/dagu/internal/runtime/agent"
 	secretpkg "github.com/dagucloud/dagu/internal/secret"
 	"github.com/dagucloud/dagu/internal/service/scheduler"
@@ -1069,6 +1072,210 @@ steps:
 	require.Equal(t, "ok", outputs["response"])
 }
 
+func TestAgent_RuntimeProfileInjection(t *testing.T) {
+	t.Parallel()
+	th := test.Setup(t)
+
+	enc, err := crypto.NewEncryptor("test-key")
+	require.NoError(t, err)
+	secretStore, err := store.NewSecretStore(testutil.NewMemoryBackend().Collection("secrets"), enc)
+	require.NoError(t, err)
+	profileStore, err := store.NewProfileStore(testutil.NewMemoryBackend().Collection("profiles"))
+	require.NoError(t, err)
+
+	sec, err := secretpkg.New(secretpkg.CreateInput{
+		Ref:          "prod/api-token",
+		ProviderType: secretpkg.ProviderDaguManaged,
+		CreatedBy:    "alice",
+	}, time.Now().UTC())
+	require.NoError(t, err)
+	require.NoError(t, secretStore.Create(context.Background(), sec, &secretpkg.WriteValueInput{
+		Value:     "managed-secret",
+		CreatedBy: "alice",
+		CreatedAt: time.Now().UTC(),
+	}))
+
+	prof, err := profilepkg.New(profilepkg.CreateInput{
+		Name:      "prod",
+		CreatedBy: "alice",
+	}, time.Now().UTC())
+	require.NoError(t, err)
+	require.NoError(t, prof.SetVariable("LOG_LEVEL", "debug", "alice", time.Now().UTC()))
+	require.NoError(t, prof.SetSecret("API_TOKEN", sec.ID, "alice", time.Now().UTC()))
+	require.NoError(t, profileStore.Create(context.Background(), prof))
+
+	dag := th.DAG(t, `
+steps:
+  - name: step1
+    run: echo "Level is ${LOG_LEVEL}; token is ${API_TOKEN}"
+    output: RESPONSE`)
+
+	dagAgent := dag.Agent(test.WithAgentOptions(agent.Options{
+		ProfileStore: profileStore,
+		SecretStore:  secretStore,
+		ProfileName:  "prod",
+	}))
+	dagAgent.RunSuccess(t)
+
+	outputs := dag.ReadOutputs(t)
+	require.Contains(t, outputs["response"], "Level is debug")
+	require.NotContains(t, outputs["response"], "managed-secret")
+	require.Contains(t, outputs["response"], "*******")
+
+	status := dagAgent.Status(th.Context)
+	require.Equal(t, "prod", status.ProfileName)
+	require.NotEmpty(t, status.ProfileResolvedAt)
+	require.ElementsMatch(t, []exec.RuntimeProfileEntry{
+		{Key: "LOG_LEVEL", Kind: "variable"},
+		{Key: "API_TOKEN", Kind: "secret"},
+	}, status.ProfileEntries)
+
+	statusJSON, err := json.Marshal(status)
+	require.NoError(t, err)
+	require.NotContains(t, string(statusJSON), "managed-secret")
+	require.Contains(t, string(statusJSON), "*******")
+
+	latest, err := th.DAGRunMgr.GetLatestStatus(th.Context, dag.DAG)
+	require.NoError(t, err)
+	latestStatusJSON, err := json.Marshal(latest)
+	require.NoError(t, err)
+	require.NotContains(t, string(latestStatusJSON), "managed-secret")
+	require.Contains(t, string(latestStatusJSON), "*******")
+}
+
+func TestAgent_RuntimeConfigVarsUseRuntimeProfilePrecedence(t *testing.T) {
+	t.Parallel()
+
+	vars := agent.RuntimeConfigVarsForTest(
+		[]string{
+			"DAG_BEATS_DEFAULT=global",
+			"DEFAULT_ONLY=global",
+		},
+		[]string{
+			"DAG_BEATS_DEFAULT_SECRET=global-secret",
+			"DEFAULT_SECRET=global-secret",
+			"SECRET_SHARED=global-secret",
+		},
+		[]string{
+			"DAG_BEATS_DEFAULT=dag",
+			"DAG_BEATS_DEFAULT_SECRET=dag",
+			"SELECTED_BEATS_DAG=dag",
+			"SECRET_SHARED=dag-env",
+		},
+		[]string{
+			"SELECTED_BEATS_DAG=selected",
+			"SELECTED_ONLY=selected",
+		},
+		[]string{
+			"SECRET_SHARED=selected-secret",
+		},
+		[]string{
+			"SECRET_SHARED=dag-secret",
+			"DAG_SECRET=dag-secret",
+		},
+	)
+
+	require.Equal(t, "dag", vars["DAG_BEATS_DEFAULT"])
+	require.Equal(t, "dag", vars["DAG_BEATS_DEFAULT_SECRET"])
+	require.Equal(t, "global", vars["DEFAULT_ONLY"])
+	require.Equal(t, "global-secret", vars["DEFAULT_SECRET"])
+	require.Equal(t, "selected", vars["SELECTED_BEATS_DAG"])
+	require.Equal(t, "selected", vars["SELECTED_ONLY"])
+	require.Equal(t, "dag-secret", vars["SECRET_SHARED"])
+	require.Equal(t, "dag-secret", vars["DAG_SECRET"])
+}
+
+func TestAgent_LayeredRuntimeProfiles(t *testing.T) {
+	t.Parallel()
+	th := test.Setup(t)
+
+	backend := testutil.NewMemoryBackend()
+	enc, err := crypto.NewEncryptor("test-key")
+	require.NoError(t, err)
+	secretStore, err := store.NewSecretStore(backend.Collection("secrets"), enc)
+	require.NoError(t, err)
+	profileStore, err := store.NewProfileStore(backend.Collection("profiles"))
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	globalRef := profilepkg.GlobalInheritedRef()
+	globalDefaults, err := profilepkg.NewInherited(globalRef, profilepkg.InheritedCreateInput{
+		CreatedBy: "alice",
+	}, now)
+	require.NoError(t, err)
+	require.NoError(t, globalDefaults.SetVariable("GLOBAL_ONLY", "global", "alice", now))
+	require.NoError(t, globalDefaults.SetVariable("WORKSPACE_ONLY", "global", "alice", now))
+	require.NoError(t, globalDefaults.SetVariable("SHARED", "global", "alice", now))
+	require.NoError(t, profileStore.Create(context.Background(), globalDefaults))
+
+	workspaceRef, err := profilepkg.WorkspaceInheritedRef("ops")
+	require.NoError(t, err)
+	workspaceDefaults, err := profilepkg.NewInherited(workspaceRef, profilepkg.InheritedCreateInput{
+		CreatedBy: "alice",
+	}, now)
+	require.NoError(t, err)
+	require.NoError(t, workspaceDefaults.SetVariable("WORKSPACE_ONLY", "workspace", "alice", now))
+	require.NoError(t, workspaceDefaults.SetVariable("SHARED", "workspace", "alice", now))
+
+	defaultToken, err := secretpkg.New(secretpkg.CreateInput{
+		Ref:          workspaceRef.SecretRef("DEFAULT_TOKEN"),
+		ProviderType: secretpkg.ProviderDaguManaged,
+		CreatedBy:    "alice",
+	}, now)
+	require.NoError(t, err)
+	require.NoError(t, secretStore.Create(context.Background(), defaultToken, &secretpkg.WriteValueInput{
+		Value:     "workspace-default-secret",
+		CreatedBy: "alice",
+		CreatedAt: now,
+	}))
+	require.NoError(t, workspaceDefaults.SetSecret("DEFAULT_TOKEN", defaultToken.ID, "alice", now))
+	require.NoError(t, profileStore.Create(context.Background(), workspaceDefaults))
+
+	selected, err := profilepkg.New(profilepkg.CreateInput{
+		Name:      "prod",
+		CreatedBy: "alice",
+	}, now)
+	require.NoError(t, err)
+	require.NoError(t, selected.SetVariable("SELECTED_ONLY", "selected", "alice", now))
+	require.NoError(t, selected.SetVariable("SHARED", "selected", "alice", now))
+	require.NoError(t, profileStore.Create(context.Background(), selected))
+
+	dag := th.DAG(t, `
+labels:
+  - workspace=ops
+steps:
+  - name: step1
+    run: echo "$GLOBAL_ONLY|$WORKSPACE_ONLY|$SELECTED_ONLY|$SHARED|$DEFAULT_TOKEN"
+    output: RESPONSE`)
+
+	dagAgent := dag.Agent(test.WithAgentOptions(agent.Options{
+		ProfileStore: profileStore,
+		SecretStore:  secretStore,
+		ProfileName:  "prod",
+	}))
+	dagAgent.RunSuccess(t)
+
+	outputs := dag.ReadOutputs(t)
+	require.Contains(t, outputs["response"], "global|workspace|selected|selected|*******")
+	require.NotContains(t, outputs["response"], "workspace-default-secret")
+
+	status := dagAgent.Status(th.Context)
+	require.Equal(t, "prod", status.ProfileName)
+	require.NotEmpty(t, status.ProfileResolvedAt)
+	require.ElementsMatch(t, []exec.RuntimeProfileEntry{
+		{Key: "GLOBAL_ONLY", Kind: "variable"},
+		{Key: "WORKSPACE_ONLY", Kind: "variable"},
+		{Key: "SHARED", Kind: "variable"},
+		{Key: "DEFAULT_TOKEN", Kind: "secret"},
+		{Key: "SELECTED_ONLY", Kind: "variable"},
+	}, status.ProfileEntries)
+
+	statusJSON, err := json.Marshal(status)
+	require.NoError(t, err)
+	require.NotContains(t, string(statusJSON), "workspace-default-secret")
+	require.Contains(t, string(statusJSON), "*******")
+}
+
 func TestAgent_SubDAGRunVisibleWhileRunning(t *testing.T) {
 	t.Parallel()
 
@@ -1130,6 +1337,117 @@ steps:
 
 	require.NoError(t, os.WriteFile(releaseFile, []byte("done"), 0600))
 	require.NoError(t, <-runErr)
+}
+
+func TestAgent_LocalSubDAGRunDoesNotRequireDaguExecutable(t *testing.T) {
+	t.Parallel()
+
+	const parentRunID = "parent-run-in-process"
+
+	th := test.Setup(t,
+		test.WithConfigMutator(func(cfg *config.Config) {
+			cfg.Paths.Executable = filepath.Join(t.TempDir(), "missing-dagu")
+		}),
+	)
+
+	th.CreateDAGFile(t, th.Config.Paths.DAGsDir, "child-in-process", []byte(`
+params:
+  - TARGET: default
+steps:
+  - name: emit
+    run: echo "child=${TARGET}"
+    output: RESULT
+`))
+
+	parent := th.DAG(t, `
+type: graph
+steps:
+  - name: run-child
+    action: dag.run
+    with:
+      dag: child-in-process
+      params:
+        TARGET: from-parent
+`)
+
+	a := parent.Agent(test.WithDAGRunID(parentRunID))
+	a.RunSuccess(t)
+
+	status := a.Status(parent.Context)
+	require.Len(t, status.Nodes, 1)
+	require.Len(t, status.Nodes[0].SubRuns, 1)
+
+	subRun := status.Nodes[0].SubRuns[0]
+	attempt, err := th.DAGRunStore.FindSubAttempt(
+		th.Context,
+		exec.NewDAGRunRef(parent.Name, parentRunID),
+		subRun.DAGRunID,
+	)
+	require.NoError(t, err)
+
+	childStatus, err := attempt.ReadStatus(th.Context)
+	require.NoError(t, err)
+	require.Equal(t, core.Succeeded, childStatus.Status)
+	require.Equal(t, []string{"TARGET=from-parent"}, childStatus.ParamsList)
+	require.Len(t, childStatus.Nodes, 1)
+	require.NotNil(t, childStatus.Nodes[0].OutputVariables)
+	result, ok := childStatus.Nodes[0].OutputVariables.Load("RESULT")
+	require.True(t, ok)
+	require.Equal(t, "RESULT=child=from-parent", result)
+}
+
+func TestAgent_LocalSubDAGRunSetsArtifactDir(t *testing.T) {
+	t.Parallel()
+
+	const parentRunID = "parent-run-artifact"
+
+	th := test.Setup(t,
+		test.WithConfigMutator(func(cfg *config.Config) {
+			cfg.Paths.Executable = filepath.Join(t.TempDir(), "missing-dagu")
+		}),
+	)
+
+	th.CreateDAGFile(t, th.Config.Paths.DAGsDir, "child-artifact", []byte(`
+steps:
+  - name: write
+    action: artifact.write
+    with:
+      path: reports/summary.txt
+      content: child artifact
+`))
+
+	parent := th.DAG(t, `
+type: graph
+steps:
+  - name: run-child
+    action: dag.run
+    with:
+      dag: child-artifact
+`)
+
+	a := parent.Agent(test.WithDAGRunID(parentRunID))
+	a.RunSuccess(t)
+
+	status := a.Status(parent.Context)
+	require.Len(t, status.Nodes, 1)
+	require.Len(t, status.Nodes[0].SubRuns, 1)
+
+	subRun := status.Nodes[0].SubRuns[0]
+	attempt, err := th.DAGRunStore.FindSubAttempt(
+		th.Context,
+		exec.NewDAGRunRef(parent.Name, parentRunID),
+		subRun.DAGRunID,
+	)
+	require.NoError(t, err)
+
+	childStatus, err := attempt.ReadStatus(th.Context)
+	require.NoError(t, err)
+	require.Equal(t, core.Succeeded, childStatus.Status)
+	require.NotEmpty(t, childStatus.ArchiveDir)
+
+	data, err := os.ReadFile(filepath.Join(childStatus.ArchiveDir, "reports", "summary.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "child artifact", string(data))
 }
 
 func TestAgent_DAGEnqueueQueuesChildWithoutWaiting(t *testing.T) {
@@ -1206,6 +1524,14 @@ func TestAgent_DAGEnqueueQueuedChildRunsFromQueue(t *testing.T) {
 		}),
 	)
 
+	profileStore := file.NewProfileStore(th.Context, th.Config)
+	prof, err := profilepkg.New(profilepkg.CreateInput{
+		Name:      "prod",
+		CreatedBy: "alice",
+	}, time.Now().UTC())
+	require.NoError(t, err)
+	require.NoError(t, profileStore.Create(th.Context, prof))
+
 	th.CreateDAGFile(t, th.Config.Paths.DAGsDir, "child-queue-exec", fmt.Appendf(nil, `
 steps:
   - name: write-output
@@ -1222,7 +1548,10 @@ steps:
       queue: background
 `)
 
-	a := parent.Agent()
+	a := parent.Agent(test.WithAgentOptions(agent.Options{
+		ProfileStore: profileStore,
+		ProfileName:  "prod",
+	}))
 	a.RunSuccess(t)
 
 	status := a.Status(parent.Context)
@@ -1233,7 +1562,7 @@ steps:
 
 	dagExecutor := scheduler.NewDAGExecutor(
 		nil,
-		runtimepkg.NewSubCmdBuilder(th.Config),
+		launcher.NewSubCmdBuilder(th.Config),
 		th.Config.DefaultExecMode,
 		th.Config.Paths.BaseConfig,
 		nil,
@@ -1257,6 +1586,10 @@ steps:
 		childStatus, err := th.DAGRunMgr.GetSavedStatus(th.Context, ref)
 		return err == nil && childStatus.Status == core.Succeeded
 	}, subDAGVisibleTimeout(), 100*time.Millisecond)
+
+	childStatus, err := th.DAGRunMgr.GetSavedStatus(th.Context, ref)
+	require.NoError(t, err)
+	require.Equal(t, "prod", childStatus.ProfileName)
 
 	require.Eventually(t, func() bool {
 		processor.ProcessQueueItems(th.Context, "background")

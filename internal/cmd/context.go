@@ -32,9 +32,11 @@ import (
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/dagstate"
 	"github.com/dagucloud/dagu/internal/license"
+	"github.com/dagucloud/dagu/internal/node"
 	"github.com/dagucloud/dagu/internal/persis/file"
 	"github.com/dagucloud/dagu/internal/persis/store"
 	"github.com/dagucloud/dagu/internal/runtime"
+	runtimeexec "github.com/dagucloud/dagu/internal/runtime/executor"
 	"github.com/dagucloud/dagu/internal/runtime/transform"
 	"github.com/dagucloud/dagu/internal/service/coordinator"
 	"github.com/dagucloud/dagu/internal/service/eventstore"
@@ -584,6 +586,25 @@ func (c *Context) NewServer(rs *resource.Service, opts ...frontend.ServerOption)
 // Returns nil when the coordinator is disabled via configuration.
 func (c *Context) NewCoordinatorClient() coordinator.Client {
 	return cmdprocess.NewCoordinatorClient(c.Context, c.Config, c.ServiceRegistry)
+}
+
+func (c *Context) SubWorkflowRunnerFactory() func(context.Context) (runtimeexec.SubWorkflowRunner, error) {
+	return node.NewSubWorkflowRunnerFactory(node.SubWorkflowRunnerConfig{
+		DAGRunMgr: c.DAGRunMgr,
+		DAGStoreFactory: func(context.Context) (exec.DAGStore, error) {
+			return c.dagStore(dagStoreConfig{})
+		},
+		DAGRunStore:       c.DAGRunStore,
+		QueueStore:        c.QueueStore,
+		StateStore:        c.StateStore,
+		AgentStores:       c.agentStores(),
+		ServiceRegistry:   c.ServiceRegistry,
+		PeerConfig:        c.Config.Core.Peer,
+		DefaultExecMode:   c.Config.DefaultExecMode,
+		WorkerID:          "local",
+		DAGRunLogDir:      c.Config.Paths.LogDir,
+		DAGRunArtifactDir: c.Config.Paths.ArtifactDir,
+	})
 }
 
 // NewScheduler creates a scheduler for this command context.

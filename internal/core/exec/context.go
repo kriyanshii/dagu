@@ -18,7 +18,6 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/stringutil"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/dagstate"
-	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
 )
 
 // Context contains the execution metadata for a dag-run.
@@ -35,10 +34,21 @@ type Context struct {
 	StateStore         dagstate.Store
 	DAGRunLogDir       string
 	DAGRunArtifactDir  string
+	ProfileName        string
+	ProfileResolvedAt  string
+	ProfileEntries     []RuntimeProfileEntry
 	Shell              string               // Default shell for this DAG (from DAG.Shell)
 	LogEncodingCharset string               // Character encoding for log files (e.g., "utf-8", "shift_jis", "euc-jp")
 	LogWriterFactory   LogWriterFactory     // For remote log streaming (nil = use local files)
 	DefaultExecMode    config.ExecutionMode // Server-level default execution mode (local or distributed)
+}
+
+// RuntimeProfileEntry is non-secret metadata about a profile key injected into a run.
+type RuntimeProfileEntry struct {
+	// Key is the injected environment variable name.
+	Key string `json:"key"`
+	// Kind is the profile entry type, such as variable or secret.
+	Kind string `json:"kind"`
 }
 
 // LogWriterFactory creates log writers for step stdout/stderr.
@@ -181,33 +191,15 @@ func (r *RunStatus) MarshalJSON() ([]byte, error) {
 	}, "", "  ")
 }
 
-// Dispatcher defines the interface for coordinator operations
-type Dispatcher interface {
-	// Dispatch sends a task to the coordinator
-	Dispatch(ctx context.Context, task *coordinatorv1.Task) error
-
-	// Cleanup cleans up any resources used by the coordinator client
-	Cleanup(ctx context.Context) error
-
-	// GetDAGRunStatus retrieves the status of a DAG run from the coordinator.
-	// Used by parent DAGs to poll status of remote sub-DAGs.
-	// For sub-DAG queries, provide rootRef to look up the status under the root DAG run.
-	// Returns (nil, nil) if the DAG run is not found.
-	GetDAGRunStatus(ctx context.Context, dagName, dagRunID string, rootRef *DAGRunRef) (*coordinatorv1.GetDAGRunStatusResponse, error)
-
-	// RequestCancel requests cancellation of a DAG run through the coordinator.
-	// Used in shared-nothing mode for sub-DAG cancellation where the parent
-	// worker cannot directly access the sub-DAG's attempt.
-	RequestCancel(ctx context.Context, dagName, dagRunID string, rootRef *DAGRunRef) error
-}
-
 // contextOptions holds optional configuration for NewContext.
 type contextOptions struct {
 	db                 Database
 	rootDAGRun         DAGRunRef
 	params             []string
+	defaultEnvs        []string
 	envs               []string
 	coordinator        Dispatcher
+	defaultSecretEnvs  []string
 	secretEnvs         []string
 	logEncodingCharset string
 	logWriterFactory   LogWriterFactory
@@ -217,6 +209,9 @@ type contextOptions struct {
 	stateStore         dagstate.Store
 	dagRunLogDir       string
 	dagRunArtifactDir  string
+	profileName        string
+	profileResolvedAt  string
+	profileEntries     []RuntimeProfileEntry
 	workDir            string
 	artifactDir        string
 }
@@ -245,6 +240,13 @@ func WithParams(params []string) ContextOption {
 	}
 }
 
+// WithDefaultEnvVars sets low-precedence inherited environment variables.
+func WithDefaultEnvVars(envs ...string) ContextOption {
+	return func(o *contextOptions) {
+		o.defaultEnvs = append(o.defaultEnvs, envs...)
+	}
+}
+
 // WithEnvVars sets additional execution-scoped environment variables.
 func WithEnvVars(envs ...string) ContextOption {
 	return func(o *contextOptions) {
@@ -256,6 +258,13 @@ func WithEnvVars(envs ...string) ContextOption {
 func WithCoordinator(cli Dispatcher) ContextOption {
 	return func(o *contextOptions) {
 		o.coordinator = cli
+	}
+}
+
+// WithDefaultSecrets sets low-precedence inherited secret environment variables.
+func WithDefaultSecrets(secrets []string) ContextOption {
+	return func(o *contextOptions) {
+		o.defaultSecretEnvs = append([]string(nil), secrets...)
 	}
 }
 
@@ -337,6 +346,15 @@ func WithArtifactDir(dir string) ContextOption {
 	}
 }
 
+// WithRuntimeProfile sets the selected profile metadata for this run context.
+func WithRuntimeProfile(name, resolvedAt string, entries []RuntimeProfileEntry) ContextOption {
+	return func(o *contextOptions) {
+		o.profileName = name
+		o.profileResolvedAt = resolvedAt
+		o.profileEntries = append([]RuntimeProfileEntry(nil), entries...)
+	}
+}
+
 // NewContext creates a new context with DAG execution metadata.
 // Required: ctx, dag, dagRunID, logFile
 // Optional: use ContextOption functions (WithDatabase, WithParams, etc.)
@@ -353,13 +371,21 @@ func NewContext(
 		opt(options)
 	}
 
-	envs := make(map[string]string)
-	maps.Copy(envs, stringutil.KeyValuesToMap(options.params))
-
+	defaultEnvs := stringutil.KeyValuesToMap(options.defaultEnvs)
+	defaultSecretEnvs := stringutil.KeyValuesToMap(options.defaultSecretEnvs)
+	params := stringutil.KeyValuesToMap(options.params)
 	managedEnvs := buildManagedDAGRunEnvs(ctx, dag, dagRunID, logFile, options)
-	maps.Copy(envs, managedEnvs)
 
-	maps.Copy(envs, evaluateDAGEnvRuntime(ctx, dag.Env, envs, managedEnvs))
+	baseForDAGEnv := make(map[string]string)
+	maps.Copy(baseForDAGEnv, defaultEnvs)
+	maps.Copy(baseForDAGEnv, defaultSecretEnvs)
+	maps.Copy(baseForDAGEnv, params)
+	maps.Copy(baseForDAGEnv, managedEnvs)
+
+	envs := make(map[string]string)
+	maps.Copy(envs, params)
+	maps.Copy(envs, managedEnvs)
+	maps.Copy(envs, evaluateDAGEnvRuntime(ctx, dag.Env, baseForDAGEnv, managedEnvs))
 	maps.Copy(envs, stringutil.KeyValuesToMap(options.envs))
 
 	// Managed DAG-run envs are generated by Dagu and must remain stable even
@@ -377,6 +403,8 @@ func NewContext(
 	if baseEnv := config.GetBaseEnv(ctx); baseEnv != nil {
 		scope = scope.WithEntries(stringutil.KeyValuesToMap(baseEnv.AsSlice()), eval.EnvSourceOS)
 	}
+	scope = scope.WithEntries(defaultEnvs, eval.EnvSourceDAGEnv)
+	scope = scope.WithEntries(defaultSecretEnvs, eval.EnvSourceSecret)
 	scope = scope.WithEntries(envs, eval.EnvSourceDAGEnv)
 	if len(secretEnvs) > 0 {
 		scope = scope.WithEntries(secretEnvs, eval.EnvSourceSecret)
@@ -395,6 +423,9 @@ func NewContext(
 		StateStore:         options.stateStore,
 		DAGRunLogDir:       options.dagRunLogDir,
 		DAGRunArtifactDir:  options.dagRunArtifactDir,
+		ProfileName:        options.profileName,
+		ProfileResolvedAt:  options.profileResolvedAt,
+		ProfileEntries:     append([]RuntimeProfileEntry(nil), options.profileEntries...),
 		Shell:              dag.Shell,
 		LogEncodingCharset: options.logEncodingCharset,
 		LogWriterFactory:   options.logWriterFactory,

@@ -19,12 +19,11 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/logger"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/internal/launcher"
 	"github.com/dagucloud/dagu/internal/persis/file"
 	"github.com/dagucloud/dagu/internal/persis/file/dagrun"
 	"github.com/dagucloud/dagu/internal/persis/file/proc"
 	"github.com/dagucloud/dagu/internal/persis/store"
-	"github.com/dagucloud/dagu/internal/runtime"
-	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -128,7 +127,7 @@ func (f *queueFixture) withProcessor(cfg config.Queues, opts ...QueueProcessorOp
 		WithDAGRunLeaseStore(f.leaseStore),
 	}, opts...)
 	f.processor = NewQueueProcessor(f.queueStore, f.dagRunStore, f.procStore,
-		NewDAGExecutor(nil, runtime.NewSubCmdBuilder(&config.Config{Paths: config.PathsConfig{Executable: "/usr/bin/dagu"}}), config.ExecutionModeLocal, "", nil),
+		NewDAGExecutor(nil, launcher.NewSubCmdBuilder(&config.Config{Paths: config.PathsConfig{Executable: "/usr/bin/dagu"}}), config.ExecutionModeLocal, "", nil),
 		cfg, options...,
 	)
 	f.dispatchStore = store.NewDispatchTaskStore(
@@ -339,11 +338,11 @@ func TestQueueProcessor_CountsOutstandingDispatchReservationsAgainstQueueConcurr
 	status, err := attempt.ReadStatus(f.ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, f.dispatchStore.Enqueue(f.ctx, &coordinatorv1.Task{
-		DagRunId:   runRef.ID,
+	require.NoError(t, f.dispatchStore.Enqueue(f.ctx, &exec.DispatchTask{
+		DAGRunID:   runRef.ID,
 		Target:     f.dag.Name,
 		QueueName:  f.dag.Name,
-		AttemptId:  attempt.ID(),
+		AttemptID:  attempt.ID(),
 		AttemptKey: queueAttemptKey(runRef, attempt, status),
 	}))
 
@@ -368,11 +367,11 @@ func TestQueueProcessor_SelectRunnableQueueItemsSkipsOutstandingReservations(t *
 	reservedStatus, err := reservedAttempt.ReadStatus(f.ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, f.dispatchStore.Enqueue(f.ctx, &coordinatorv1.Task{
-		DagRunId:   reservedRef.ID,
+	require.NoError(t, f.dispatchStore.Enqueue(f.ctx, &exec.DispatchTask{
+		DAGRunID:   reservedRef.ID,
 		Target:     f.dag.Name,
 		QueueName:  f.dag.Name,
-		AttemptId:  reservedAttempt.ID(),
+		AttemptID:  reservedAttempt.ID(),
 		AttemptKey: queueAttemptKey(reservedRef, reservedAttempt, reservedStatus),
 	}))
 
@@ -401,11 +400,11 @@ func TestQueueProcessor_StaleOutstandingDispatchReservationsExpire(t *testing.T)
 	status, err := attempt.ReadStatus(f.ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, f.dispatchStore.Enqueue(f.ctx, &coordinatorv1.Task{
-		DagRunId:   runRef.ID,
+	require.NoError(t, f.dispatchStore.Enqueue(f.ctx, &exec.DispatchTask{
+		DAGRunID:   runRef.ID,
 		Target:     f.dag.Name,
 		QueueName:  f.dag.Name,
-		AttemptId:  attempt.ID(),
+		AttemptID:  attempt.ID(),
 		AttemptKey: queueAttemptKey(runRef, attempt, status),
 	}))
 	agePendingDispatchReservationFiles(t, f.distributedDir, 2*time.Second)
@@ -516,7 +515,7 @@ type mockDispatchTaskStore struct {
 	hasOutstandingAttemptFunc   func(context.Context, string, time.Duration) (bool, error)
 }
 
-func (m *mockDispatchTaskStore) Enqueue(context.Context, *coordinatorv1.Task) error {
+func (m *mockDispatchTaskStore) Enqueue(context.Context, *exec.DispatchTask) error {
 	return nil
 }
 
@@ -526,6 +525,10 @@ func (m *mockDispatchTaskStore) ClaimNext(context.Context, exec.DispatchTaskClai
 
 func (m *mockDispatchTaskStore) GetClaim(context.Context, string) (*exec.ClaimedDispatchTask, error) {
 	return nil, exec.ErrDispatchTaskNotFound
+}
+
+func (m *mockDispatchTaskStore) ReleaseClaim(context.Context, string) error {
+	return nil
 }
 
 func (m *mockDispatchTaskStore) DeleteClaim(context.Context, string) error {

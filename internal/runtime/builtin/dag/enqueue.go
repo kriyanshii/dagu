@@ -174,6 +174,7 @@ func (e *enqueueExecutor) enqueueOne(ctx context.Context, runParams executor.Run
 		LogBaseDir:      rCtx.DAGRunLogDir,
 		ArtifactBaseDir: rCtx.DAGRunArtifactDir,
 		TriggerType:     core.TriggerTypeSubDAG,
+		ProfileName:     rCtx.ProfileName,
 	})
 	if err != nil {
 		return enqueueRunOutput{}, fmt.Errorf("failed to enqueue DAG run: %w", err)

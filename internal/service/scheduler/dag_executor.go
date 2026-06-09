@@ -17,9 +17,10 @@ import (
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/core/spec"
-	"github.com/dagucloud/dagu/internal/runtime"
+	"github.com/dagucloud/dagu/internal/dagwarning"
+	"github.com/dagucloud/dagu/internal/dispatch"
+	"github.com/dagucloud/dagu/internal/launcher"
 	"github.com/dagucloud/dagu/internal/runtime/executor"
-	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
 )
 
 // DAGExecutor handles both local and distributed DAG execution.
@@ -56,27 +57,47 @@ import (
 // - ExecuteDAG(): Executes/dispatches already-persisted jobs (no persistence)
 type DAGExecutor struct {
 	coordinatorCli  exec.Dispatcher
-	subCmdBuilder   *runtime.SubCmdBuilder
+	subCmdBuilder   *launcher.SubCmdBuilder
 	defaultExecMode config.ExecutionMode
 	baseConfigPath  string
 	snapshotBuilder func(context.Context, *core.DAG) ([]byte, error)
+	profileResolver DAGProfileResolver
+}
+
+type DAGProfileResolver interface {
+	ResolveProfile(ctx context.Context, dagName string) (string, error)
+}
+
+type DAGExecutorOption func(*DAGExecutor)
+
+func WithDAGExecutorProfileResolver(resolver DAGProfileResolver) DAGExecutorOption {
+	return func(e *DAGExecutor) {
+		e.profileResolver = resolver
+	}
 }
 
 // NewDAGExecutor creates a new DAGExecutor instance.
 func NewDAGExecutor(
 	coordinatorCli exec.Dispatcher,
-	subCmdBuilder *runtime.SubCmdBuilder,
+	subCmdBuilder *launcher.SubCmdBuilder,
 	defaultExecMode config.ExecutionMode,
 	baseConfigPath string,
 	snapshotBuilder func(context.Context, *core.DAG) ([]byte, error),
+	opts ...DAGExecutorOption,
 ) *DAGExecutor {
-	return &DAGExecutor{
+	executor := &DAGExecutor{
 		coordinatorCli:  coordinatorCli,
 		subCmdBuilder:   subCmdBuilder,
 		defaultExecMode: defaultExecMode,
 		baseConfigPath:  baseConfigPath,
 		snapshotBuilder: snapshotBuilder,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(executor)
+		}
+	}
+	return executor
 }
 
 // HandleJob is the entry point for new scheduled jobs (from DAGRunJob.Start).
@@ -94,39 +115,49 @@ func NewDAGExecutor(
 func (e *DAGExecutor) HandleJob(
 	ctx context.Context,
 	dag *core.DAG,
-	operation coordinatorv1.Operation,
+	operation exec.DispatchOperation,
 	runID string,
 	triggerType core.TriggerType,
 	scheduleTime time.Time,
 ) error {
-	// For distributed execution with START operation, enqueue for persistence
-	if e.shouldUseDistributedExecution(dag) && operation == coordinatorv1.Operation_OPERATION_START {
-		dag, err := e.prepareDAGForSubprocess(ctx, dag, "")
+	profileName := ""
+	if operation == exec.DispatchOperationStart {
+		var err error
+		profileName, err = e.defaultProfileName(ctx, dag)
 		if err != nil {
-			return fmt.Errorf("failed to prepare DAG env for enqueue: %w", err)
+			return fmt.Errorf("failed to resolve DAG profile: %w", err)
 		}
+	}
+
+	// For distributed execution with START operation, enqueue for persistence
+	if e.shouldUseDistributedExecution(dag) && operation == exec.DispatchOperationStart {
 		ctx = logger.WithValues(ctx,
 			tag.DAG(dag.Name),
 			tag.RunID(runID),
 		)
+		dag, err := e.prepareDAGForSubprocess(ctx, dag, "")
+		if err != nil {
+			return fmt.Errorf("failed to prepare DAG env for enqueue: %w", err)
+		}
 
 		logger.Info(ctx, "Enqueueing DAG for distributed execution",
 			slog.Any("worker-selector", dag.WorkerSelector),
 		)
 
-		spec := e.subCmdBuilder.Enqueue(dag, runtime.EnqueueOptions{
+		spec := e.subCmdBuilder.Enqueue(dag, launcher.EnqueueOptions{
 			DAGRunID:     runID,
 			TriggerType:  triggerType.String(),
 			ScheduleTime: stringutil.FormatTime(scheduleTime),
+			ProfileName:  profileName,
 		})
-		if err := runtime.Run(ctx, spec); err != nil {
+		if err := launcher.Run(ctx, spec); err != nil {
 			return fmt.Errorf("failed to enqueue DAG run: %w", err)
 		}
 		return nil
 	}
 
 	// For all other cases (local execution or non-START operations), use ExecuteDAG
-	return e.ExecuteDAG(ctx, dag, operation, runID, nil, triggerType, stringutil.FormatTime(scheduleTime))
+	return e.executeDAG(ctx, dag, operation, runID, nil, triggerType, stringutil.FormatTime(scheduleTime), profileName)
 }
 
 // ExecuteDAG executes or dispatches an already-persisted DAG.
@@ -141,18 +172,45 @@ func (e *DAGExecutor) HandleJob(
 func (e *DAGExecutor) ExecuteDAG(
 	ctx context.Context,
 	dag *core.DAG,
-	operation coordinatorv1.Operation,
+	operation exec.DispatchOperation,
 	runID string,
 	previousStatus *exec.DAGRunStatus,
 	triggerType core.TriggerType,
 	scheduleTime string,
 ) error {
+	return e.executeDAG(ctx, dag, operation, runID, previousStatus, triggerType, scheduleTime, "")
+}
+
+func (e *DAGExecutor) executeDAG(
+	ctx context.Context,
+	dag *core.DAG,
+	operation exec.DispatchOperation,
+	runID string,
+	previousStatus *exec.DAGRunStatus,
+	triggerType core.TriggerType,
+	scheduleTime string,
+	defaultProfileName string,
+) error {
+	if err := validateDispatchOperation(operation); err != nil {
+		return err
+	}
+
 	if e.shouldUseDistributedExecution(dag) {
 		// Distributed execution: dispatch to coordinator
 		taskOpts := []executor.TaskOption{
 			executor.WithWorkerSelector(dag.WorkerSelector),
 			executor.WithPreviousStatus(previousStatus),
 			executor.WithBaseConfig(executor.ResolveBaseConfig(dag.BaseConfigData, e.baseConfigPath)),
+		}
+		profileName := profileNameFromStatus(previousStatus)
+		if profileName == "" {
+			profileName = defaultProfileName
+		}
+		if profileName != "" {
+			taskOpts = append(taskOpts, executor.WithProfileName(profileName))
+		}
+		if previousStatus != nil && len(previousStatus.ParamsList) == 0 && previousStatus.Params != "" {
+			taskOpts = append(taskOpts, executor.WithTaskParams(previousStatus.Params))
 		}
 		if dag.SourceFile != "" {
 			taskOpts = append(taskOpts, executor.WithSourceFile(dag.SourceFile))
@@ -182,7 +240,7 @@ func (e *DAGExecutor) ExecuteDAG(
 	// Local execution
 	var params any
 	if previousStatus != nil {
-		params = spec.QuoteRuntimeParams(previousStatus.ParamsList, dag.ParamDefs)
+		params = previousStatus.ParamsList
 	}
 	dag, err := e.prepareDAGForSubprocess(ctx, dag, params)
 	if err != nil {
@@ -190,32 +248,72 @@ func (e *DAGExecutor) ExecuteDAG(
 	}
 
 	switch operation {
-	case coordinatorv1.Operation_OPERATION_UNSPECIFIED:
+	case exec.DispatchOperationUnspecified:
 		return fmt.Errorf("operation not specified")
 
-	case coordinatorv1.Operation_OPERATION_START:
-		spec := e.subCmdBuilder.Start(dag, runtime.StartOptions{
+	case exec.DispatchOperationStart:
+		spec := e.subCmdBuilder.Start(dag, launcher.StartOptions{
 			DAGRunID:     runID,
 			Quiet:        true,
 			TriggerType:  triggerType.String(),
 			ScheduleTime: scheduleTime,
+			ProfileName:  fallbackProfileName(profileNameFromStatus(previousStatus), defaultProfileName),
 		})
-		return runtime.Start(ctx, spec)
+		return launcher.Start(ctx, spec)
 
-	case coordinatorv1.Operation_OPERATION_RETRY:
+	case exec.DispatchOperationRetry:
 		spec := e.subCmdBuilder.QueueDispatchRetry(dag, runID, "")
-		return runtime.Run(ctx, spec)
+		return launcher.Run(ctx, spec)
 
 	default:
-		return fmt.Errorf("unsupported operation: %v", operation)
+		return fmt.Errorf("unknown operation: %s", operation)
+	}
+}
+
+func fallbackProfileName(profileName, fallback string) string {
+	if profileName != "" {
+		return profileName
+	}
+	return fallback
+}
+
+func (e *DAGExecutor) defaultProfileName(ctx context.Context, dag *core.DAG) (string, error) {
+	if e.profileResolver == nil || dag == nil {
+		return "", nil
+	}
+	dagName := dag.FileName()
+	if dagName == "" {
+		dagName = dag.Name
+	}
+	if dagName == "" {
+		return "", nil
+	}
+	return e.profileResolver.ResolveProfile(ctx, dagName)
+}
+
+func profileNameFromStatus(status *exec.DAGRunStatus) string {
+	if status == nil {
+		return ""
+	}
+	return status.ProfileName
+}
+
+func validateDispatchOperation(operation exec.DispatchOperation) error {
+	switch operation {
+	case exec.DispatchOperationStart, exec.DispatchOperationRetry:
+		return nil
+	case exec.DispatchOperationUnspecified:
+		return fmt.Errorf("operation not specified")
+	default:
+		return fmt.Errorf("unknown operation: %s", operation)
 	}
 }
 
 // shouldUseDistributedExecution checks if distributed execution should be used.
-// Delegates to core.ShouldDispatchToCoordinator for consistent dispatch logic
+// Delegates to dispatch.ShouldDispatchToCoordinator for consistent dispatch logic
 // across all execution paths (API, CLI, scheduler, sub-DAG).
 func (e *DAGExecutor) shouldUseDistributedExecution(dag *core.DAG) bool {
-	return core.ShouldDispatchToCoordinator(dag, e.coordinatorCli != nil, e.defaultExecMode)
+	return dispatch.ShouldDispatchToCoordinator(dag, e.coordinatorCli != nil, e.defaultExecMode)
 }
 
 // IsDistributed returns whether the given DAG would use distributed execution.
@@ -231,10 +329,10 @@ func (e *DAGExecutor) IsDistributed(dag *core.DAG) bool {
 // 1. Select an appropriate worker based on the task's workerSelector
 // 2. Forward the task to the selected worker
 // 3. Track the execution status
-func (e *DAGExecutor) dispatchToCoordinator(ctx context.Context, task *coordinatorv1.Task) error {
+func (e *DAGExecutor) dispatchToCoordinator(ctx context.Context, task *exec.DispatchTask) error {
 	ctx = logger.WithValues(ctx,
 		tag.Target(task.Target),
-		tag.RunID(task.DagRunId),
+		tag.RunID(task.DAGRunID),
 	)
 
 	if err := e.coordinatorCli.Dispatch(ctx, task); err != nil {
@@ -264,11 +362,11 @@ func (e *DAGExecutor) Restart(ctx context.Context, dag *core.DAG, scheduleTime t
 	if err != nil {
 		return fmt.Errorf("failed to prepare DAG env for restart: %w", err)
 	}
-	spec := e.subCmdBuilder.Restart(prepared, runtime.RestartOptions{
+	spec := e.subCmdBuilder.Restart(prepared, launcher.RestartOptions{
 		Quiet:        true,
 		ScheduleTime: stringutil.FormatTime(scheduleTime),
 	})
-	return runtime.Start(ctx, spec)
+	return launcher.Start(ctx, spec)
 }
 
 func (e *DAGExecutor) prepareDAGForSubprocess(ctx context.Context, dag *core.DAG, params any) (*core.DAG, error) {
@@ -276,15 +374,16 @@ func (e *DAGExecutor) prepareDAGForSubprocess(ctx context.Context, dag *core.DAG
 		return nil, nil
 	}
 
-	env, err := spec.ResolveEnv(ctx, dag, params, spec.ResolveEnvOptions{
+	result, err := spec.ResolveEnvWithWarnings(ctx, dag, params, spec.ResolveEnvOptions{
 		BaseConfig: e.baseConfigPath,
 	})
 	if err != nil {
 		return nil, err
 	}
+	dagwarning.Log(ctx, result.BuildWarnings)
 
 	prepared := dag.Clone()
-	prepared.Env = env
+	prepared.Env = result.Env
 	return prepared, nil
 }
 

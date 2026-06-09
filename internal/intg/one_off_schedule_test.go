@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dagucloud/dagu/internal/cmn/masking"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/persis/file"
-	"github.com/dagucloud/dagu/internal/persis/schedulerstore"
 	"github.com/dagucloud/dagu/internal/service/scheduler"
 	"github.com/dagucloud/dagu/internal/test"
 	"github.com/dagucloud/dagu/internal/test/intgharness"
@@ -50,7 +50,7 @@ steps:
 
 	wmBackend, err := file.New(th.Config.Paths.DataDir)
 	require.NoError(t, err)
-	watermarkStore := schedulerstore.NewWatermarkStore(wmBackend.Collection("scheduler"))
+	watermarkStore := scheduler.NewWatermarkStore(wmBackend.Collection("scheduler"))
 	fingerprint := dag.Schedule[0].Fingerprint()
 	runID := scheduler.GenerateOneOffRunID(dag.Name, fingerprint, scheduledAt)
 
@@ -174,7 +174,7 @@ steps:
 	require.NoError(t, err)
 	require.Equal(t, core.Succeeded, status.Status)
 	require.Equal(t, core.TriggerTypeScheduler, status.TriggerType)
-	require.Equal(t, "from-host|", test.StatusOutputValue(t, &status, "RESULT"))
+	require.Equal(t, masking.DefaultMaskString+"|", test.StatusOutputValue(t, &status, "RESULT"))
 
 	probe.Stop(context.Background(), cancel, 5*time.Second)
 }

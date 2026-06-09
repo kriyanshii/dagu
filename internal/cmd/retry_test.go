@@ -15,6 +15,7 @@ import (
 
 	"github.com/dagucloud/dagu/internal/cmd"
 	"github.com/dagucloud/dagu/internal/cmn/config"
+	"github.com/dagucloud/dagu/internal/cmn/masking"
 	"github.com/dagucloud/dagu/internal/cmn/stringutil"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
@@ -480,6 +481,7 @@ steps:
 			runID,
 			core.TriggerTypeCatchUp,
 			scheduleTime,
+			"",
 		))
 
 		args := []string{"retry", fmt.Sprintf("--run-id=%s", runID), dagFile.Location}
@@ -492,7 +494,7 @@ steps:
 		require.NoError(t, err)
 		require.Equal(t, core.Succeeded, latestStatus.Status)
 		require.Equal(t, core.TriggerTypeCatchUp, latestStatus.TriggerType)
-		require.Equal(t, "from-host|", test.StatusOutputValue(t, latestStatus, "RESULT"))
+		require.Equal(t, masking.DefaultMaskString+"|", test.StatusOutputValue(t, latestStatus, "RESULT"))
 	})
 
 	t.Run("TrueRetryKeepsRetryTriggerType", func(t *testing.T) {

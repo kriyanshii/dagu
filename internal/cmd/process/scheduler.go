@@ -19,7 +19,6 @@ import (
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/license"
 	"github.com/dagucloud/dagu/internal/persis/file"
-	"github.com/dagucloud/dagu/internal/persis/schedulerstore"
 	"github.com/dagucloud/dagu/internal/runtime"
 	"github.com/dagucloud/dagu/internal/service/chatbridge"
 	"github.com/dagucloud/dagu/internal/service/eventstore"
@@ -59,7 +58,7 @@ func NewScheduler(cfg SchedulerConfig) (*scheduler.Scheduler, error) {
 
 	coordinatorClient := NewCoordinatorClient(ctx, cfg.Config, cfg.ServiceRegistry)
 	entryReader := scheduler.NewEntryReader(cfg.Config.Paths.DAGsDir, dagStore)
-	watermarkStore := schedulerstore.NewWatermarkStore(
+	watermarkStore := scheduler.NewWatermarkStore(
 		file.NewCollection(filepath.Join(cfg.Config.Paths.DataDir, "scheduler"), file.WithIndentedJSON()),
 	)
 
@@ -72,6 +71,12 @@ func NewScheduler(cfg SchedulerConfig) (*scheduler.Scheduler, error) {
 	)
 	schedulerRunManager := runtime.NewManager(schedulerRunStore, cfg.ProcStore, cfg.Config)
 
+	dagSettingsStore, err := file.NewDAGSettingsStore(cfg.Config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize DAG settings store: %w", err)
+	}
+	profileStore := file.NewProfileStore(ctx, cfg.Config)
+
 	sched, err := scheduler.New(
 		cfg.Config,
 		entryReader,
@@ -83,6 +88,7 @@ func NewScheduler(cfg SchedulerConfig) (*scheduler.Scheduler, error) {
 		coordinatorClient,
 		watermarkStore,
 		scheduler.WithSnapshotStoreFactory(file.NewSnapshotStores),
+		scheduler.WithDAGProfileResolver(scheduler.NewDAGProfileResolver(dagSettingsStore, profileStore)),
 	)
 	if err != nil {
 		return nil, err

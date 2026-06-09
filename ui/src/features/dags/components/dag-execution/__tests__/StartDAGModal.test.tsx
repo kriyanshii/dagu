@@ -2,11 +2,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { RuntimeProfileStatus } from '@/api/v1/schema';
 import StartDAGModal from '../StartDAGModal';
 
 const renderedFormProps = vi.fn();
+const useIsAdminMock = vi.hoisted(() => vi.fn(() => true));
+
+vi.mock('@/contexts/AuthContext', () => ({
+  useIsAdmin: () => useIsAdminMock(),
+}));
 
 vi.mock('@rjsf/shadcn', async () => {
   const React = await import('react');
@@ -53,8 +60,14 @@ vi.mock('@rjsf/validator-ajv8', () => ({
   default: {},
 }));
 
+Object.defineProperty(HTMLElement.prototype, 'hasPointerCapture', {
+  configurable: true,
+  value: () => false,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  useIsAdminMock.mockReturnValue(true);
 });
 
 describe('StartDAGModal', () => {
@@ -221,6 +234,121 @@ describe('StartDAGModal', () => {
         undefined,
         true
       )
+    );
+  });
+
+  it('marks protected profiles unavailable for non-admin users', async () => {
+    useIsAdminMock.mockReturnValue(false);
+    const user = userEvent.setup();
+
+    render(
+      <StartDAGModal
+        visible={true}
+        dismissModal={vi.fn()}
+        onSubmit={vi.fn()}
+        dag={{ name: 'profile-dag' } as never}
+        profiles={[
+          {
+            id: 'prod-id',
+            name: 'prod',
+            status: RuntimeProfileStatus.active,
+            protected: true,
+            description: '',
+            entries: [],
+            createdAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:00Z',
+          },
+        ]}
+      />
+    );
+
+    await user.click(screen.getByRole('combobox', { name: /profile/i }));
+
+    const protectedOption = await screen.findByRole('option', {
+      name: /prod/i,
+    });
+    expect(protectedOption).toHaveAttribute('data-disabled');
+  });
+
+  it('submits the selected runtime profile', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <StartDAGModal
+        visible={true}
+        dismissModal={vi.fn()}
+        onSubmit={onSubmit}
+        dag={{ name: 'profile-dag' } as never}
+        profiles={[
+          {
+            id: 'prod-id',
+            name: 'prod',
+            status: RuntimeProfileStatus.active,
+            protected: false,
+            description: '',
+            entries: [],
+            createdAt: '2026-01-01T00:00:00Z',
+            updatedAt: '2026-01-01T00:00:00Z',
+          },
+        ]}
+      />
+    );
+
+    await user.click(screen.getByRole('combobox', { name: /profile/i }));
+    await user.click(await screen.findByRole('option', { name: 'prod' }));
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('', undefined, true, 'prod')
+    );
+  });
+
+  it('omits the profile override when using the DAG default', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <StartDAGModal
+        visible={true}
+        dismissModal={vi.fn()}
+        onSubmit={onSubmit}
+        dag={{ name: 'profile-dag' } as never}
+        defaultProfile="prod"
+      />
+    );
+
+    expect(
+      screen.getByRole('combobox', { name: /profile/i })
+    ).toHaveTextContent(/dag default/i);
+
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('', undefined, true)
+    );
+  });
+
+  it('submits an empty profile override when bypassing the DAG default', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <StartDAGModal
+        visible={true}
+        dismissModal={vi.fn()}
+        onSubmit={onSubmit}
+        dag={{ name: 'profile-dag' } as never}
+        defaultProfile="prod"
+      />
+    );
+
+    await user.click(screen.getByRole('combobox', { name: /profile/i }));
+    await user.click(await screen.findByRole('option', { name: 'No profile' }));
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('', undefined, true, '')
     );
   });
 });

@@ -424,80 +424,89 @@ function DAGStatus({
   return (
     <div
       className={cn(
-        'space-y-4',
+        'w-full min-w-0 max-w-full overflow-hidden space-y-4',
         fillHeight && 'flex h-full min-h-0 flex-col gap-4 space-y-0'
       )}
     >
       {/* Status Detail Tabs */}
-      <Tabs className={cn('whitespace-nowrap', fillHeight && 'shrink-0')}>
-        <Tab
-          isActive={activeTab === 'status'}
-          onClick={() => setActiveTab('status')}
-          className="flex items-center gap-2 cursor-pointer"
-        >
-          <ActivitySquare className="h-4 w-4" />
-          Status
-        </Tab>
-        {hasWaitingSteps && (
-          <Tab
-            isActive={activeTab === 'approval'}
-            onClick={() => setActiveTab('approval')}
-            className="flex items-center gap-2 cursor-pointer"
-          >
-            <ShieldCheck className="h-4 w-4" />
-            Approval
-            <span className="bg-warning/15 text-warning text-xs font-medium px-1.5 py-0.5 rounded-full">
-              {waitingStepCount}
-            </span>
-          </Tab>
+      <div
+        className={cn(
+          'w-full min-w-0 max-w-full overflow-hidden',
+          fillHeight && 'shrink-0'
         )}
-        {showTimeline && (
-          <Tab
-            isActive={activeTab === 'timeline'}
-            onClick={() => setActiveTab('timeline')}
-            className="flex items-center gap-2 cursor-pointer"
-          >
-            <GanttChart className="h-4 w-4" />
-            Timeline
-          </Tab>
-        )}
-        <Tab
-          isActive={activeTab === 'outputs'}
-          onClick={() => setActiveTab('outputs')}
-          className="flex items-center gap-2 cursor-pointer"
-        >
-          <Package className="h-4 w-4" />
-          Outputs
-        </Tab>
-        {hasArtifacts && (
-          <Tab
-            isActive={activeTab === 'artifacts'}
-            onClick={() => setActiveTab('artifacts')}
-            className="flex items-center gap-2 cursor-pointer"
-          >
-            <Archive className="h-4 w-4" />
-            Artifacts
-          </Tab>
-        )}
-        {hasChatSteps && (
-          <Tab
-            isActive={activeTab === 'chat'}
-            onClick={() => setActiveTab('chat')}
-            className="flex items-center gap-2 cursor-pointer"
-          >
-            <MessageSquare className="h-4 w-4" />
-            Chat
-          </Tab>
-        )}
-        <Tab
-          isActive={activeTab === 'spec'}
-          onClick={() => setActiveTab('spec')}
-          className="flex items-center gap-2 cursor-pointer"
-        >
-          <FileCode className="h-4 w-4" />
-          Spec
-        </Tab>
-      </Tabs>
+      >
+        <div className="w-full min-w-0 max-w-full overflow-x-auto">
+          <Tabs className="min-w-max whitespace-nowrap">
+            <Tab
+              isActive={activeTab === 'status'}
+              onClick={() => setActiveTab('status')}
+              className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
+            >
+              <ActivitySquare className="h-4 w-4" />
+              <span className="hidden sm:inline">Status</span>
+            </Tab>
+            {hasWaitingSteps && (
+              <Tab
+                isActive={activeTab === 'approval'}
+                onClick={() => setActiveTab('approval')}
+                className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
+              >
+                <ShieldCheck className="h-4 w-4" />
+                <span className="hidden sm:inline">Approval</span>
+                <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">
+                  {waitingStepCount}
+                </span>
+              </Tab>
+            )}
+            {showTimeline && (
+              <Tab
+                isActive={activeTab === 'timeline'}
+                onClick={() => setActiveTab('timeline')}
+                className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
+              >
+                <GanttChart className="h-4 w-4" />
+                <span className="hidden sm:inline">Timeline</span>
+              </Tab>
+            )}
+            <Tab
+              isActive={activeTab === 'outputs'}
+              onClick={() => setActiveTab('outputs')}
+              className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
+            >
+              <Package className="h-4 w-4" />
+              <span className="hidden sm:inline">Outputs</span>
+            </Tab>
+            {hasArtifacts && (
+              <Tab
+                isActive={activeTab === 'artifacts'}
+                onClick={() => setActiveTab('artifacts')}
+                className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
+              >
+                <Archive className="h-4 w-4" />
+                <span className="hidden sm:inline">Artifacts</span>
+              </Tab>
+            )}
+            {hasChatSteps && (
+              <Tab
+                isActive={activeTab === 'chat'}
+                onClick={() => setActiveTab('chat')}
+                className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
+              >
+                <MessageSquare className="h-4 w-4" />
+                <span className="hidden sm:inline">Chat</span>
+              </Tab>
+            )}
+            <Tab
+              isActive={activeTab === 'spec'}
+              onClick={() => setActiveTab('spec')}
+              className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
+            >
+              <FileCode className="h-4 w-4" />
+              <span className="hidden sm:inline">Spec</span>
+            </Tab>
+          </Tabs>
+        </div>
+      </div>
 
       {/* Status Tab Content */}
       {activeTab === 'status' && (
@@ -527,7 +536,7 @@ function DAGStatus({
                     </TooltipContent>
                   </Tooltip>
                 </div>
-                <div className="overflow-x-auto -mx-4 px-4">
+                <div className="w-full min-w-0 max-w-full overflow-x-auto">
                   <Graph
                     steps={displayDAGRun.nodes}
                     type="status"
@@ -559,7 +568,7 @@ function DAGStatus({
           <DAGContext.Consumer>
             {(props) => (
               <>
-                <div className="grid grid-cols-1 gap-6">
+                <div className="grid min-w-0 grid-cols-1 gap-6">
                   {/* Status Overview */}
                   <div className="bg-surface border border-border rounded-lg p-4">
                     <DAGStatusOverview

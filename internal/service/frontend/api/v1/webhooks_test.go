@@ -140,6 +140,12 @@ steps:
   - name: test
     run: echo hello
 `
+	createTestDAGWithSpec(t, server, token, name, spec)
+}
+
+func createTestDAGWithSpec(t *testing.T, server test.Server, token, name, spec string) {
+	t.Helper()
+
 	server.Client().Post("/api/v1/dags", api.CreateNewDAGJSONRequestBody{
 		Name: name,
 		Spec: &spec,
@@ -578,6 +584,49 @@ func TestWebhooks_TriggerWithDagRunID(t *testing.T) {
 		}).WithBearerToken(webhookToken).Send(t)
 		return resp.Response.StatusCode() == http.StatusConflict
 	}, 30*time.Second, 100*time.Millisecond, "duplicate dag-run ID should return 409 Conflict")
+}
+
+func TestWebhooks_TriggerUsesDAGDefaultProfile(t *testing.T) {
+	t.Parallel()
+	server := setupWebhookTestServer(t)
+	token := getWebhookAdminToken(t, server)
+
+	dagName := "webhook_default_profile_test"
+	runtimeName := "webhook_runtime_name"
+	createTestDAGWithSpec(t, server, token, dagName, `
+name: webhook_runtime_name
+steps:
+  - name: test
+    run: echo hello
+`)
+
+	server.Client().Post("/api/v1/profiles", api.CreateRuntimeProfileJSONRequestBody{
+		Name:      "prod",
+		Protected: new(true),
+	}).WithBearerToken(token).ExpectStatus(http.StatusCreated).Send(t)
+
+	profileName := api.RuntimeProfileName("prod")
+	server.Client().Put("/api/v1/dags/"+dagName+"/settings", api.UpdateDAGSettingsJSONRequestBody{
+		Profile: &profileName,
+	}).WithBearerToken(token).ExpectStatus(http.StatusOK).Send(t)
+
+	createResp := server.Client().Post("/api/v1/dags/"+dagName+"/webhook", nil).
+		WithBearerToken(token).ExpectStatus(http.StatusCreated).Send(t)
+
+	var createResult api.WebhookCreateResponse
+	createResp.Unmarshal(t, &createResult)
+	webhookToken := createResult.Token
+
+	triggerResp := server.Client().Post("/api/v1/webhooks/"+dagName, api.WebhookRequest{}).
+		WithBearerToken(webhookToken).ExpectStatus(http.StatusOK).Send(t)
+
+	var triggerResult api.WebhookResponse
+	triggerResp.Unmarshal(t, &triggerResult)
+
+	status := waitForStoredDAGRunStatus(t, server, runtimeName, triggerResult.DagRunId, 10*time.Second, func(status *exec.DAGRunStatus) bool {
+		return status.ProfileName == "prod"
+	})
+	assert.Equal(t, "prod", status.ProfileName)
 }
 
 // TestWebhooks_TriggerInvalidToken tests webhook trigger with invalid tokens

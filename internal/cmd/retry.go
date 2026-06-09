@@ -122,7 +122,14 @@ func runRetry(ctx *Context, args []string) error {
 		}
 		return fmt.Errorf("failed to read status: %w", err)
 	}
-	if queueDispatchRetry && (status == nil || status.Status != core.Queued) {
+	if status == nil {
+		if queueDispatchRetry {
+			return newQueueDispatchNotQueuedError(status)
+		}
+		return fmt.Errorf("failed to read status: status data is nil")
+	}
+	profileName := status.ProfileName
+	if queueDispatchRetry && status.Status != core.Queued {
 		return newQueueDispatchNotQueuedError(status)
 	}
 
@@ -182,6 +189,7 @@ func runRetry(ctx *Context, args []string) error {
 			status.Parent,
 			exec.PreservedQueueTriggerType(status),
 			status.ScheduleTime,
+			profileName,
 			func(execCtx context.Context) (exec.DAGRunAttempt, error) {
 				if queueDispatchRetry {
 					queuedAttempt, queuedStatus, err := queueDispatchRetryTarget(execCtx, ctx.DAGRunStore, ref, rootRun, attempt.ID())
@@ -199,13 +207,13 @@ func runRetry(ctx *Context, args []string) error {
 				return ctx.DAGRunStore.CreateAttempt(execCtx, dag, time.Now(), dagRunID, opts)
 			},
 			func(preparedAttempt exec.DAGRunAttempt) error {
-				return executeRetry(ctx, dag, status, rootRun, stepName, workerID, attemptID, preparedAttempt)
+				return executeRetry(ctx, dag, status, rootRun, stepName, workerID, attemptID, profileName, preparedAttempt)
 			},
 		)
 	}
 
 	if ctx.DAGRunStore == nil {
-		return executeRetry(ctx, dag, status, rootRun, stepName, workerID, attemptID, nil)
+		return executeRetry(ctx, dag, status, rootRun, stepName, workerID, attemptID, profileName, nil)
 	}
 
 	if err := validateWorkerAttemptBinding(dagRunID, attemptID, attempt, status); err != nil {
@@ -220,6 +228,7 @@ func runRetry(ctx *Context, args []string) error {
 		status.Parent,
 		exec.PreservedQueueTriggerType(status),
 		status.ScheduleTime,
+		profileName,
 		func(execCtx context.Context) (exec.DAGRunAttempt, error) {
 			if queueDispatchRetry {
 				if err := ensureQueueDispatchRetryTarget(execCtx, ctx.DAGRunStore, ref, rootRun); err != nil {
@@ -229,7 +238,7 @@ func runRetry(ctx *Context, args []string) error {
 			return attempt, nil
 		},
 		func(preparedAttempt exec.DAGRunAttempt) error {
-			return executeRetry(ctx, dag, status, rootRun, stepName, workerID, attemptID, preparedAttempt)
+			return executeRetry(ctx, dag, status, rootRun, stepName, workerID, attemptID, profileName, preparedAttempt)
 		},
 	)
 }
@@ -524,7 +533,7 @@ func retrySourceMayStillBeFinalizing(status *exec.DAGRunStatus) bool {
 
 // executeRetry runs a retry of a DAG run using the original run's log file.
 // Queued catchup runs reuse this path but preserve their catchup trigger type.
-func executeRetry(ctx *Context, dag *core.DAG, status *exec.DAGRunStatus, rootRun exec.DAGRunRef, stepName, workerID, attemptID string, preparedAttempt exec.DAGRunAttempt) error {
+func executeRetry(ctx *Context, dag *core.DAG, status *exec.DAGRunStatus, rootRun exec.DAGRunRef, stepName, workerID, attemptID, profileName string, preparedAttempt exec.DAGRunAttempt) error {
 	if stepName != "" {
 		ctx.Context = logger.WithValues(ctx.Context, tag.Step(stepName))
 	}
@@ -587,7 +596,10 @@ func executeRetry(ctx *Context, dag *core.DAG, status *exec.DAGRunStatus, rootRu
 			QueueStore:                 ctx.QueueStore,
 			StateStore:                 ctx.StateStore,
 			SecretStore:                as.SecretStore,
+			ProfileStore:               as.ProfileStore,
+			ProfileName:                profileName,
 			ServiceRegistry:            ctx.ServiceRegistry,
+			SubWorkflowRunnerFactory:   ctx.SubWorkflowRunnerFactory(),
 			RootDAGRun:                 rootRun,
 			PeerConfig:                 ctx.Config.Core.Peer,
 			TriggerType:                triggerType,

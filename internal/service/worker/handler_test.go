@@ -17,8 +17,8 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/fileutil"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/runtime"
-	runtimeexec "github.com/dagucloud/dagu/internal/runtime/executor"
+	"github.com/dagucloud/dagu/internal/launcher"
+	"github.com/dagucloud/dagu/internal/proto/convert"
 	"github.com/dagucloud/dagu/internal/test"
 	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
 	"github.com/google/uuid"
@@ -53,6 +53,32 @@ func workerStatusOutputValue(t *testing.T, status *exec.DAGRunStatus, key string
 	return ""
 }
 
+func workerHandlerTask(
+	t *testing.T,
+	dagName string,
+	definition string,
+	operation coordinatorv1.Operation,
+	runID string,
+	previousStatus *exec.DAGRunStatus,
+) *coordinatorv1.Task {
+	t.Helper()
+
+	task := &coordinatorv1.Task{
+		Operation:      operation,
+		DagRunId:       runID,
+		Target:         dagName,
+		Definition:     definition,
+		RootDagRunName: dagName,
+		RootDagRunId:   runID,
+	}
+	if previousStatus != nil {
+		protoStatus, err := convert.DAGRunStatusToProto(previousStatus)
+		require.NoError(t, err)
+		task.PreviousStatus = protoStatus
+	}
+	return task
+}
+
 func TestTaskHandler(t *testing.T) {
 	th := test.Setup(t, test.WithBuiltExecutable())
 
@@ -70,8 +96,8 @@ func TestTaskHandler(t *testing.T) {
 
 		// First, create an initial dag-run (simulating what coordinator does during enqueue)
 		// This creates the status record that retry will use
-		spec := th.SubCmdBuilder.Start(dag.DAG, runtime.StartOptions{})
-		err := runtime.Start(th.Context, spec)
+		spec := th.SubCmdBuilder.Start(dag.DAG, launcher.StartOptions{})
+		err := launcher.Start(th.Context, spec)
 		require.NoError(t, err)
 
 		// Wait for the initial run to complete
@@ -118,8 +144,8 @@ func TestTaskHandler(t *testing.T) {
 		cli := th.DAGRunMgr
 
 		// First, start a DAG run
-		spec := th.SubCmdBuilder.Start(dag.DAG, runtime.StartOptions{})
-		err := runtime.Start(th.Context, spec)
+		spec := th.SubCmdBuilder.Start(dag.DAG, launcher.StartOptions{})
+		err := launcher.Start(th.Context, spec)
 		require.NoError(t, err)
 
 		// Wait for the DAG to finish
@@ -228,11 +254,13 @@ steps:
 `, test.EnvOutput("EXPORTED_SECRET", "WORKER_TASK_START_ENV"))
 		dag := th.DAG(t, dagContent)
 		runID := uuid.Must(uuid.NewV7()).String()
-		task := runtimeexec.CreateTask(
+		task := workerHandlerTask(
+			t,
 			dag.Name,
 			dagContent,
 			coordinatorv1.Operation_OPERATION_START,
 			runID,
+			nil,
 		)
 
 		handler := NewTaskHandlerWithDAGRunStore(th.Config, th.DAGRunStore)
@@ -260,11 +288,13 @@ steps:
 		runID := uuid.Must(uuid.NewV7()).String()
 		handler := NewTaskHandlerWithDAGRunStore(th.Config, th.DAGRunStore)
 
-		startTask := runtimeexec.CreateTask(
+		startTask := workerHandlerTask(
+			t,
 			dag.Name,
 			dagContent,
 			coordinatorv1.Operation_OPERATION_START,
 			runID,
+			nil,
 		)
 		err := handler.Handle(th.Context, startTask)
 		require.NoError(t, err)
@@ -275,12 +305,13 @@ steps:
 		require.NoError(t, err)
 		require.Equal(t, "from-host|", workerStatusOutputValue(t, initialStatus, "RESULT"))
 
-		retryTask := runtimeexec.CreateTask(
+		retryTask := workerHandlerTask(
+			t,
 			dag.Name,
 			dagContent,
 			coordinatorv1.Operation_OPERATION_RETRY,
 			runID,
-			runtimeexec.WithPreviousStatus(initialStatus),
+			initialStatus,
 		)
 		err = handler.Handle(th.Context, retryTask)
 		require.NoError(t, err)
@@ -307,11 +338,13 @@ steps:
 `, test.EnvOutput("KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT", "WORKER_TASK_HOST_ONLY_ENV"))
 		dag := th.DAG(t, dagContent)
 		runID := uuid.Must(uuid.NewV7()).String()
-		task := runtimeexec.CreateTask(
+		task := workerHandlerTask(
+			t,
 			dag.Name,
 			dagContent,
 			coordinatorv1.Operation_OPERATION_START,
 			runID,
+			nil,
 		)
 
 		handler := NewTaskHandlerWithDAGRunStore(th.Config, th.DAGRunStore)
@@ -339,11 +372,13 @@ steps:
 		runID := uuid.Must(uuid.NewV7()).String()
 		handler := NewTaskHandlerWithDAGRunStore(th.Config, th.DAGRunStore)
 
-		startTask := runtimeexec.CreateTask(
+		startTask := workerHandlerTask(
+			t,
 			dag.Name,
 			dagContent,
 			coordinatorv1.Operation_OPERATION_START,
 			runID,
+			nil,
 		)
 		err := handler.Handle(th.Context, startTask)
 		require.NoError(t, err)
@@ -354,12 +389,13 @@ steps:
 		require.NoError(t, err)
 		require.Equal(t, "10.43.0.1|443|", workerStatusOutputValue(t, initialStatus, "RESULT"))
 
-		retryTask := runtimeexec.CreateTask(
+		retryTask := workerHandlerTask(
+			t,
 			dag.Name,
 			dagContent,
 			coordinatorv1.Operation_OPERATION_RETRY,
 			runID,
-			runtimeexec.WithPreviousStatus(initialStatus),
+			initialStatus,
 		)
 		err = handler.Handle(th.Context, retryTask)
 		require.NoError(t, err)
@@ -389,11 +425,13 @@ steps:
 `, test.EnvOutput("WORKER_TASK_EXACT_ENV", "WORKER_TASK_PREFIX_TOKEN", "WORKER_TASK_HOST_ONLY_ENV"))
 		dag := th.DAG(t, dagContent)
 		runID := uuid.Must(uuid.NewV7()).String()
-		task := runtimeexec.CreateTask(
+		task := workerHandlerTask(
+			t,
 			dag.Name,
 			dagContent,
 			coordinatorv1.Operation_OPERATION_START,
 			runID,
+			nil,
 		)
 
 		handler := NewTaskHandlerWithDAGRunStore(th.Config, th.DAGRunStore)
@@ -424,11 +462,13 @@ steps:
 		runID := uuid.Must(uuid.NewV7()).String()
 		handler := NewTaskHandlerWithDAGRunStore(th.Config, th.DAGRunStore)
 
-		startTask := runtimeexec.CreateTask(
+		startTask := workerHandlerTask(
+			t,
 			dag.Name,
 			dagContent,
 			coordinatorv1.Operation_OPERATION_START,
 			runID,
+			nil,
 		)
 		err := handler.Handle(th.Context, startTask)
 		require.NoError(t, err)
@@ -439,12 +479,13 @@ steps:
 		require.NoError(t, err)
 		require.Equal(t, "exact-value|prefix-value|", workerStatusOutputValue(t, initialStatus, "RESULT"))
 
-		retryTask := runtimeexec.CreateTask(
+		retryTask := workerHandlerTask(
+			t,
 			dag.Name,
 			dagContent,
 			coordinatorv1.Operation_OPERATION_RETRY,
 			runID,
-			runtimeexec.WithPreviousStatus(initialStatus),
+			initialStatus,
 		)
 		err = handler.Handle(th.Context, retryTask)
 		require.NoError(t, err)

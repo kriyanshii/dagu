@@ -1,4 +1,8 @@
+// Copyright (C) 2026 Yota Hamada
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -12,6 +16,7 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
+import { useIsAdmin } from '@/contexts/AuthContext';
 import {
   Dialog,
   DialogContent,
@@ -28,7 +33,11 @@ import validator from '@rjsf/validator-ajv8';
 import { AlertTriangle, ListPlus, Play, X } from 'lucide-react';
 import React from 'react';
 
-import { components, ParamDefType } from '../../../../api/v1/schema';
+import {
+  components,
+  ParamDefType,
+  RuntimeProfileStatus,
+} from '../../../../api/v1/schema';
 import {
   Parameter,
   parseParams,
@@ -77,10 +86,31 @@ type Props = {
   onSubmit: (
     params: string,
     dagRunId?: string,
-    immediate?: boolean
+    immediate?: boolean,
+    profile?: string
   ) => Promise<void> | void;
   action?: 'start' | 'enqueue';
+  profiles?: components['schemas']['RuntimeProfileResponse'][];
+  profilesLoading?: boolean;
+  defaultProfile?: string;
+  defaultProfileLoading?: boolean;
 };
+
+const DAG_DEFAULT_PROFILE_VALUE = '__dag_default__';
+const NO_PROFILE_VALUE = '__none__';
+
+function profileOverrideForSelection(
+  selection: string,
+  hasDefaultProfile: boolean
+): string | undefined {
+  if (selection === DAG_DEFAULT_PROFILE_VALUE) {
+    return undefined;
+  }
+  if (selection === NO_PROFILE_VALUE) {
+    return hasDefaultProfile ? '' : undefined;
+  }
+  return selection;
+}
 
 function createParamFields(paramDefs: ParamDef[] = []): ParamField[] {
   return paramDefs.map((def, index) => {
@@ -245,7 +275,12 @@ function StartDAGModal({
   dismissModal,
   onSubmit,
   action,
+  profiles = [],
+  profilesLoading = false,
+  defaultProfile = '',
+  defaultProfileLoading = false,
 }: Props) {
+  const canUseProtectedProfiles = useIsAdmin();
   const dagDetails = dag as components['schemas']['DAGDetails'] | undefined;
   const paramSchema = React.useMemo(() => {
     const schema = dagDetails?.paramSchema as JSONSchema | undefined;
@@ -297,8 +332,48 @@ function StartDAGModal({
   const [submitError, setSubmitError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
   const [dagRunId, setDAGRunId] = React.useState('');
+  const [profileSelection, setProfileSelection] = React.useState(
+    defaultProfile ? DAG_DEFAULT_PROFILE_VALUE : NO_PROFILE_VALUE
+  );
   const forceEnqueue = action === 'enqueue';
   const [enqueue, setEnqueue] = React.useState(forceEnqueue);
+  const activeProfiles = React.useMemo(
+    () =>
+      profiles.filter(
+        (profile) => profile.status === RuntimeProfileStatus.active
+      ),
+    [profiles]
+  );
+  const hasDefaultProfile = defaultProfile !== '';
+  const showProfileSelector =
+    defaultProfileLoading ||
+    profilesLoading ||
+    hasDefaultProfile ||
+    activeProfiles.length > 0;
+
+  React.useEffect(() => {
+    if (
+      canUseProtectedProfiles ||
+      profileSelection === '' ||
+      profileSelection === DAG_DEFAULT_PROFILE_VALUE ||
+      profileSelection === NO_PROFILE_VALUE
+    ) {
+      return;
+    }
+    const selectedProfile = activeProfiles.find(
+      (profile) => profile.name === profileSelection
+    );
+    if (selectedProfile?.protected) {
+      setProfileSelection(
+        hasDefaultProfile ? DAG_DEFAULT_PROFILE_VALUE : NO_PROFILE_VALUE
+      );
+    }
+  }, [
+    activeProfiles,
+    canUseProtectedProfiles,
+    hasDefaultProfile,
+    profileSelection,
+  ]);
 
   const dagWithRunConfig = dag as DAGLike & {
     runConfig?: { disableParamEdit?: boolean; disableRunIdEdit?: boolean };
@@ -335,8 +410,12 @@ function StartDAGModal({
     setSubmitError(null);
     setSubmitting(false);
     setDAGRunId('');
+    setProfileSelection(
+      defaultProfile ? DAG_DEFAULT_PROFILE_VALUE : NO_PROFILE_VALUE
+    );
     setEnqueue(forceEnqueue);
   }, [
+    defaultProfile,
     visible,
     initialSchemaFormData,
     initialTypedFields,
@@ -403,7 +482,20 @@ function StartDAGModal({
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await onSubmit(paramsPayload, dagRunId || undefined, !enqueue);
+      const profileOverride = profileOverrideForSelection(
+        profileSelection,
+        hasDefaultProfile
+      );
+      if (profileOverride === undefined) {
+        await onSubmit(paramsPayload, dagRunId || undefined, !enqueue);
+      } else {
+        await onSubmit(
+          paramsPayload,
+          dagRunId || undefined,
+          !enqueue,
+          profileOverride
+        );
+      }
       dismissModal();
     } catch (error) {
       setSubmitError(
@@ -417,6 +509,7 @@ function StartDAGModal({
     dagRunId,
     dismissModal,
     enqueue,
+    hasDefaultProfile,
     loadError,
     loading,
     onSubmit,
@@ -424,6 +517,7 @@ function StartDAGModal({
     schemaFormData,
     useSchemaFields,
     submitting,
+    profileSelection,
     typedFields,
     useTypedFields,
   ]);
@@ -533,6 +627,72 @@ function StartDAGModal({
               }}
             />
           </div>
+
+          {showProfileSelector && (
+            <div className="space-y-2">
+              <Label htmlFor="runtime-profile">Profile</Label>
+              <Select
+                value={profileSelection}
+                disabled={
+                  loading ||
+                  submitting ||
+                  profilesLoading ||
+                  defaultProfileLoading
+                }
+                onValueChange={setProfileSelection}
+              >
+                <SelectTrigger id="runtime-profile" className="w-full">
+                  <SelectValue placeholder="No profile" />
+                </SelectTrigger>
+                <SelectContent>
+                  {hasDefaultProfile && (
+                    <SelectItem value={DAG_DEFAULT_PROFILE_VALUE}>
+                      <span className="flex w-full items-center justify-between gap-3">
+                        <span>DAG default</span>
+                        <span className="truncate text-xs text-muted-foreground">
+                          {defaultProfile}
+                        </span>
+                      </span>
+                    </SelectItem>
+                  )}
+                  <SelectItem value={NO_PROFILE_VALUE}>No profile</SelectItem>
+                  {activeProfiles.map((profile) => {
+                    const protectedUnavailable =
+                      profile.protected && !canUseProtectedProfiles;
+                    return (
+                      <SelectItem
+                        key={profile.id}
+                        value={profile.name}
+                        disabled={protectedUnavailable}
+                      >
+                        <span className="flex w-full items-center justify-between gap-3">
+                          <span>{profile.name}</span>
+                          <span className="flex items-center gap-1.5">
+                            {profile.protected && (
+                              <Badge
+                                variant="outline"
+                                className="h-4 px-1.5 text-[10px]"
+                              >
+                                Protected
+                              </Badge>
+                            )}
+                            {protectedUnavailable && (
+                              <Badge
+                                variant="secondary"
+                                className="h-4 px-1.5 text-[10px]"
+                              >
+                                Admin
+                              </Badge>
+                            )}
+                          </span>
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           {loading && (
             <div className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">

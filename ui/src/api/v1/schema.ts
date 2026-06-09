@@ -2132,6 +2132,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/dags/{fileName}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get DAG settings
+         * @description Returns server-side settings for a specific DAG.
+         */
+        get: operations["getDAGSettings"];
+        /**
+         * Update DAG settings
+         * @description Creates or replaces server-side settings for a specific DAG. Manager or admin only; protected profiles require admin.
+         */
+        put: operations["updateDAGSettings"];
+        post?: never;
+        /**
+         * Delete DAG settings
+         * @description Removes server-side settings for the specified DAG. Manager or admin only.
+         */
+        delete: operations["deleteDAGSettings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/dags/{fileName}/notifications": {
         parameters: {
             query?: never;
@@ -3216,6 +3244,262 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List runtime profiles
+         * @description Lists runtime profile metadata and entries. Secret values are never returned.
+         */
+        get: operations["listRuntimeProfiles"];
+        put?: never;
+        /**
+         * Create runtime profile
+         * @description Creates a runtime profile for managed environment variables and secrets.
+         */
+        post: operations["createRuntimeProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles/_global": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get global runtime profile defaults
+         * @description Returns the global inherited runtime profile layer. Secret values are never returned.
+         */
+        get: operations["getGlobalRuntimeProfileDefaults"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update global runtime profile defaults */
+        patch: operations["updateGlobalRuntimeProfileDefaults"];
+        trace?: never;
+    };
+    "/profiles/_global/variables/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set global runtime profile default variable
+         * @description Creates or updates a non-secret environment variable in the global inherited runtime profile layer.
+         */
+        put: operations["setGlobalRuntimeProfileDefaultVariable"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles/_global/secrets/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set global runtime profile default secret
+         * @description Creates or rotates a Dagu-managed secret value in the global inherited runtime profile layer. Plaintext values are write-only.
+         */
+        put: operations["setGlobalRuntimeProfileDefaultSecret"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles/_global/entries/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete global runtime profile default entry */
+        delete: operations["deleteGlobalRuntimeProfileDefaultEntry"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles/_workspaces/{workspaceName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get workspace runtime profile defaults
+         * @description Returns the workspace inherited runtime profile layer. Secret values are never returned.
+         */
+        get: operations["getWorkspaceRuntimeProfileDefaults"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update workspace runtime profile defaults */
+        patch: operations["updateWorkspaceRuntimeProfileDefaults"];
+        trace?: never;
+    };
+    "/profiles/_workspaces/{workspaceName}/variables/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set workspace runtime profile default variable
+         * @description Creates or updates a non-secret environment variable in the workspace inherited runtime profile layer.
+         */
+        put: operations["setWorkspaceRuntimeProfileDefaultVariable"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles/_workspaces/{workspaceName}/secrets/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set workspace runtime profile default secret
+         * @description Creates or rotates a Dagu-managed secret value in the workspace inherited runtime profile layer. Plaintext values are write-only.
+         */
+        put: operations["setWorkspaceRuntimeProfileDefaultSecret"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles/_workspaces/{workspaceName}/entries/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete workspace runtime profile default entry */
+        delete: operations["deleteWorkspaceRuntimeProfileDefaultEntry"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles/{profileName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get runtime profile */
+        get: operations["getRuntimeProfile"];
+        put?: never;
+        post?: never;
+        /** Delete runtime profile */
+        delete: operations["deleteRuntimeProfile"];
+        options?: never;
+        head?: never;
+        /** Update runtime profile metadata */
+        patch: operations["updateRuntimeProfile"];
+        trace?: never;
+    };
+    "/profiles/{profileName}/variables/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set runtime profile variable
+         * @description Creates or updates a non-secret environment variable in a runtime profile.
+         */
+        put: operations["setRuntimeProfileVariable"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles/{profileName}/secrets/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set runtime profile secret
+         * @description Creates or rotates a Dagu-managed secret value and maps it to a runtime profile key. Plaintext values are write-only.
+         */
+        put: operations["setRuntimeProfileSecret"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/profiles/{profileName}/entries/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete runtime profile entry */
+        delete: operations["deleteRuntimeProfileEntry"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/secrets": {
         parameters: {
             query?: never;
@@ -4012,6 +4296,22 @@ export interface components {
             /** @description Subscription-level event filter. Empty means the subscription inherits DAG-level events. */
             events?: components["schemas"]["NotificationEventType"][];
         };
+        /** @description Server-side DAG settings */
+        DAGSettings: {
+            /** @description DAG file identifier these settings apply to */
+            dagName: string;
+            /** @description Default runtime profile used when a DAG run does not provide an explicit profile override */
+            profile?: components["schemas"]["RuntimeProfileName"];
+            /** Format: date-time */
+            updatedAt?: string;
+            /** @description User ID that last updated the settings */
+            updatedBy?: string;
+        };
+        /** @description Request to replace DAG settings. Omit `profile` to clear the DAG default profile. */
+        UpdateDAGSettingsRequest: {
+            /** @description Default runtime profile used when a DAG run does not provide an explicit profile override */
+            profile?: components["schemas"]["RuntimeProfileName"];
+        };
         /** @description Server-side DAG notification settings */
         DAGNotificationSettings: {
             /** @description Stable settings ID */
@@ -4681,6 +4981,8 @@ export interface components {
             artifactsAvailable: boolean;
             /** @description Runtime parameters passed to the DAG-run in JSON format */
             params?: string;
+            /** @description Runtime profile selected for this DAG-run. */
+            profileName?: components["schemas"]["RuntimeProfileName"];
             /** @description ID of the worker that executed this DAG-run ('local' for local execution) */
             workerId?: string;
             triggerType?: components["schemas"]["TriggerType"];
@@ -5205,7 +5507,7 @@ export interface components {
          * @enum {string}
          */
         UserRole: UserRole;
-        /** @description Workspace name. The reserved names all and default are not allowed. */
+        /** @description Workspace name. The reserved names all, default, and global are not allowed. */
         WorkspaceName: string;
         /** @description Role granted for a specific workspace */
         WorkspaceGrant: {
@@ -6251,6 +6553,82 @@ export interface components {
             message?: string;
             error?: string;
         };
+        /** @description Runtime profile name. */
+        RuntimeProfileName: string;
+        /** @description Runtime profile override. Empty string means no profile. */
+        RuntimeProfileOverride: string;
+        /** @description Environment variable key stored in a runtime profile. Keys with the DAGU_ prefix are reserved. */
+        RuntimeProfileKey: string;
+        /** @enum {string} */
+        RuntimeProfileStatus: RuntimeProfileStatus;
+        /** @enum {string} */
+        RuntimeProfileEntryKind: RuntimeProfileEntryKind;
+        CreateRuntimeProfileRequest: {
+            name: components["schemas"]["RuntimeProfileName"];
+            description?: string;
+            /** @default false */
+            protected: boolean;
+        };
+        UpdateRuntimeProfileRequest: {
+            description?: string;
+            status?: components["schemas"]["RuntimeProfileStatus"];
+            protected?: boolean;
+        };
+        UpdateInheritedRuntimeProfileRequest: {
+            description?: string;
+        };
+        SetRuntimeProfileVariableRequest: {
+            value: string;
+        };
+        SetRuntimeProfileSecretRequest: {
+            value: string;
+        };
+        RuntimeProfileEntryResponse: {
+            key: components["schemas"]["RuntimeProfileKey"];
+            kind: components["schemas"]["RuntimeProfileEntryKind"];
+            /** @description Stored value for non-secret variables. Omitted for secret entries. */
+            value?: string;
+            /** @description Managed secret ID for secret entries. The secret value is never returned. */
+            secretId?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        RuntimeProfileResponse: {
+            id: string;
+            name: components["schemas"]["RuntimeProfileName"];
+            description?: string;
+            status: components["schemas"]["RuntimeProfileStatus"];
+            protected: boolean;
+            entries: components["schemas"]["RuntimeProfileEntryResponse"][];
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** @enum {string} */
+        InheritedRuntimeProfileScope: InheritedRuntimeProfileScope;
+        /** @description Non-selectable inherited profile layer name. */
+        InheritedRuntimeProfileName: string;
+        InheritedRuntimeProfileResponse: {
+            /** @description Persistent record ID. Omitted until the inherited layer is first saved. */
+            id?: string;
+            name: components["schemas"]["InheritedRuntimeProfileName"];
+            scope: components["schemas"]["InheritedRuntimeProfileScope"];
+            workspace?: components["schemas"]["WorkspaceName"];
+            description?: string;
+            status: components["schemas"]["RuntimeProfileStatus"];
+            protected: boolean;
+            entries: components["schemas"]["RuntimeProfileEntryResponse"][];
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        RuntimeProfileListResponse: {
+            profiles: components["schemas"]["RuntimeProfileResponse"][];
+        };
         /** @enum {string} */
         SecretProviderType: SecretProviderType;
         /** @enum {string} */
@@ -6563,6 +6941,17 @@ export interface operations {
             /** @description Invalid credentials */
             401: {
                 headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too many login attempts — rate limit exceeded */
+            429: {
+                headers: {
+                    /** @description Seconds to wait before retrying */
+                    "Retry-After"?: number;
                     [name: string]: unknown;
                 };
                 content: {
@@ -7679,6 +8068,8 @@ export interface operations {
                     dagRunId?: components["schemas"]["DAGRunId"] & unknown;
                     /** @description Optional DAG name override to use for the created dag-run */
                     dagName?: string;
+                    /** @description Runtime profile override. Omit to use the DAG default profile, set to an empty string to run without a profile, or set to a profile name to override the DAG default. */
+                    profile?: components["schemas"]["RuntimeProfileOverride"];
                     /**
                      * @description If true, prevent starting if DAG is already running (returns 409 conflict)
                      * @default false
@@ -7753,6 +8144,8 @@ export interface operations {
                     dagRunId?: components["schemas"]["DAGRunId"] & unknown;
                     /** @description Optional DAG name override to use for the created dag-run */
                     dagName?: string;
+                    /** @description Runtime profile override. Omit to use the DAG default profile, set to an empty string to run without a profile, or set to a profile name to override the DAG default. */
+                    profile?: components["schemas"]["RuntimeProfileOverride"];
                     /**
                      * @description If true, prevent starting if DAG is already running (returns 409 conflict)
                      * @default false
@@ -7838,6 +8231,8 @@ export interface operations {
                     dagRunId?: components["schemas"]["DAGRunId"] & unknown;
                     /** @description Optional DAG name override to use for the queued dag-run */
                     dagName?: string;
+                    /** @description Runtime profile override. Omit to use the DAG default profile, set to an empty string to run without a profile, or set to a profile name to override the DAG default. */
+                    profile?: components["schemas"]["RuntimeProfileOverride"];
                     /** @description Override the DAG-level queue definition */
                     queue?: string;
                     /**
@@ -8623,6 +9018,8 @@ export interface operations {
                     spec: string;
                     /** @description Optional name to use when the spec omits a name */
                     name?: string;
+                    /** @description Runtime profile to apply to this DAG-run. Set to an empty string or omit to run without a profile. */
+                    profile?: components["schemas"]["RuntimeProfileOverride"];
                     /** @description Parameters to pass to the DAG-run in JSON format */
                     params?: string;
                     dagRunId?: components["schemas"]["DAGRunId"] & unknown;
@@ -8696,6 +9093,8 @@ export interface operations {
                     spec: string;
                     /** @description Optional name to use when the spec omits a name */
                     name?: string;
+                    /** @description Runtime profile to apply to this queued DAG-run. Set to an empty string or omit to run without a profile. */
+                    profile?: components["schemas"]["RuntimeProfileOverride"];
                     /** @description Parameters to persist with the queued DAG-run in JSON format */
                     params?: string;
                     dagRunId?: components["schemas"]["DAGRunId"] & unknown;
@@ -12870,6 +13269,158 @@ export interface operations {
             };
         };
     };
+    getDAGSettings: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                /** @description the name of the DAG file */
+                fileName: components["parameters"]["DAGFileName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description DAG settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DAGSettings"];
+                };
+            };
+            /** @description DAG not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateDAGSettings: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                /** @description the name of the DAG file */
+                fileName: components["parameters"]["DAGFileName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDAGSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description DAG settings updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DAGSettings"];
+                };
+            };
+            /** @description Invalid DAG settings */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden - insufficient permissions */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description DAG or runtime profile not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteDAGSettings: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                /** @description the name of the DAG file */
+                fileName: components["parameters"]["DAGFileName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description DAG settings deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description DAG not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getDAGNotifications: {
         parameters: {
             query?: {
@@ -16930,6 +17481,1188 @@ export interface operations {
             };
         };
     };
+    listRuntimeProfiles: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runtime profiles */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeProfileListResponse"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createRuntimeProfile: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRuntimeProfileRequest"];
+            };
+        };
+        responses: {
+            /** @description Runtime profile created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeProfileResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Runtime profile already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getGlobalRuntimeProfileDefaults: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Global runtime profile defaults */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InheritedRuntimeProfileResponse"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateGlobalRuntimeProfileDefaults: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateInheritedRuntimeProfileRequest"];
+            };
+        };
+        responses: {
+            /** @description Global runtime profile defaults updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InheritedRuntimeProfileResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    setGlobalRuntimeProfileDefaultVariable: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                key: components["schemas"]["RuntimeProfileKey"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRuntimeProfileVariableRequest"];
+            };
+        };
+        responses: {
+            /** @description Global runtime profile default variable set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InheritedRuntimeProfileResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    setGlobalRuntimeProfileDefaultSecret: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                key: components["schemas"]["RuntimeProfileKey"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRuntimeProfileSecretRequest"];
+            };
+        };
+        responses: {
+            /** @description Global runtime profile default secret set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InheritedRuntimeProfileResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteGlobalRuntimeProfileDefaultEntry: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                key: components["schemas"]["RuntimeProfileKey"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Global runtime profile default entry deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Runtime profile default entry not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getWorkspaceRuntimeProfileDefaults: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                workspaceName: components["schemas"]["WorkspaceName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Workspace runtime profile defaults */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InheritedRuntimeProfileResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Workspace not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateWorkspaceRuntimeProfileDefaults: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                workspaceName: components["schemas"]["WorkspaceName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateInheritedRuntimeProfileRequest"];
+            };
+        };
+        responses: {
+            /** @description Workspace runtime profile defaults updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InheritedRuntimeProfileResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Workspace not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    setWorkspaceRuntimeProfileDefaultVariable: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                workspaceName: components["schemas"]["WorkspaceName"];
+                key: components["schemas"]["RuntimeProfileKey"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRuntimeProfileVariableRequest"];
+            };
+        };
+        responses: {
+            /** @description Workspace runtime profile default variable set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InheritedRuntimeProfileResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Workspace not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    setWorkspaceRuntimeProfileDefaultSecret: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                workspaceName: components["schemas"]["WorkspaceName"];
+                key: components["schemas"]["RuntimeProfileKey"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRuntimeProfileSecretRequest"];
+            };
+        };
+        responses: {
+            /** @description Workspace runtime profile default secret set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InheritedRuntimeProfileResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Workspace not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteWorkspaceRuntimeProfileDefaultEntry: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                workspaceName: components["schemas"]["WorkspaceName"];
+                key: components["schemas"]["RuntimeProfileKey"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Workspace runtime profile default entry deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Workspace or runtime profile default entry not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getRuntimeProfile: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                profileName: components["schemas"]["RuntimeProfileName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runtime profile */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeProfileResponse"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Runtime profile not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteRuntimeProfile: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                profileName: components["schemas"]["RuntimeProfileName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runtime profile deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Runtime profile not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateRuntimeProfile: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                profileName: components["schemas"]["RuntimeProfileName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRuntimeProfileRequest"];
+            };
+        };
+        responses: {
+            /** @description Runtime profile updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeProfileResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Runtime profile not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    setRuntimeProfileVariable: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                profileName: components["schemas"]["RuntimeProfileName"];
+                key: components["schemas"]["RuntimeProfileKey"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRuntimeProfileVariableRequest"];
+            };
+        };
+        responses: {
+            /** @description Runtime profile variable set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeProfileResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Runtime profile not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    setRuntimeProfileSecret: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                profileName: components["schemas"]["RuntimeProfileName"];
+                key: components["schemas"]["RuntimeProfileKey"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRuntimeProfileSecretRequest"];
+            };
+        };
+        responses: {
+            /** @description Runtime profile secret set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeProfileResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Runtime profile not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteRuntimeProfileEntry: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                profileName: components["schemas"]["RuntimeProfileName"];
+                key: components["schemas"]["RuntimeProfileKey"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runtime profile entry deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Runtime profile or entry not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     listSecrets: {
         parameters: {
             query?: {
@@ -17674,7 +19407,8 @@ export enum ErrorCode {
     auth_unauthorized = "auth.unauthorized",
     auth_token_invalid = "auth.token_invalid",
     auth_forbidden = "auth.forbidden",
-    timeout = "timeout"
+    timeout = "timeout",
+    rate_limited = "rate_limited"
 }
 export enum WebhookAuthMode {
     token_only = "token_only",
@@ -18027,6 +19761,18 @@ export enum RemoteNodeResponseAuthType {
 export enum RemoteNodeResponseSource {
     config = "config",
     store = "store"
+}
+export enum RuntimeProfileStatus {
+    active = "active",
+    disabled = "disabled"
+}
+export enum RuntimeProfileEntryKind {
+    variable = "variable",
+    secret = "secret"
+}
+export enum InheritedRuntimeProfileScope {
+    global = "global",
+    workspace = "workspace"
 }
 export enum SecretProviderType {
     dagu_managed = "dagu-managed",

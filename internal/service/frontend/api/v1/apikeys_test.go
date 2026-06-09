@@ -31,13 +31,16 @@ func getAdminToken(t *testing.T, server test.Server) string {
 	return loginResult.Token
 }
 
-func setupBuiltinAuthServer(t *testing.T) test.Server {
+func setupBuiltinAuthServer(t *testing.T, configMutators ...func(*config.Config)) test.Server {
 	t.Helper()
 	server := test.SetupServer(t,
 		test.WithConfigMutator(func(cfg *config.Config) {
 			cfg.Server.Auth.Mode = config.AuthModeBuiltin
 			cfg.Server.Auth.Builtin.Token.Secret = "jwt-secret-key"
 			cfg.Server.Auth.Builtin.Token.TTL = 24 * time.Hour
+			for _, mutate := range configMutators {
+				mutate(cfg)
+			}
 		}),
 		test.WithServerOptions(frontend.WithLicenseManager(defaultTestLicenseManager())),
 	)
@@ -91,6 +94,20 @@ func newCreateAPIKeyRequest(name string, role api.UserRole) api.CreateAPIKeyRequ
 		},
 		AttributionClass: api.CreateAPIKeyRequestAttributionClassServiceAccount,
 	}
+}
+
+func createAPIKeyForRole(t *testing.T, server test.Server, adminToken, name string, role api.UserRole) string {
+	t.Helper()
+
+	resp := server.Client().Post("/api/v1/api-keys", newCreateAPIKeyRequest(name, role)).
+		WithBearerToken(adminToken).
+		ExpectStatus(http.StatusCreated).
+		Send(t)
+
+	var result api.CreateAPIKeyResponse
+	resp.Unmarshal(t, &result)
+	require.NotEmpty(t, result.Key)
+	return result.Key
 }
 
 // TestAPIKeys_ListEmpty tests listing API keys when none exist

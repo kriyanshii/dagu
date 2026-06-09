@@ -27,11 +27,12 @@ import (
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/core/spec"
+	"github.com/dagucloud/dagu/internal/dispatch"
+	"github.com/dagucloud/dagu/internal/launcher"
 	"github.com/dagucloud/dagu/internal/runtime"
 	"github.com/dagucloud/dagu/internal/runtime/executor"
 	"github.com/dagucloud/dagu/internal/runtime/transform"
 	"github.com/dagucloud/dagu/internal/service/audit"
-	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
 )
 
 type editRetryOptions struct {
@@ -42,16 +43,18 @@ type editRetryOptions struct {
 }
 
 type editRetryPlan struct {
-	sourceAttempt  exec.DAGRunAttempt
-	sourceDAGRunID string
-	sourceStatus   *exec.DAGRunStatus
-	editedDAG      *core.DAG
-	newDAGRunID    string
-	params         string
-	skippedSteps   []string
-	runnableSteps  []string
-	ineligible     []editRetryIneligibleStep
-	warnings       []string
+	sourceAttempt   exec.DAGRunAttempt
+	sourceDAGRunID  string
+	sourceStatus    *exec.DAGRunStatus
+	editedDAG       *core.DAG
+	targetWorkspace string
+	newDAGRunID     string
+	profileName     string
+	params          string
+	skippedSteps    []string
+	runnableSteps   []string
+	ineligible      []editRetryIneligibleStep
+	warnings        []string
 }
 
 type editRetryIneligibleStep struct {
@@ -69,15 +72,16 @@ func (a *API) PreviewEditRetryDAGRun(ctx context.Context, request api.PreviewEdi
 		return nil, err
 	}
 
+	if err := a.requireEditRetryPrePlanPermissions(ctx, request.Name, request.DagRunId, opts.specContent); err != nil {
+		return nil, err
+	}
+
 	plan, validationErrors, err := a.buildEditRetryPlan(ctx, request.Name, request.DagRunId, opts)
 	if err != nil {
 		return nil, err
 	}
 	if plan != nil {
-		if err := a.requireDAGRunStatusExecute(ctx, plan.sourceStatus); err != nil {
-			return nil, err
-		}
-		if err := a.requireExecuteForWorkspace(ctx, dagWorkspaceName(plan.editedDAG)); err != nil {
+		if err := a.authorizeEditRetryPlan(ctx, plan); err != nil {
 			return nil, err
 		}
 	}
@@ -127,20 +131,21 @@ func (a *API) EditRetryDAGRun(ctx context.Context, request api.EditRetryDAGRunRe
 		return nil, err
 	}
 
+	if err := a.requireEditRetryPrePlanPermissions(ctx, request.Name, request.DagRunId, opts.specContent); err != nil {
+		return nil, err
+	}
+
 	plan, validationErrors, err := a.buildEditRetryPlan(ctx, request.Name, request.DagRunId, opts)
 	if err != nil {
 		return nil, err
 	}
+	if plan != nil {
+		if err := a.authorizeEditRetryPlan(ctx, plan); err != nil {
+			return nil, err
+		}
+	}
 	if len(validationErrors) > 0 {
 		return nil, badEditRetryRequest(strings.Join(validationErrors, "; "))
-	}
-	if plan != nil {
-		if err := a.requireDAGRunStatusExecute(ctx, plan.sourceStatus); err != nil {
-			return nil, err
-		}
-		if err := a.requireExecuteForWorkspace(ctx, dagWorkspaceName(plan.editedDAG)); err != nil {
-			return nil, err
-		}
 	}
 
 	if plan.newDAGRunID == "" {
@@ -172,11 +177,51 @@ func (a *API) EditRetryDAGRun(ctx context.Context, request api.EditRetryDAGRunRe
 	}, nil
 }
 
+func (a *API) authorizeEditRetryPlan(ctx context.Context, plan *editRetryPlan) error {
+	if err := a.requireEditRetryPermissions(ctx, plan); err != nil {
+		return err
+	}
+	profileName, err := a.inheritedRunProfileName(ctx, plan.sourceStatus.ProfileName)
+	if err != nil {
+		return err
+	}
+	plan.profileName = profileName
+	return nil
+}
+
 func nonNilEditRetryStrings(values []string) []string {
 	if values == nil {
 		return []string{}
 	}
 	return values
+}
+
+func (a *API) requireEditRetryPermissions(ctx context.Context, plan *editRetryPlan) error {
+	if err := a.requireDAGRunStatusExecute(ctx, plan.sourceStatus); err != nil {
+		return err
+	}
+	return a.requireDAGWriteForWorkspace(ctx, plan.targetWorkspace)
+}
+
+func (a *API) requireEditRetryPrePlanPermissions(ctx context.Context, dagName string, dagRunID string, specContent string) error {
+	attempt, _, err := a.resolveAttemptForDAGRun(ctx, dagName, dagRunID)
+	if err != nil {
+		return err
+	}
+	sourceWorkspace, err := workspaceNameForAttempt(ctx, attempt)
+	if err != nil {
+		return err
+	}
+	if err := a.requireExecuteForWorkspace(ctx, sourceWorkspace); err != nil {
+		return err
+	}
+	if err := a.requireDAGWriteForWorkspace(ctx, sourceWorkspace); err != nil {
+		return err
+	}
+	if strings.TrimSpace(specContent) == "" {
+		return nil
+	}
+	return a.requireDAGWriteForWorkspace(ctx, submittedSpecRuntimeWorkspaceName(specContent, ""))
 }
 
 func editRetryRuntimeParams(status *exec.DAGRunStatus, preservedParams string) string {
@@ -271,11 +316,12 @@ func (a *API) buildEditRetryPlan(
 	}
 	if len(validationErrors) > 0 {
 		return &editRetryPlan{
-			sourceAttempt:  attempt,
-			sourceDAGRunID: sourceDAGRunID,
-			sourceStatus:   status,
-			editedDAG:      &core.DAG{Name: dagName},
-			newDAGRunID:    opts.newDAGRunID,
+			sourceAttempt:   attempt,
+			sourceDAGRunID:  sourceDAGRunID,
+			sourceStatus:    status,
+			editedDAG:       &core.DAG{Name: dagName},
+			targetWorkspace: statusWorkspaceName(status),
+			newDAGRunID:     opts.newDAGRunID,
 		}, validationErrors, nil
 	}
 
@@ -291,12 +337,13 @@ func (a *API) buildEditRetryPlan(
 	}
 	if editedDAG == nil {
 		return &editRetryPlan{
-			sourceAttempt:  attempt,
-			sourceDAGRunID: sourceDAGRunID,
-			sourceStatus:   status,
-			editedDAG:      &core.DAG{Name: editRetryFallbackDAGName(dagName, opts.nameOverride)},
-			newDAGRunID:    opts.newDAGRunID,
-			params:         params,
+			sourceAttempt:   attempt,
+			sourceDAGRunID:  sourceDAGRunID,
+			sourceStatus:    status,
+			editedDAG:       &core.DAG{Name: editRetryFallbackDAGName(dagName, opts.nameOverride)},
+			targetWorkspace: submittedSpecRuntimeWorkspaceName(opts.specContent, ""),
+			newDAGRunID:     opts.newDAGRunID,
+			params:          params,
 		}, validationErrors, nil
 	}
 
@@ -305,16 +352,17 @@ func (a *API) buildEditRetryPlan(
 
 	warnings := editRetryWarnings(stepPlan.skippedSteps, stepPlan.ineligible, stepPlan.reusableSourceSteps)
 	return &editRetryPlan{
-		sourceAttempt:  attempt,
-		sourceDAGRunID: sourceDAGRunID,
-		sourceStatus:   status,
-		editedDAG:      editedDAG,
-		newDAGRunID:    opts.newDAGRunID,
-		params:         params,
-		skippedSteps:   stepPlan.skippedSteps,
-		runnableSteps:  stepPlan.runnableSteps,
-		ineligible:     stepPlan.ineligible,
-		warnings:       warnings,
+		sourceAttempt:   attempt,
+		sourceDAGRunID:  sourceDAGRunID,
+		sourceStatus:    status,
+		editedDAG:       editedDAG,
+		targetWorkspace: dagWorkspaceName(editedDAG),
+		newDAGRunID:     opts.newDAGRunID,
+		params:          params,
+		skippedSteps:    stepPlan.skippedSteps,
+		runnableSteps:   stepPlan.runnableSteps,
+		ineligible:      stepPlan.ineligible,
+		warnings:        warnings,
 	}, validationErrors, nil
 }
 
@@ -500,7 +548,7 @@ func (a *API) launchEditRetryDAGRun(ctx context.Context, plan *editRetryPlan) (q
 	}
 
 	nodes := editRetrySeedNodes(plan.editedDAG, plan.sourceStatus, plan.skippedSteps)
-	seedStatus, err := a.seedEditRetryAttempt(ctx, plan.editedDAG, plan.newDAGRunID, plan.params, nodes, plan.sourceAttempt.WorkDir())
+	seedStatus, err := a.seedEditRetryAttempt(ctx, plan.editedDAG, plan.newDAGRunID, plan.params, plan.profileName, nodes, plan.sourceAttempt.WorkDir())
 	if err != nil {
 		return false, err
 	}
@@ -520,7 +568,7 @@ func (a *API) launchEditRetryDAGRun(ctx context.Context, plan *editRetryPlan) (q
 		return true, nil
 	}
 
-	if core.ShouldDispatchToCoordinator(plan.editedDAG, a.coordinatorCli != nil, a.defaultExecMode) {
+	if dispatch.ShouldDispatchToCoordinator(plan.editedDAG, a.coordinatorCli != nil, a.defaultExecMode) {
 		if err := a.dispatchEditRetry(ctx, plan.editedDAG, seedStatus); err != nil {
 			return false, err
 		}
@@ -533,7 +581,7 @@ func (a *API) launchEditRetryDAGRun(ctx context.Context, plan *editRetryPlan) (q
 	}
 
 	retrySpec := a.subCmdBuilder.QueueDispatchRetry(prepared, plan.newDAGRunID, "")
-	if err := runtime.Start(ctx, retrySpec); err != nil {
+	if err := launcher.Start(ctx, retrySpec); err != nil {
 		return false, fmt.Errorf("error starting edit retry DAG: %w", err)
 	}
 
@@ -570,6 +618,7 @@ func (a *API) seedEditRetryAttempt(
 	dag *core.DAG,
 	dagRunID string,
 	params string,
+	profileName string,
 	nodes []runtime.NodeData,
 	sourceWorkDir string,
 ) (*exec.DAGRunStatus, error) {
@@ -613,6 +662,7 @@ func (a *API) seedEditRetryAttempt(
 			exec.DAGRunRef{},
 		),
 		transform.WithTriggerType(core.TriggerTypeRetry),
+		transform.WithRuntimeProfile(profileName, "", nil),
 	}
 	status := transform.NewStatusBuilder(dag).Create(dagRunID, core.Queued, 0, time.Time{}, opts...)
 	status.Params = params
@@ -791,6 +841,9 @@ func (a *API) dispatchEditRetry(ctx context.Context, dag *core.DAG, status *exec
 	if dag.SourceFile != "" {
 		opts = append(opts, executor.WithSourceFile(dag.SourceFile))
 	}
+	if status.ProfileName != "" {
+		opts = append(opts, executor.WithProfileName(status.ProfileName))
+	}
 	if snapshot, err := agentsnapshot.BuildFromPaths(ctx, dag, a.config.Paths, a.dagStore, a.snapshotStoreFactory); err != nil {
 		return fmt.Errorf("build distributed agent snapshot: %w", err)
 	} else if len(snapshot) > 0 {
@@ -800,7 +853,7 @@ func (a *API) dispatchEditRetry(ctx context.Context, dag *core.DAG, status *exec
 	task := executor.CreateTask(
 		dag.Name,
 		string(dag.YamlData),
-		coordinatorv1.Operation_OPERATION_RETRY,
+		exec.DispatchOperationRetry,
 		status.DAGRunID,
 		opts...,
 	)

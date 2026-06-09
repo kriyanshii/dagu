@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"time"
 
 	"github.com/dagucloud/dagu/internal/cmn/config"
@@ -19,6 +18,7 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/stringutil"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/internal/launcher"
 	"github.com/google/uuid"
 )
 
@@ -42,7 +42,7 @@ func NewManager(drs exec.DAGRunStore, ps exec.ProcStore, cfg *config.Config, opt
 	m := Manager{
 		dagRunStore:   drs,
 		procStore:     ps,
-		subCmdBuilder: NewSubCmdBuilder(cfg),
+		subCmdBuilder: launcher.NewSubCmdBuilder(cfg),
 		nowFunc:       time.Now,
 	}
 	for _, opt := range opts {
@@ -55,9 +55,9 @@ func NewManager(drs exec.DAGRunStore, ps exec.ProcStore, cfg *config.Config, opt
 // restarting, and retrieving status information. It communicates with the DAG
 // through a socket interface and manages dag-run data.
 type Manager struct {
-	dagRunStore   exec.DAGRunStore // Store interface for persisting run data
-	procStore     exec.ProcStore   // Store interface for process management
-	subCmdBuilder *SubCmdBuilder   // Command builder for constructing command specs
+	dagRunStore   exec.DAGRunStore        // Store interface for persisting run data
+	procStore     exec.ProcStore          // Store interface for process management
+	subCmdBuilder *launcher.SubCmdBuilder // Command builder for constructing command specs
 	nowFunc       func() time.Time
 }
 
@@ -215,7 +215,7 @@ func (m *Manager) IsRunning(ctx context.Context, dag *core.DAG, dagRunID string)
 	if st != nil && st.DAGRunID == dagRunID && st.Status == core.Running {
 		return true
 	}
-	if m.procStore == nil {
+	if m.procStore == nil || m.dagRunStore == nil {
 		return false
 	}
 
@@ -580,35 +580,4 @@ func (m *Manager) UpdateStatus(ctx context.Context, rootDAGRun exec.DAGRunRef, n
 	}
 
 	return nil
-}
-
-// execWithRecovery executes a function with panic recovery and detailed error reporting
-// It captures stack traces and provides structured error information for debugging
-func execWithRecovery(ctx context.Context, fn func()) {
-	defer func() {
-		if panicObj := recover(); panicObj != nil {
-			stack := debug.Stack()
-
-			// Convert panic object to error
-			var err error
-			switch v := panicObj.(type) {
-			case error:
-				err = v
-			case string:
-				err = fmt.Errorf("panic: %s", v)
-			default:
-				err = fmt.Errorf("panic: %v", v)
-			}
-
-			// Log with structured information
-			logger.Error(ctx, "Recovered from panic",
-				slog.String("err", err.Error()),
-				slog.String("err-type", fmt.Sprintf("%T", panicObj)),
-				slog.String("stack-trace", string(stack)),
-			)
-		}
-	}()
-
-	// Execute the function
-	fn()
 }

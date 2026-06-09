@@ -43,16 +43,18 @@ import (
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/dagstate"
+	"github.com/dagucloud/dagu/internal/dagwarning"
 	"github.com/dagucloud/dagu/internal/output"
+	profilepkg "github.com/dagucloud/dagu/internal/profile"
 	"github.com/dagucloud/dagu/internal/runtime"
 	"github.com/dagucloud/dagu/internal/runtime/builtin/docker"
 	"github.com/dagucloud/dagu/internal/runtime/builtin/s3"
 	"github.com/dagucloud/dagu/internal/runtime/builtin/ssh"
-	"github.com/dagucloud/dagu/internal/runtime/remote"
+	runtimeexec "github.com/dagucloud/dagu/internal/runtime/executor"
 	"github.com/dagucloud/dagu/internal/runtime/resourcelimit"
+	"github.com/dagucloud/dagu/internal/runtime/runstate"
 	"github.com/dagucloud/dagu/internal/runtime/transform"
 	secretpkg "github.com/dagucloud/dagu/internal/secret"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
 
 	_ "github.com/dagucloud/dagu/internal/runtime/builtin"
 )
@@ -84,6 +86,9 @@ type Agent struct {
 	// dagRunStore is the database to store the run history.
 	dagRunStore exec.DAGRunStore
 
+	// runStateStore opens execution state for this run.
+	runStateStore runstate.Store
+
 	// queueStore is the database to store queued dag-run items.
 	queueStore exec.QueueStore
 
@@ -92,6 +97,9 @@ type Agent struct {
 
 	// secretStore resolves workspace-local team-managed secret references.
 	secretStore secretpkg.Store
+
+	// profileStore resolves runtime profiles selected for DAG execution.
+	profileStore profilepkg.Store
 
 	// registry is the service registry to find the coordinator service.
 	registry exec.ServiceRegistry
@@ -184,8 +192,11 @@ type Agent struct {
 	tracer *telemetry.Tracer
 
 	// statusPusher is used to push status updates to a remote coordinator.
-	// When nil, status is written to local filesystem via DAGRunAttempt.
+	// When nil, status is written to local filesystem via the run-state attempt.
 	statusPusher StatusPusher
+
+	// subWorkflowRunnerFactory creates a runner for child workflows.
+	subWorkflowRunnerFactory SubWorkflowRunnerFactory
 
 	// logWriterFactory is used to create log writers for step output.
 	// When nil, logs are written to local filesystem.
@@ -202,10 +213,6 @@ type Agent struct {
 	// attemptID is the attempt ID from the coordinator.
 	// When set, the agent creates an attempt with this ID instead of generating a new one.
 	attemptID string
-
-	// preparedAttempt is an exact local attempt prepared before proc acquisition.
-	// When set, the agent must reuse this attempt instead of creating another one.
-	preparedAttempt exec.DAGRunAttempt
 
 	// agentConfigStore is the agent config store for agent step execution.
 	agentConfigStore agentpkg.ConfigStore
@@ -224,6 +231,14 @@ type Agent struct {
 	workDir string
 	// extraEnvs are additional execution-scoped env vars injected into the DAG run context.
 	extraEnvs []string
+	// profileName is the selected runtime profile name for this run.
+	profileName string
+	// profileResolvedAt records when the selected runtime profile was resolved.
+	profileResolvedAt string
+	// profileEntries records non-secret injected key metadata for status/history.
+	profileEntries []exec.RuntimeProfileEntry
+	// secretMasker redacts resolved secret values from status/history snapshots.
+	secretMasker *masking.Masker
 
 	// Evaluated configs - these are expanded at runtime and stored separately
 	// to avoid mutating the original DAG struct.
@@ -236,10 +251,8 @@ type Agent struct {
 	evaluatedS3            *core.S3Config
 }
 
-// StatusPusher is an interface for pushing status updates remotely.
-type StatusPusher interface {
-	Push(ctx context.Context, status exec.DAGRunStatus) error
-}
+// StatusPusher reports DAG run status outside the current execution process.
+type StatusPusher = runtime.StatusPusher
 
 // SocketServer handles local status/control requests for a running DAG.
 type SocketServer interface {
@@ -256,9 +269,10 @@ func defaultSocketServerFactory(addr string, handlerFunc sock.HTTPHandlerFunc) (
 }
 
 // ArtifactFinalizer uploads or persists artifacts before the final terminal status is written.
-type ArtifactFinalizer interface {
-	Finalize(ctx context.Context, attemptID, dir string) error
-}
+type ArtifactFinalizer = runtime.ArtifactFinalizer
+
+// SubWorkflowRunnerFactory creates a runner for child workflows.
+type SubWorkflowRunnerFactory func(ctx context.Context) (runtimeexec.SubWorkflowRunner, error)
 
 // Options is the configuration for the Agent.
 type Options struct {
@@ -284,8 +298,10 @@ type Options struct {
 	// For local execution, this defaults to "local".
 	WorkerID string
 	// StatusPusher is used to push status updates to a remote coordinator.
-	// When nil, status is written to local filesystem via DAGRunAttempt.
+	// When nil, status is written to local filesystem via the run-state attempt.
 	StatusPusher StatusPusher
+	// SubWorkflowRunnerFactory creates a runner for child workflows.
+	SubWorkflowRunnerFactory SubWorkflowRunnerFactory
 	// LogWriterFactory is used to create log writers for step output.
 	// When nil, logs are written to local filesystem.
 	LogWriterFactory exec.LogWriterFactory
@@ -300,6 +316,8 @@ type Options struct {
 	// PreparedAttempt is an exact attempt that was created or reopened before proc acquisition.
 	// This is used for local execution so the proc heartbeat can include the final attempt ID.
 	PreparedAttempt exec.DAGRunAttempt
+	// RunStateStore records execution state for this DAG run.
+	RunStateStore runstate.Store
 	// DAGRunStore is the store for dag-run data. Nil in shared-nothing mode.
 	DAGRunStore exec.DAGRunStore
 	// QueueStore is the store for queued dag-run items. Nil when queues are unavailable.
@@ -308,6 +326,10 @@ type Options struct {
 	StateStore dagstate.Store
 	// SecretStore resolves workspace-local team-managed secret references.
 	SecretStore secretpkg.Store
+	// ProfileStore resolves named runtime profiles.
+	ProfileStore profilepkg.Store
+	// ProfileName selects the runtime profile for this DAG run.
+	ProfileName string
 	// ServiceRegistry is the registry for service discovery.
 	ServiceRegistry exec.ServiceRegistry
 	// RootDAGRun is the root dag-run reference for sub-DAG runs.
@@ -356,6 +378,13 @@ func New(
 	ds exec.DAGStore,
 	opts Options,
 ) *Agent {
+	runStateStore := opts.RunStateStore
+	if runStateStore == nil && opts.PreparedAttempt != nil {
+		runStateStore = runstate.NewHistoryStore(opts.DAGRunStore, runstate.WithPreparedAttempt(opts.PreparedAttempt))
+	} else if runStateStore == nil {
+		runStateStore = runstate.NewHistoryStore(opts.DAGRunStore)
+	}
+
 	a := &Agent{
 		rootDAGRun:                 opts.RootDAGRun,
 		parentDAGRun:               opts.ParentDAGRun,
@@ -370,19 +399,22 @@ func New(
 		dagRunMgr:                  drm,
 		dagStore:                   ds,
 		dagRunStore:                opts.DAGRunStore,
+		runStateStore:              runStateStore,
 		queueStore:                 opts.QueueStore,
 		stateStore:                 opts.StateStore,
 		secretStore:                opts.SecretStore,
+		profileStore:               opts.ProfileStore,
 		registry:                   opts.ServiceRegistry,
 		extraEnvs:                  append([]string{}, opts.ExtraEnvs...),
+		profileName:                opts.ProfileName,
 		stepRetry:                  opts.StepRetry,
 		peerConfig:                 opts.PeerConfig,
 		workerID:                   opts.WorkerID,
 		statusPusher:               opts.StatusPusher,
+		subWorkflowRunnerFactory:   opts.SubWorkflowRunnerFactory,
 		logWriterFactory:           opts.LogWriterFactory,
 		queuedRun:                  opts.QueuedRun,
 		attemptID:                  opts.AttemptID,
-		preparedAttempt:            opts.PreparedAttempt,
 		triggerType:                opts.TriggerType,
 		defaultExecMode:            opts.DefaultExecMode,
 		agentConfigStore:           opts.AgentConfigStore,
@@ -436,12 +468,15 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Resolve secrets early so they're available for OTel config evaluation.
 	// LoadDotEnv is idempotent - safe to call even if already loaded by caller.
-	a.dag.LoadDotEnv(ctx)
+	dagwarning.LoadDotEnv(ctx, a.dag)
 
 	secretEnvs, secretErr := a.resolveSecrets(ctx)
+	profileValues, profileErr := a.resolveProfile(ctx)
+	a.lock.Lock()
+	a.secretMasker = newStatusSecretMasker(append(profileValues.allSecrets(), secretEnvs...))
+	a.lock.Unlock()
 
-	// Build variables map for config evaluation (DAG env + secrets)
-	configVars := envSliceToMap(a.dag.Env, secretEnvs)
+	configVars := runtimeConfigVars(a.dag.Env, profileValues, secretEnvs)
 
 	// Extract trace context from environment variables if present
 	// This must be done BEFORE initializing the tracer so sub DAGs
@@ -499,7 +534,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}
 
-	var attempt exec.DAGRunAttempt
+	var attempt runstate.Attempt
 
 	// Check if the DAG is already running.
 	if err := a.checkIsAlreadyRunning(ctx); err != nil {
@@ -549,19 +584,26 @@ func (a *Agent) Run(ctx context.Context) error {
 	// Create a new environment for the dag-run.
 	dbClient := newDBClient(a.dagRunStore, a.dagStore)
 
-	// Initialize coordinator client factory for distributed execution
-	coordinatorCli := a.createCoordinatorClient(ctx)
+	subWorkflowRunner, err := a.createSubWorkflowRunner(ctx)
+	if err != nil {
+		return err
+	}
 
 	contextOpts := []runtime.ContextOption{
 		runtime.WithDatabase(dbClient),
 		runtime.WithRootDAGRun(a.rootDAGRun),
 		runtime.WithParams(a.dag.Params),
-		runtime.WithCoordinator(coordinatorCli),
-		runtime.WithSecrets(secretEnvs),
+		runtime.WithDefaultSecrets(profileValues.defaultSecrets),
+		runtime.WithSecrets(append(profileValues.selectedSecrets, secretEnvs...)),
 		runtime.WithDefaultExecMode(a.defaultExecMode),
+		runtime.WithRuntimeProfile(a.profileName, a.profileResolvedAt, a.profileEntries),
 	}
-	if len(a.extraEnvs) > 0 {
-		contextOpts = append(contextOpts, runtime.WithEnvVars(a.extraEnvs...))
+	if len(profileValues.defaultEnvs) > 0 {
+		contextOpts = append(contextOpts, runtime.WithDefaultEnvVars(profileValues.defaultEnvs...))
+	}
+	envs := append(profileValues.selectedEnvs, a.extraEnvs...)
+	if len(envs) > 0 {
+		contextOpts = append(contextOpts, runtime.WithEnvVars(envs...))
 	}
 
 	if a.workDir != "" {
@@ -589,6 +631,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		contextOpts = append(contextOpts, runtime.WithLogWriterFactory(a.logWriterFactory))
 	}
 	ctx = runtime.NewContext(ctx, a.dag, a.dagRunID, a.logFile, contextOpts...)
+	ctx = runtimeexec.WithSubWorkflowRunner(ctx, subWorkflowRunner)
 
 	// Inject agent stores into context via context.Value.
 	// This avoids a backwards dependency from the execution context to the agent package.
@@ -629,6 +672,14 @@ func (a *Agent) Run(ctx context.Context) error {
 		)
 	}
 	ctx = logger.WithValues(ctx, logFields...)
+
+	if cleaner, ok := subWorkflowRunner.(interface{ Cleanup(context.Context) error }); ok {
+		defer func() {
+			if err := cleaner.Cleanup(context.WithoutCancel(ctx)); err != nil {
+				logger.Warn(ctx, "Failed to cleanup sub-workflow runner", tag.Error(err))
+			}
+		}()
+	}
 
 	// Handle dry execution.
 	if a.dry {
@@ -694,6 +745,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	// If there was an error resolving secrets, stop execution here
 	if secretErr != nil {
 		initErr = secretErr // Stop execution if secret resolution failed
+		return initErr
+	}
+	if profileErr != nil {
+		initErr = profileErr
 		return initErr
 	}
 
@@ -963,13 +1018,6 @@ func (a *Agent) Run(ctx context.Context) error {
 	<-progressDone
 	progressDrained = true
 
-	if coordinatorCli != nil {
-		// Cleanup the coordinator client resources if it was created.
-		if err := coordinatorCli.Cleanup(ctx); err != nil {
-			logger.Warn(ctx, "Failed to cleanup coordinator client", tag.Error(err))
-		}
-	}
-
 	// Update the finished status to the runstore database.
 	finishedStatus := a.Status(ctx)
 
@@ -1029,7 +1077,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Collect and write step outputs BEFORE finalizing status (per spec)
 	if dagOutputs := a.buildOutputs(ctx, finishedStatus.Status); dagOutputs != nil {
-		if err := attempt.WriteOutputs(ctx, dagOutputs); err != nil {
+		if err := attempt.RecordOutputs(ctx, dagOutputs); err != nil {
 			logger.Error(ctx, "Failed to write outputs", tag.Error(err))
 		}
 	}
@@ -1039,7 +1087,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Stream scheduler log to coordinator if using remote logging (shared-nothing mode)
 	if a.logWriterFactory != nil {
-		if streamer, ok := a.logWriterFactory.(*remote.LogStreamer); ok {
+		if streamer, ok := a.logWriterFactory.(runtime.SchedulerLogStreamer); ok {
 			if err := streamer.StreamSchedulerLog(ctx, a.logFile); err != nil {
 				logger.Warn(ctx, "Failed to stream scheduler log", tag.Error(err))
 			}
@@ -1107,6 +1155,17 @@ func envSliceToMap(envSlices ...[]string) map[string]string {
 		}
 	}
 	return result
+}
+
+func runtimeConfigVars(dagEnv []string, profileValues resolvedProfileValues, secretEnvs []string) map[string]string {
+	return envSliceToMap(
+		profileValues.defaultEnvs,
+		profileValues.defaultSecrets,
+		dagEnv,
+		profileValues.selectedEnvs,
+		profileValues.selectedSecrets,
+		secretEnvs,
+	)
 }
 
 // errorString returns the error message or empty string if err is nil.
@@ -1254,6 +1313,7 @@ func (a *Agent) Status(ctx context.Context) exec.DAGRunStatus {
 			transform.WithTriggerType(a.triggerType),
 			transform.WithAutoRetryCount(a.currentAutoRetryCount()),
 			transform.WithPIDStartedAt(currentPIDStartedAt()),
+			transform.WithRuntimeProfile(a.profileName, a.profileResolvedAt, a.profileEntries),
 		}
 		if source != nil {
 			statusOpts = append(statusOpts,
@@ -1266,8 +1326,10 @@ func (a *Agent) Status(ctx context.Context) exec.DAGRunStatus {
 		} else if a.scheduleTime != "" {
 			statusOpts = append(statusOpts, transform.WithScheduleTime(a.scheduleTime))
 		}
-		return transform.NewStatusBuilder(a.dag).
+		status := transform.NewStatusBuilder(a.dag).
 			Create(a.dagRunID, core.Failed, os.Getpid(), time.Time{}, statusOpts...)
+		a.maskStatusSecrets(&status)
+		return status
 	}
 
 	runnerStatus := a.runner.Status(ctx, a.plan)
@@ -1297,6 +1359,7 @@ func (a *Agent) Status(ctx context.Context) exec.DAGRunStatus {
 		transform.WithTriggerType(a.triggerType),
 		transform.WithAutoRetryCount(a.currentAutoRetryCount()),
 		transform.WithPIDStartedAt(currentPIDStartedAt()),
+		transform.WithRuntimeProfile(a.profileName, a.profileResolvedAt, a.profileEntries),
 	}
 
 	// If the current execution is based on a persisted target, copy timing data
@@ -1323,6 +1386,7 @@ func (a *Agent) Status(ctx context.Context) exec.DAGRunStatus {
 			a.plan.StartAt(),
 			opts...,
 		)
+	a.maskStatusSecrets(&status)
 	return status
 }
 
@@ -1347,7 +1411,7 @@ func (a *Agent) statusSourceTarget() *exec.DAGRunStatus {
 	return a.retryTarget
 }
 
-func (a *Agent) prepareWorkDir(ctx context.Context, attempt exec.DAGRunAttempt) (func(), error) {
+func (a *Agent) prepareWorkDir(ctx context.Context, attempt runstate.Attempt) (func(), error) {
 	if attempt == nil {
 		return nil, nil
 	}
@@ -1380,8 +1444,8 @@ func (a *Agent) prepareWorkDir(ctx context.Context, attempt exec.DAGRunAttempt) 
 
 // writeStatus writes the current status to storage.
 // In shared-nothing mode (statusPusher is set), it only pushes to the coordinator.
-// In local mode, it writes to local storage via attempt.Write.
-func (a *Agent) writeStatus(ctx context.Context, attempt exec.DAGRunAttempt, status exec.DAGRunStatus) {
+// In local mode, it writes to local storage via the run-state attempt.
+func (a *Agent) writeStatus(ctx context.Context, attempt runstate.Attempt, status exec.DAGRunStatus) {
 	if a.statusPusher != nil {
 		a.pushStatus(ctx, status)
 		return
@@ -1398,28 +1462,28 @@ func (a *Agent) pushStatus(ctx context.Context, status exec.DAGRunStatus) {
 	}
 	if err := a.statusPusher.Push(pushCtx, status); err != nil {
 		logger.Error(ctx, "Failed to push status to coordinator", tag.Error(err))
-		var rejectedErr *remote.AttemptRejectedError
+		var rejectedErr runtime.AttemptRejected
 		if errors.As(err, &rejectedErr) && !a.finished.Load() {
 			logger.Warn(ctx, "Coordinator rejected the worker attempt; stopping execution",
 				tag.AttemptID(a.dagRunAttemptID),
-				slog.String("reason", rejectedErr.Reason),
+				slog.String("reason", rejectedErr.AttemptRejectedReason()),
 			)
 			a.stopChildren(context.Background(), syscall.SIGTERM, true)
 		}
 	}
 }
 
-func (a *Agent) writeStatusLocally(ctx context.Context, attempt exec.DAGRunAttempt, status exec.DAGRunStatus) {
+func (a *Agent) writeStatusLocally(ctx context.Context, attempt runstate.Attempt, status exec.DAGRunStatus) {
 	if attempt == nil {
 		return
 	}
-	if err := attempt.Write(ctx, status); err != nil {
+	if err := attempt.RecordStatus(ctx, status); err != nil {
 		logger.Error(ctx, "Failed to write status to local storage", tag.Error(err))
 	}
 }
 
 // watchCancelRequested is a goroutine that watches for cancel requests
-func (a *Agent) watchCancelRequested(ctx context.Context, attempt exec.DAGRunAttempt) {
+func (a *Agent) watchCancelRequested(ctx context.Context, attempt runstate.Attempt) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -1429,13 +1493,13 @@ func (a *Agent) watchCancelRequested(ctx context.Context, attempt exec.DAGRunAtt
 			// Only signal if the agent hasn't finished yet.
 			// This handles cancellation from the worker (via heartbeat CancelledRuns)
 			// in shared-nothing mode. If the agent already finished normally,
-			// we don't want to send an unnecessary SIGTERM.
+			// sending an extra SIGTERM is unnecessary.
 			if !a.finished.Load() {
 				a.stopChildren(context.Background(), syscall.SIGTERM, true)
 			}
 			return
 		case <-ticker.C:
-			if cancelled, _ := attempt.IsAborting(ctx); cancelled {
+			if cancelled, _ := attempt.CancelRequested(ctx); cancelled {
 				a.stopChildren(ctx, syscall.SIGTERM, true)
 			}
 		}
@@ -1523,7 +1587,7 @@ func (a *Agent) setupReporter(ctx context.Context) {
 }
 
 // newRunner creates a runner instance for the dag-run.
-func (a *Agent) newRunner(attempt exec.DAGRunAttempt) *runtime.Runner {
+func (a *Agent) newRunner(attempt runstate.Attempt) *runtime.Runner {
 	// runnerLogDir is the directory to store the log files for each node in the dag-run.
 	const dateTimeFormatUTC = "20060102_150405Z"
 	ts := time.Now().UTC().Format(dateTimeFormatUTC)
@@ -1556,25 +1620,126 @@ func (a *Agent) newRunner(attempt exec.DAGRunAttempt) *runtime.Runner {
 	return runtime.New(cfg)
 }
 
-// createCoordinatorClient creates a coordinator client factory for distributed execution
-func (a *Agent) createCoordinatorClient(ctx context.Context) runtime.Dispatcher {
-	if a.registry == nil {
-		logger.Debug(ctx, "Service monitor is not configured; skipping coordinator client creation")
-		return nil
+func (a *Agent) createSubWorkflowRunner(ctx context.Context) (runtimeexec.SubWorkflowRunner, error) {
+	if a.subWorkflowRunnerFactory == nil {
+		if a.registry != nil {
+			logger.Debug(ctx, "Sub-workflow runner factory is not configured; running in local-only mode")
+		}
+		return nil, nil
 	}
 
-	// Create and configure factory
-	coordinatorCliCfg := coordinator.DefaultConfig()
-	coordinatorCliCfg.MaxRetries = 50
+	return a.subWorkflowRunnerFactory(ctx)
+}
 
-	// Configure the coordinator client based on the global configuration
-	coordinatorCliCfg.CAFile = a.peerConfig.ClientCaFile
-	coordinatorCliCfg.CertFile = a.peerConfig.CertFile
-	coordinatorCliCfg.KeyFile = a.peerConfig.KeyFile
-	coordinatorCliCfg.SkipTLSVerify = a.peerConfig.SkipTLSVerify
-	coordinatorCliCfg.Insecure = a.peerConfig.Insecure
+type resolvedProfileValues struct {
+	defaultEnvs     []string
+	defaultSecrets  []string
+	selectedEnvs    []string
+	selectedSecrets []string
+}
 
-	return coordinator.New(a.registry, coordinatorCliCfg)
+func (v resolvedProfileValues) allSecrets() []string {
+	out := make([]string, 0, len(v.defaultSecrets)+len(v.selectedSecrets))
+	out = append(out, v.defaultSecrets...)
+	out = append(out, v.selectedSecrets...)
+	return out
+}
+
+// resolveProfile resolves inherited defaults and the selected runtime profile.
+func (a *Agent) resolveProfile(ctx context.Context) (resolvedProfileValues, error) {
+	var values resolvedProfileValues
+	if a.profileStore == nil {
+		if a.profileName == "" {
+			return values, nil
+		}
+		return values, fmt.Errorf("profile store is not configured")
+	}
+
+	resolver := profilepkg.NewResolver(a.profileStore, a.secretStore)
+	defaultLayers, err := a.resolveInheritedProfiles(ctx, resolver)
+	if err != nil {
+		return values, err
+	}
+	defaults := profilepkg.MergeResolved("defaults", defaultLayers...)
+	values.defaultEnvs = defaults.EnvVars(profilepkg.EntryKindVariable)
+	values.defaultSecrets = defaults.EnvVars(profilepkg.EntryKindSecret)
+
+	var selected *profilepkg.Resolved
+	if a.profileName != "" {
+		selected, err = resolver.Resolve(ctx, a.profileName)
+		if err != nil {
+			return values, fmt.Errorf("failed to resolve profile %q: %w", a.profileName, err)
+		}
+		values.selectedEnvs = selected.EnvVars(profilepkg.EntryKindVariable)
+		values.selectedSecrets = selected.EnvVars(profilepkg.EntryKindSecret)
+		a.profileName = selected.Name
+		logger.Info(ctx, "Resolved runtime profile",
+			slog.String("profile", selected.Name),
+			tag.Count(len(selected.Entries)),
+		)
+	}
+
+	if len(defaultLayers) > 0 || selected != nil {
+		layers := append([]*profilepkg.Resolved{}, defaultLayers...)
+		layers = append(layers, selected)
+		effective := profilepkg.MergeResolved("effective", layers...)
+		a.profileResolvedAt = exec.FormatTime(time.Now())
+		a.profileEntries = profileEntries(effective)
+	}
+
+	return values, nil
+}
+
+func (a *Agent) resolveInheritedProfiles(
+	ctx context.Context,
+	resolver *profilepkg.Resolver,
+) ([]*profilepkg.Resolved, error) {
+	defaultLayers := make([]*profilepkg.Resolved, 0, 2)
+	globalDefaults, err := resolver.ResolveInherited(ctx, profilepkg.GlobalInheritedRef())
+	if err != nil && !errors.Is(err, profilepkg.ErrNotFound) {
+		return nil, fmt.Errorf("failed to resolve global profile defaults: %w", err)
+	}
+	if globalDefaults != nil {
+		defaultLayers = append(defaultLayers, globalDefaults)
+		logger.Info(ctx, "Resolved global runtime profile defaults",
+			tag.Count(len(globalDefaults.Entries)),
+		)
+	}
+
+	workspaceName, ok := exec.WorkspaceNameFromLabels(a.dag.Labels)
+	if !ok {
+		return defaultLayers, nil
+	}
+	workspaceRef, err := profilepkg.WorkspaceInheritedRef(workspaceName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve workspace profile defaults: %w", err)
+	}
+	workspaceDefaults, err := resolver.ResolveInherited(ctx, workspaceRef)
+	if err != nil && !errors.Is(err, profilepkg.ErrNotFound) {
+		return nil, fmt.Errorf("failed to resolve workspace profile defaults %q: %w", workspaceName, err)
+	}
+	if workspaceDefaults != nil {
+		defaultLayers = append(defaultLayers, workspaceDefaults)
+		logger.Info(ctx, "Resolved workspace runtime profile defaults",
+			slog.String("workspace", workspaceName),
+			tag.Count(len(workspaceDefaults.Entries)),
+		)
+	}
+	return defaultLayers, nil
+}
+
+func profileEntries(resolved *profilepkg.Resolved) []exec.RuntimeProfileEntry {
+	if resolved == nil {
+		return nil
+	}
+	entries := make([]exec.RuntimeProfileEntry, 0, len(resolved.Entries))
+	for _, entry := range resolved.Entries {
+		entries = append(entries, exec.RuntimeProfileEntry{
+			Key:  entry.Key,
+			Kind: string(entry.Kind),
+		})
+	}
+	return entries
 }
 
 // resolveSecrets resolves all secrets defined in the DAG and returns them as
@@ -1890,7 +2055,10 @@ func (a *Agent) setupPlan(ctx context.Context) error {
 
 // setupRetryPlan sets up the plan for retry.
 func (a *Agent) setupRetryPlan(ctx context.Context) error {
-	nodes := a.retryNodes()
+	nodes, err := a.retryNodes()
+	if err != nil {
+		return err
+	}
 	// If the previous run was killed before writing node data to the status
 	// (e.g., SIGKILL before the initial 100ms status write), retryTarget.Nodes
 	// will be empty. Fall back to a fresh plan from the DAG definition so that
@@ -1917,12 +2085,24 @@ func (a *Agent) setupFreshPlan() error {
 	return nil
 }
 
-func (a *Agent) retryNodes() []*runtime.Node {
+func (a *Agent) retryNodes() ([]*runtime.Node, error) {
+	steps := make(map[string]core.Step, len(a.dag.Steps))
+	for _, step := range a.dag.Steps {
+		steps[step.Name] = step
+	}
+
 	nodes := make([]*runtime.Node, 0, len(a.retryTarget.Nodes))
 	for _, node := range a.retryTarget.Nodes {
-		nodes = append(nodes, transform.ToNode(node))
+		if node == nil {
+			continue
+		}
+		step, ok := steps[node.Step.Name]
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", runtime.ErrMissingNode, node.Step.Name)
+		}
+		nodes = append(nodes, transform.ToNodeWithStep(node, step))
 	}
-	return nodes
+	return nodes, nil
 }
 
 // setupStepRetryPlan sets up the plan for retrying a specific step.
@@ -1945,63 +2125,24 @@ func (a *Agent) setupDefaultRetryPlan(ctx context.Context, nodes []*runtime.Node
 	return nil
 }
 
-func (a *Agent) setupDAGRunAttempt(ctx context.Context) (exec.DAGRunAttempt, error) {
-	if a.dagRunStore == nil {
-		logger.Debug(ctx, "Using no-op DAGRunAttempt in shared-nothing mode")
-		return exec.NewNoopDAGRunAttempt(a.noopAttemptID(), a.dag), nil
+func (a *Agent) setupDAGRunAttempt(ctx context.Context) (runstate.Attempt, error) {
+	if a.runStateStore == nil {
+		a.runStateStore = runstate.NewHistoryStore(a.dagRunStore)
 	}
-
-	if a.dag.HistRetentionRuns == 0 {
-		retentionDays := a.dag.HistRetentionDays
-		if _, err := a.dagRunStore.RemoveOldDAGRuns(ctx, a.dag.Name, retentionDays); err != nil {
-			logger.Error(ctx, "DAG runs data cleanup failed", tag.Error(err))
-		}
+	if a.attemptID != "" && a.dagRunAttemptID != "" && a.attemptID != a.dagRunAttemptID {
+		return nil, fmt.Errorf(
+			"prepared attempt ID %q does not match requested attempt ID %q",
+			a.dagRunAttemptID,
+			a.attemptID,
+		)
 	}
-
-	var attempt exec.DAGRunAttempt
-	if a.preparedAttempt != nil {
-		if a.attemptID != "" && a.preparedAttempt.ID() != a.attemptID {
-			return nil, fmt.Errorf(
-				"prepared attempt ID %q does not match requested attempt ID %q",
-				a.preparedAttempt.ID(),
-				a.attemptID,
-			)
-		}
-		a.preparedAttempt.SetDAG(a.dag)
-		attempt = a.preparedAttempt
-	} else {
-		var err error
-		attempt, err = a.dagRunStore.CreateAttempt(ctx, a.dag, time.Now(), a.dagRunID, a.attemptOptions())
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if a.dag.HistRetentionRuns > 0 {
-		if _, err := a.dagRunStore.RemoveOldDAGRuns(ctx, a.dag.Name, 0, exec.WithRetentionRuns(a.dag.HistRetentionRuns)); err != nil {
-			logger.Error(ctx, "DAG runs data cleanup failed", tag.Error(err))
-		}
-	}
-
-	return attempt, nil
-}
-
-func (a *Agent) noopAttemptID() string {
-	if a.attemptID != "" {
-		return a.attemptID
-	}
-	return a.dagRunID
-}
-
-func (a *Agent) attemptOptions() exec.NewDAGRunAttemptOptions {
-	opts := exec.NewDAGRunAttemptOptions{
-		Retry:     a.retryTarget != nil || a.queuedRun,
-		AttemptID: a.attemptID,
-	}
-	if a.isSubDAGRun.Load() {
-		opts.RootDAGRun = &a.rootDAGRun
-	}
-	return opts
+	return a.runStateStore.BeginAttempt(ctx, runstate.BeginAttemptRequest{
+		DAG:        a.dag,
+		RunID:      a.dagRunID,
+		AttemptID:  a.attemptID,
+		Retry:      a.retryTarget != nil || a.queuedRun,
+		RootDAGRun: a.rootDAGRun,
+	})
 }
 
 // setupSocketServer creates a socket server instance.

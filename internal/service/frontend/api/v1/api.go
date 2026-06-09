@@ -27,9 +27,12 @@ import (
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/baseconfig"
 	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/internal/dagsettings"
 	incidentmodel "github.com/dagucloud/dagu/internal/incident"
+	"github.com/dagucloud/dagu/internal/launcher"
 	"github.com/dagucloud/dagu/internal/license"
 	notificationmodel "github.com/dagucloud/dagu/internal/notification"
+	profilepkg "github.com/dagucloud/dagu/internal/profile"
 	"github.com/dagucloud/dagu/internal/remotenode"
 	"github.com/dagucloud/dagu/internal/runtime"
 	secretpkg "github.com/dagucloud/dagu/internal/secret"
@@ -70,7 +73,7 @@ type API struct {
 	metricsRegistry      *prometheus.Registry
 	coordinatorCli       coordinator.Client
 	serviceRegistry      exec.ServiceRegistry
-	subCmdBuilder        *runtime.SubCmdBuilder
+	subCmdBuilder        *launcher.SubCmdBuilder
 	resourceService      *resource.Service
 	authService          AuthService
 	auditService         *audit.Service
@@ -89,7 +92,9 @@ type API struct {
 	agentAPI             *agent.API
 	docStore             agent.DocStore
 	baseConfigStore      baseconfig.Store
+	dagSettingsStore     dagsettings.Store
 	secretStore          secretpkg.Store
+	profileStore         profilepkg.Store
 	licenseManager       *license.Manager
 	apiKeyCreateMu       sync.Mutex
 	workspaceStore       workspace.Store
@@ -247,6 +252,20 @@ func WithSecretStore(store secretpkg.Store) APIOption {
 	}
 }
 
+// WithProfileStore returns an APIOption that sets the runtime profile store.
+func WithProfileStore(store profilepkg.Store) APIOption {
+	return func(a *API) {
+		a.profileStore = store
+	}
+}
+
+// WithDAGSettingsStore returns an APIOption that sets the DAG settings store.
+func WithDAGSettingsStore(store dagsettings.Store) APIOption {
+	return func(a *API) {
+		a.dagSettingsStore = store
+	}
+}
+
 // WithAgentConfigStore returns an APIOption that sets the API's agent config store.
 func WithAgentConfigStore(store agent.ConfigStore) APIOption {
 	return func(a *API) {
@@ -394,7 +413,7 @@ func New(
 		procStore:           ps,
 		dagRunMgr:           drm,
 		logEncodingCharset:  cfg.UI.LogEncodingCharset,
-		subCmdBuilder:       runtime.NewSubCmdBuilder(cfg),
+		subCmdBuilder:       launcher.NewSubCmdBuilder(cfg),
 		config:              cfg,
 		coordinatorCli:      cc,
 		serviceRegistry:     sr,
