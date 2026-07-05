@@ -6,6 +6,8 @@ package dagrun
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -708,10 +710,38 @@ func (att *Attempt) dagRunDir() string {
 }
 
 // WorkDir returns the path to the per-DAG-run working directory.
-// The work directory lives at the dag-run level (not attempt level)
-// so it persists across retries.
 func (att *Attempt) WorkDir() string {
-	return filepath.Join(att.dagRunDir(), "work")
+	return workDirForDAGRunDir(att.dagRunDir())
+}
+
+func workDirForDAGRunDir(dagRunDir string) string {
+	if rootDir, childRunID, ok := subDAGWorkDirParts(dagRunDir); ok {
+		return filepath.Join(rootDir, subDAGWorkDirName(childRunID))
+	}
+	return filepath.Join(dagRunDir, "work")
+}
+
+func subDAGWorkDirName(childRunID string) string {
+	sum := sha256.Sum256([]byte(childRunID))
+	return SubDAGWorkDirPrefix + strings.ToLower(
+		base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:8]),
+	)
+}
+
+func subDAGWorkDirParts(dagRunDir string) (rootDir, childRunID string, ok bool) {
+	childrenDir := filepath.Dir(dagRunDir)
+	if filepath.Base(childrenDir) != SubDAGRunsDir {
+		return "", "", false
+	}
+	childDir := filepath.Base(dagRunDir)
+	if !strings.HasPrefix(childDir, SubDAGRunDirPrefix) {
+		return "", "", false
+	}
+	childRunID = strings.TrimPrefix(childDir, SubDAGRunDirPrefix)
+	if childRunID == "" {
+		return "", "", false
+	}
+	return filepath.Dir(childrenDir), childRunID, true
 }
 
 // readLineFrom reads a line from the file starting at the specified offset.

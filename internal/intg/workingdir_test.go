@@ -4,6 +4,7 @@
 package intg_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,8 +21,8 @@ import (
 // TestWorkingDirectoryResolution verifies working directory resolution:
 //  1. DAG-level working_dir sets the working directory for steps
 //  2. Step-level relative dir resolves against DAG's working_dir
-//  3. SubDAG with explicit working_dir uses its own context (overrides inherited)
-//  4. SubDAG without working_dir inherits parent's working_dir (for local execution)
+//  3. SubDAG with explicit working_dir uses its own context
+//  4. SubDAG without working_dir uses its own DAG-run work directory
 func TestWorkingDirectoryResolution(t *testing.T) {
 	th := test.Setup(t)
 
@@ -99,27 +100,27 @@ steps:
 			continue
 		}
 
-		subDir := getSubDAGWorkingDir(t, th, ref, node.SubRuns[0].DAGRunID)
+		subAttempt, err := th.DAGRunStore.FindSubAttempt(th.Context, ref, node.SubRuns[0].DAGRunID)
+		require.NoError(t, err)
+		subDir := getSubDAGWorkingDir(t, th.Context, subAttempt)
 
 		switch node.Step.Name {
 		case "call_child_with_wd":
-			assert.Contains(t, subDir, childDir,
-				"SubDAG with explicit workingDir should run in childDir (overriding inherited)")
+			assertSameWorkingDir(t, childDir, subDir,
+				"SubDAG with explicit workingDir should run in childDir")
 		case "call_child_no_wd":
-			assert.Contains(t, subDir, parentDir,
-				"SubDAG without workingDir should inherit parent's workingDir")
+			subWorkDir := subAttempt.WorkDir()
+			assertSameWorkingDir(t, subWorkDir, subDir,
+				"SubDAG without workingDir should run in its own DAG-run work directory")
 		}
 	}
 }
 
 // getSubDAGWorkingDir retrieves the working directory from a subDAG's stdout log.
-func getSubDAGWorkingDir(t *testing.T, th test.Helper, ref exec.DAGRunRef, subRunID string) string {
+func getSubDAGWorkingDir(t *testing.T, ctx context.Context, subAttempt exec.DAGRunAttempt) string {
 	t.Helper()
 
-	subAttempt, err := th.DAGRunStore.FindSubAttempt(th.Context, ref, subRunID)
-	require.NoError(t, err)
-
-	subStatus, err := subAttempt.ReadStatus(th.Context)
+	subStatus, err := subAttempt.ReadStatus(ctx)
 	require.NoError(t, err)
 	require.NotEmpty(t, subStatus.Nodes)
 
@@ -127,4 +128,22 @@ func getSubDAGWorkingDir(t *testing.T, th test.Helper, ref exec.DAGRunRef, subRu
 	require.NoError(t, err)
 
 	return strings.TrimSpace(string(logContent))
+}
+
+func assertSameWorkingDir(t *testing.T, expected, actual, message string) {
+	t.Helper()
+
+	expected = filepath.Clean(expected)
+	actual = filepath.Clean(actual)
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, expected, actual, message)
+		return
+	}
+
+	expectedInfo, err := os.Stat(expected)
+	require.NoError(t, err)
+	actualInfo, err := os.Stat(actual)
+	require.NoError(t, err)
+	assert.Truef(t, os.SameFile(expectedInfo, actualInfo),
+		"%s\nexpected: %s\nactual: %s", message, expected, actual)
 }

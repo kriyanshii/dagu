@@ -40,6 +40,9 @@ const (
 
 	// AttemptDirPrefix is the prefix for attempt directories.
 	AttemptDirPrefix = "attempt_"
+
+	// SubDAGWorkDirPrefix is the prefix for sub dag-run working directories.
+	SubDAGWorkDirPrefix = "w_"
 )
 
 // JSONLStatusFile is the name of the status file for each dag-run.
