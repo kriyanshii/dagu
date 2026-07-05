@@ -996,6 +996,8 @@ type Schedule struct {
 	Expression string `json:"expression,omitempty"`
 	// At is the canonical RFC 3339 timestamp for one-off schedules.
 	At string `json:"at,omitempty"`
+	// Profile is the runtime profile name that activates this schedule.
+	Profile string `json:"profile,omitempty"`
 	// Parsed is the parsed cron schedule.
 	Parsed cron.Schedule `json:"-"`
 	// AtTime is the parsed one-off schedule time.
@@ -1014,11 +1016,13 @@ func (s Schedule) MarshalJSON() ([]byte, error) {
 		Kind       ScheduleKind `json:"kind,omitempty"`
 		Expression string       `json:"expression,omitempty"`
 		At         string       `json:"at,omitempty"`
+		Profile    string       `json:"profile,omitempty"`
 		Warnings   []string     `json:"warnings,omitempty"`
 	}{
 		Kind:       normalized.Kind,
 		Expression: normalized.Expression,
 		At:         normalized.At,
+		Profile:    normalized.Profile,
 		Warnings:   normalized.Warnings,
 	})
 }
@@ -1026,29 +1030,15 @@ func (s Schedule) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON implements the json.Unmarshaler interface.
 // It also parses the cron expression to populate the Parsed field.
 func (s *Schedule) UnmarshalJSON(data []byte) error {
-	var alias struct {
-		Kind       ScheduleKind `json:"kind"`
-		Expression string       `json:"expression"`
-		At         string       `json:"at"`
-	}
-	if err := json.Unmarshal(data, &alias); err != nil {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
+	delete(raw, "warnings")
 
-	if alias.Kind == "" && alias.Expression == "" && alias.At == "" {
+	if len(raw) == 0 {
 		*s = Schedule{}
 		return nil
-	}
-
-	raw := make(map[string]any, 3)
-	if alias.Kind != "" {
-		raw["kind"] = string(alias.Kind)
-	}
-	if alias.Expression != "" {
-		raw["expression"] = alias.Expression
-	}
-	if alias.At != "" {
-		raw["at"] = alias.At
 	}
 
 	schedule, err := parseScheduleMap(raw, ScheduleParseOptions{AllowAt: true})

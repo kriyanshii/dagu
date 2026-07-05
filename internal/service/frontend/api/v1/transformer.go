@@ -28,6 +28,7 @@ func toSchedule(s core.Schedule) api.Schedule {
 	if at, ok := s.OneOffTime(); ok {
 		schedule.At = &at
 	}
+	schedule.Profile = toRuntimeProfileName(s.Profile)
 	return schedule
 }
 
