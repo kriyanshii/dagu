@@ -122,13 +122,13 @@ func TestNewContext_DAGParamsJSON(t *testing.T) {
 			result := rCtx.UserEnvsMap()
 
 			if tt.expectSet {
-				assert.Equal(t, tt.paramsJSON, result[exec.EnvKeyDAGParamsJSONCompat])
 				assert.Equal(t, tt.paramsJSON, result[exec.EnvKeyDAGParamsJSON])
+				assert.Equal(t, tt.paramsJSON, result[exec.EnvKeyDAGParamsJSONCompat])
 			} else {
-				_, ok1 := result[exec.EnvKeyDAGParamsJSONCompat]
-				_, ok2 := result[exec.EnvKeyDAGParamsJSON]
-				assert.False(t, ok1, "DAG_PARAMS_JSON should not be set")
-				assert.False(t, ok2, "DAGU_PARAMS_JSON should not be set")
+				_, ok := result[exec.EnvKeyDAGParamsJSON]
+				assert.False(t, ok, "DAG_PARAMS_JSON should not be set")
+				_, ok = result[exec.EnvKeyDAGParamsJSONCompat]
+				assert.False(t, ok, "DAGU_PARAMS_JSON should not be set")
 			}
 		})
 	}

@@ -1011,8 +1011,8 @@ func TestEnv_SpecialEnvVars_DAGParamsJSON(t *testing.T) {
 	ctx = runtime.WithEnv(ctx, env)
 	result := runtime.AllEnvsMap(ctx)
 
-	assert.Equal(t, `{"a":"b"}`, result[exec.EnvKeyDAGParamsJSONCompat])
 	assert.Equal(t, `{"a":"b"}`, result[exec.EnvKeyDAGParamsJSON])
+	assert.Equal(t, `{"a":"b"}`, result[exec.EnvKeyDAGParamsJSONCompat])
 }
 
 func TestEnv_SpecialEnvVars_DAGRunWorkDir(t *testing.T) {

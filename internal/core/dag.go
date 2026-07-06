@@ -148,7 +148,7 @@ type DAG struct {
 	Params []string `json:"-"`
 	// ParamsJSON contains the JSON representation of the resolved parameters.
 	// When params were supplied as JSON, the original payload is preserved.
-	// Steps can consume this via the DAGU_PARAMS_JSON environment variable.
+	// Steps can consume this via the DAG_PARAMS_JSON environment variable.
 	// Note: This field is evaluated at build time and may contain secrets.
 	// It is excluded from JSON serialization to prevent secret leakage.
 	ParamsJSON string `json:"-"`
@@ -591,7 +591,7 @@ func (d *DAG) loadSingleDotEnvFile(ctx context.Context, resolver *fileutil.FileR
 
 	valueResolver := cmnvalue.NewResolver(
 		cmnvalue.StaticScope{Consts: cmnvalue.Values(d.Consts), Params: d.ParamDeclarations()},
-		cmnvalue.RuntimeScope{Consts: cmnvalue.Values(d.Consts), Params: d.ParamValues(), Env: cmnvalue.GetEnvScope(ctx)},
+		cmnvalue.RuntimeScope{Consts: cmnvalue.Values(d.Consts), Params: d.ParamValues(), ParamsJSON: d.ParamsJSON, Env: cmnvalue.GetEnvScope(ctx)},
 	)
 	evaluatedPath, err := valueResolver.String(ctx, filePath, cmnvalue.DotenvPathField("dotenv"))
 	if err != nil {

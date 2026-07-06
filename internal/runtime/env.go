@@ -160,15 +160,27 @@ func resolveWorkingDirStrict(ctx context.Context, step core.Step, rCtx Context) 
 	return fallbackWorkingDir(ctx, step.Name), nil
 }
 
-func expandRuntimeValue(ctx context.Context, raw string, rCtx Context, dag *core.DAG, scope *cmnvalue.EnvScope, step core.Step, field cmnvalue.Field) (string, error) {
-	var consts cmnvalue.Values
-	var params cmnvalue.Values
-	var paramDeclarations cmnvalue.Values
+type dagValueResolutionScope struct {
+	consts            cmnvalue.Values
+	params            cmnvalue.Values
+	paramsJSON        string
+	paramDeclarations cmnvalue.Values
+}
+
+func newDAGValueResolutionScope(dag *core.DAG) dagValueResolutionScope {
 	if dag != nil {
-		consts = cmnvalue.Values(dag.Consts)
-		params = dag.ParamValues()
-		paramDeclarations = dag.ParamDeclarations()
+		return dagValueResolutionScope{
+			consts:            cmnvalue.Values(dag.Consts),
+			params:            dag.ParamValues(),
+			paramsJSON:        dag.ParamsJSON,
+			paramDeclarations: dag.ParamDeclarations(),
+		}
 	}
+	return dagValueResolutionScope{}
+}
+
+func expandRuntimeValue(ctx context.Context, raw string, rCtx Context, dag *core.DAG, scope *cmnvalue.EnvScope, step core.Step, field cmnvalue.Field) (string, error) {
+	dagScope := newDAGValueResolutionScope(dag)
 	if rCtx.DAG == nil {
 		rCtx.DAG = dag
 	}
@@ -177,10 +189,11 @@ func expandRuntimeValue(ctx context.Context, raw string, rCtx Context, dag *core
 		foreach = inherited.Foreach
 	}
 	resolver := cmnvalue.NewResolver(
-		cmnvalue.StaticScope{Consts: consts, Params: paramDeclarations},
+		cmnvalue.StaticScope{Consts: dagScope.consts, Params: dagScope.paramDeclarations},
 		cmnvalue.RuntimeScope{
-			Consts:         consts,
-			Params:         params,
+			Consts:         dagScope.consts,
+			Params:         dagScope.params,
+			ParamsJSON:     dagScope.paramsJSON,
 			Env:            scope,
 			Foreach:        foreach,
 			BuiltinContext: builtinContextFromDAGContext(rCtx, scope, step),
@@ -460,17 +473,10 @@ func evalShellWithScope(ctx context.Context, dag *core.DAG, scope *cmnvalue.EnvS
 }
 
 func evalShellInvocationWithScope(ctx context.Context, dag *core.DAG, scope *cmnvalue.EnvScope, shell string, shellArgs []string, shellFieldForPath func(string) cmnvalue.Field, argFieldForPath func(string) cmnvalue.Field) ([]string, error) {
-	var consts cmnvalue.Values
-	var params cmnvalue.Values
-	var paramDeclarations cmnvalue.Values
-	if dag != nil {
-		consts = cmnvalue.Values(dag.Consts)
-		params = dag.ParamValues()
-		paramDeclarations = dag.ParamDeclarations()
-	}
+	dagScope := newDAGValueResolutionScope(dag)
 	resolver := cmnvalue.NewResolver(
-		cmnvalue.StaticScope{Consts: consts, Params: paramDeclarations},
-		cmnvalue.RuntimeScope{Consts: consts, Params: params, Env: scope},
+		cmnvalue.StaticScope{Consts: dagScope.consts, Params: dagScope.paramDeclarations},
+		cmnvalue.RuntimeScope{Consts: dagScope.consts, Params: dagScope.params, ParamsJSON: dagScope.paramsJSON, Env: scope},
 	)
 	shellCmd, err := resolver.String(ctx, shell, shellFieldForPath("shell"))
 	if err != nil {
@@ -481,17 +487,10 @@ func evalShellInvocationWithScope(ctx context.Context, dag *core.DAG, scope *cmn
 }
 
 func evalShellArgsWithScope(ctx context.Context, dag *core.DAG, scope *cmnvalue.EnvScope, shell []string, shellArgs []string, fieldForPath func(string) cmnvalue.Field) ([]string, error) {
-	var consts cmnvalue.Values
-	var params cmnvalue.Values
-	var paramDeclarations cmnvalue.Values
-	if dag != nil {
-		consts = cmnvalue.Values(dag.Consts)
-		params = dag.ParamValues()
-		paramDeclarations = dag.ParamDeclarations()
-	}
+	dagScope := newDAGValueResolutionScope(dag)
 	resolver := cmnvalue.NewResolver(
-		cmnvalue.StaticScope{Consts: consts, Params: paramDeclarations},
-		cmnvalue.RuntimeScope{Consts: consts, Params: params, Env: scope},
+		cmnvalue.StaticScope{Consts: dagScope.consts, Params: dagScope.paramDeclarations},
+		cmnvalue.RuntimeScope{Consts: dagScope.consts, Params: dagScope.params, ParamsJSON: dagScope.paramsJSON, Env: scope},
 	)
 	return evalShellArgsWithResolver(ctx, shell, shellArgs, fieldForPath, resolver)
 }

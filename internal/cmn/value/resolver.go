@@ -102,8 +102,12 @@ func (r Resolver) resolveString(ctx context.Context, raw string, field Field) (s
 }
 
 func (r Resolver) bindingScope() RuntimeScope {
-	if r.runtime.Consts != nil || r.runtime.Params != nil || r.runtime.Env != nil || len(r.runtime.Steps) > 0 || r.runtime.Foreach != nil || len(r.runtime.BuiltinContext.values) > 0 {
-		return r.runtime
+	if r.runtime.Consts != nil || r.runtime.Params != nil || r.runtime.ParamsJSON != "" || r.runtime.Env != nil || len(r.runtime.Steps) > 0 || r.runtime.Foreach != nil || len(r.runtime.BuiltinContext.values) > 0 {
+		scope := r.runtime
+		if scope.Consts == nil {
+			scope.Consts = r.static.Consts
+		}
+		return scope
 	}
 	return RuntimeScope{Consts: r.static.Consts}
 }

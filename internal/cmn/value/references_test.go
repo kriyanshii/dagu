@@ -87,6 +87,42 @@ func TestResolverStringResolvesParamsAndPreservesOtherNamespaces(t *testing.T) {
 	assert.Equal(t, "api:prod:/workspace:repo/api:v1", got)
 }
 
+func TestResolverStringResolvesRootParamsPayload(t *testing.T) {
+	t.Parallel()
+
+	const paramsJSON = `{"environment":"prod","tag":"v1"}`
+	resolver := value.NewResolver(
+		value.StaticScope{
+			Params: value.Values{"environment": nil, "tag": nil},
+		},
+		value.RuntimeScope{
+			Params:     value.Values{"environment": "prod", "tag": "v1"},
+			ParamsJSON: paramsJSON,
+		},
+	)
+
+	got, err := resolver.String(context.Background(), "${params}", value.WorkflowField("run"))
+	require.NoError(t, err)
+	assert.Equal(t, paramsJSON, got)
+}
+
+func TestResolverStringResolvesRootParamsPayloadWithStaticConsts(t *testing.T) {
+	t.Parallel()
+
+	resolver := value.NewResolver(
+		value.StaticScope{
+			Consts: value.Values{"service": "api"},
+		},
+		value.RuntimeScope{
+			ParamsJSON: `{"environment":"prod"}`,
+		},
+	)
+
+	got, err := resolver.String(context.Background(), "${consts.service}:${params}", value.WorkflowField("run"))
+	require.NoError(t, err)
+	assert.Equal(t, `api:{"environment":"prod"}`, got)
+}
+
 func TestResolverWorkflowFieldPreservesCommandSubstitution(t *testing.T) {
 	t.Parallel()
 

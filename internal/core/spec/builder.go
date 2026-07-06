@@ -55,6 +55,7 @@ type envScopeState struct {
 	buildEnv          map[string]string // Also store as map for WithVariables
 	consts            map[string]any
 	params            cmnvalue.Values
+	paramsJSON        string
 	paramDeclarations cmnvalue.Values
 }
 
@@ -222,8 +223,8 @@ var reservedSecretEnvNames = []string{
 	"DAG_RUN_STEP_STDOUT_FILE",
 	"DAG_RUN_STEP_STDERR_FILE",
 	"DAG_RUN_STATUS",
-	"DAGU_PARAMS_JSON",
 	"DAG_PARAMS_JSON",
+	"DAGU_PARAMS_JSON",
 	"DAG_RUN_WORK_DIR",
 	"DAG_RUN_ARTIFACTS_DIR",
 	"DAG_PUSHBACK",
