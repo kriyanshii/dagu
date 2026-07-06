@@ -5,7 +5,10 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/dagucloud/dagu/internal/core"
+	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/dagsettings"
 	"github.com/dagucloud/dagu/internal/profile"
 )
@@ -22,9 +25,25 @@ func NewDAGProfileResolver(settingsStore dagsettings.Store, profileStore profile
 	}
 }
 
-func (r *dagProfileResolver) ResolveProfile(ctx context.Context, dagName string) (string, error) {
+func (r *dagProfileResolver) ResolveProfile(ctx context.Context, dagName string, workspaceName string) (string, error) {
 	if r == nil {
 		return "", nil
 	}
-	return dagsettings.ResolveProfile(ctx, r.settingsStore, r.profileStore, dagName)
+	return dagsettings.ResolveProfile(ctx, r.settingsStore, r.profileStore, dagName, workspaceName)
+}
+
+func dagWorkspaceName(dag *core.DAG) (string, error) {
+	if dag == nil {
+		return "", nil
+	}
+	workspaceName, state := exec.WorkspaceLabelFromLabels(dag.Labels)
+	switch state {
+	case exec.WorkspaceLabelValid:
+		return workspaceName, nil
+	case exec.WorkspaceLabelMissing:
+		return "", nil
+	case exec.WorkspaceLabelInvalid:
+		return "", fmt.Errorf("invalid workspace label")
+	}
+	return "", nil
 }
