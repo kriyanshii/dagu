@@ -98,12 +98,12 @@ env:
   - TIMESTAMP: "` + "`date +%Y%m%d`" + `"
 steps:
   - name: extract
-    run: echo "extracting ${BATCH_SIZE} records in ${ENV}"
+    run: echo "extracting ${params.BATCH_SIZE} records in ${params.ENV}"
   - name: transform
-    run: echo "transforming with LOG_LEVEL=${LOG_LEVEL}"
+    run: echo "transforming with LOG_LEVEL=${env.LOG_LEVEL}"
     depends: [extract]
   - name: load
-    run: echo "loading batch from ${TIMESTAMP}"
+    run: echo "loading batch from ${env.TIMESTAMP}"
     depends: [transform]
 `,
 	},
@@ -153,7 +153,7 @@ steps:
   - name: deploy
     run: echo "deploying application"
     preconditions:
-      - condition: "${ENV}"
+      - condition: "${params.ENV}"
         expected: "PROD"
     depends: [check-env]
   - name: notify
@@ -281,9 +281,9 @@ params:
 type: graph
 steps:
   - name: extract
-    run: echo "extracting from ${SOURCE}"
+    run: echo "extracting from ${params.SOURCE}"
   - name: load
-    run: echo "loading into ${TARGET}"
+    run: echo "loading into ${params.TARGET}"
     depends: [extract]
 `,
 	},
@@ -381,13 +381,13 @@ steps:
         APP_ENV={{ .env }}
         APP_VERSION={{ .version }}
         FEATURE_FLAG=true
-      output: ${DAG_RUN_ARTIFACTS_DIR}/deploy.env
+      output: ${context.paths.artifacts_dir}/deploy.env
       data:
-        env: ${ENV}
+        env: ${params.ENV}
         version: ${build.output.version}
     depends: [build]
   - id: preview
-    run: cat ${DAG_RUN_ARTIFACTS_DIR}/deploy.env
+    run: cat ${context.paths.artifacts_dir}/deploy.env
     depends: [render_config]
 `,
 	},
@@ -438,7 +438,7 @@ steps:
         ## Suggested Fix
 
         {{ .analysis }}
-      output: ${DAG_RUN_ARTIFACTS_DIR}/harness-report.md
+      output: ${context.paths.artifacts_dir}/harness-report.md
       data:
         issue: ${gather_issue.output.issue}
         analysis: ${ANALYSIS}
@@ -488,7 +488,7 @@ steps:
     with:
       template: |
         {{ .summary }}
-      output: ${DAG_RUN_ARTIFACTS_DIR}/handoff.md
+      output: ${context.paths.artifacts_dir}/handoff.md
       data:
         summary: ${SUMMARY}
     depends: [summarize]

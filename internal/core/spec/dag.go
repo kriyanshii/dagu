@@ -25,11 +25,15 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 )
 
-const dagRunArtifactsDirEnvKey = "DAG_RUN_ARTIFACTS_DIR"
+const (
+	dagRunArtifactsDirEnvKey      = "DAG_RUN_ARTIFACTS_DIR"
+	dagRunArtifactsDirContextPath = "context.paths.artifacts_dir"
+)
 
 var dagRunArtifactsDirReferencePattern = regexp.MustCompile(
 	`(?:\$\{` + regexp.QuoteMeta(dagRunArtifactsDirEnvKey) + `\}` +
 		`|\$\{env\.` + regexp.QuoteMeta(dagRunArtifactsDirEnvKey) + `\}` +
+		`|\$\{` + regexp.QuoteMeta(dagRunArtifactsDirContextPath) + `\}` +
 		`|\$` + regexp.QuoteMeta(dagRunArtifactsDirEnvKey) + `(?:\b|[^A-Za-z0-9_])` +
 		`|\$env:` + regexp.QuoteMeta(dagRunArtifactsDirEnvKey) + `(?:\b|[^A-Za-z0-9_])` +
 		`|%` + regexp.QuoteMeta(dagRunArtifactsDirEnvKey) + `%` +

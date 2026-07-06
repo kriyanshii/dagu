@@ -22,7 +22,7 @@ steps:
     with:
       method: GET
       url: https://example.com/data.bin
-      output: "${env.DAG_RUN_ARTIFACTS_DIR}/data.bin"
+      output: "${context.paths.artifacts_dir}/data.bin"
     output: RESPONSE
 `))
 	require.NoError(t, err)
@@ -32,5 +32,5 @@ steps:
 
 	step := dag.Steps[0]
 	assert.Equal(t, "RESPONSE", step.Output)
-	assert.Equal(t, "${env.DAG_RUN_ARTIFACTS_DIR}/data.bin", step.ExecutorConfig.Config["output"])
+	assert.Equal(t, "${context.paths.artifacts_dir}/data.bin", step.ExecutorConfig.Config["output"])
 }

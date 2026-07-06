@@ -254,6 +254,8 @@ Rules:
   where final storage is remote or coordinator-owned.
 - Workflow authors must not infer storage retention, public URL shape, or UI
   availability from a path value.
+- A reference to `context.paths.artifacts_dir` in the DAG definition enables
+  artifact storage unless artifact storage is explicitly disabled.
 
 `context.profile` fields:
 
@@ -378,7 +380,9 @@ Availability rules:
   assigned for the current executable step.
 - Step output file path is available only after step output publication is
   prepared for the current step attempt.
-- Artifact directory is available only when artifact storage is active.
+- Artifact directory is available when artifact storage is active. A DAG
+  definition reference to `context.paths.artifacts_dir` activates artifact
+  storage unless artifact storage is explicitly disabled.
 - Profile context is available only when a runtime profile was selected.
 - Webhook context is available only for webhook-triggered runs.
 - Push-back context is available only for step executions caused by an
