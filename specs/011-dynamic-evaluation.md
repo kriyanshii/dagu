@@ -14,10 +14,10 @@ It does not make every shell syntax form part of the workflow language.
 
 Define what Dagu does when a field is marked dynamic-evaluated.
 
-In this spec set, dynamic evaluation is available only for `params[].eval`.
-Other fields must opt in through Spec 003 or their owning spec.
-An owning spec may reuse the command-substitution syntax defined here without
-making the field dynamic-evaluated.
+In this spec set, dynamic evaluation is available only for fields that opt in
+explicitly, such as `params[].eval` and precondition `eval`.
+No other field executes this command-substitution syntax as Dagu field
+evaluation.
 
 ## Input
 
@@ -40,7 +40,7 @@ steps:
 
 ## Evaluation pipeline
 
-Dynamic evaluation for `params[].eval` runs these operations in order:
+Dynamic evaluation runs these operations in order:
 
 - Resolve Dagu value references such as `${params.name}`.
 - Expand available environment variables according to the field's evaluation scope.
@@ -52,9 +52,8 @@ Rules:
 - Dagu expands available environment variables such as `$HOME` and `${HOME}` according to the owning field's scope.
 - Dagu executes command substitutions written in backtick form or `$()` form.
 - Dagu inserts command stdout into the evaluated value after trimming surrounding whitespace.
-- Backtick text and `$()` text in fields other than `params[].eval` are not dynamic evaluation.
-- Dagu leaves them unchanged during dynamic evaluation unless an owning spec
-  defines a later command-substitution phase.
+- Backtick text and `$()` text in fields other than dynamic-evaluated fields are not dynamic evaluation.
+- Dagu leaves them unchanged during dynamic evaluation.
 
 ## Command Substitution Syntax
 
@@ -95,14 +94,14 @@ Rules:
 - A command substitution that times out makes dynamic evaluation fail.
 - Each command substitution occurrence is evaluated independently.
 - Spec 003 defines field-specific fallbacks, such as `params[].eval` falling back to `default`.
+- Precondition `eval` has no fallback; a dynamic-evaluation failure is a precondition evaluation error.
 
 ## Outputs
 
 When dynamic evaluation succeeds, Dagu inserts the evaluated value into the owning field.
 
-Backtick text and `$()` text outside `params[].eval` remain part of the evaluated value.
-A later phase or target runtime may still interpret them.
-Spec 023 defines such a later phase for value-match preconditions.
+Backtick text and `$()` text outside dynamic-evaluated fields remain part of the evaluated value.
+A target runtime may still interpret them after Dagu starts that runtime.
 
 ## Errors
 
@@ -158,6 +157,17 @@ params:
 steps:
   - name: print
     run: echo ${params.service_name}
+```
+
+Precondition `eval` matched with `expected`:
+
+```yaml
+steps:
+  - name: gated
+    preconditions:
+      - eval: $(printf ready)
+        expected: ready
+    run: echo ready
 ```
 
 Command substitution in ordinary value-resolved fields stays text for Dagu:

@@ -191,15 +191,45 @@ func TestEvalConditions(t *testing.T) {
 	}
 }
 
-func TestEvalConditions_ValueMatchRunsCommandSubstitution(t *testing.T) {
-	if goruntime.GOOS == "windows" {
-		t.Skip("uses POSIX command snippets")
-	}
-
+func TestEvalConditions_ValueMatchPreservesCommandSubstitution(t *testing.T) {
 	ctx := newTestContext()
 	err := runtime.EvalConditions(ctx, []string{"sh"}, []*core.Condition{
+		{Condition: "`printf 100`", Expected: "`printf 100`"},
+		{Condition: "$(printf 200)", Expected: "$(printf 200)"},
+	})
+	require.NoError(t, err)
+
+	err = runtime.EvalConditions(ctx, []string{"sh"}, []*core.Condition{
 		{Condition: "`printf 100`", Expected: "100"},
-		{Condition: "$(printf 200)", Expected: "200"},
+	})
+	require.ErrorIs(t, err, runtime.ErrConditionNotMet)
+}
+
+func TestEvalConditions_ValueMatchEvalRunsCommandSubstitution(t *testing.T) {
+	ctx := newTestContext()
+	err := runtime.EvalConditions(ctx, []string{"sh"}, []*core.Condition{
+		{Eval: "$(printf 100)", Expected: "100"},
+		{Eval: "`printf 200`", Expected: "200"},
+	})
+	require.NoError(t, err)
+
+	err = runtime.EvalConditions(ctx, []string{"sh"}, []*core.Condition{
+		{Eval: "$(printf 100)", Expected: "101"},
+	})
+	require.ErrorIs(t, err, runtime.ErrConditionNotMet)
+}
+
+func TestEvalConditions_ValueMatchEvalUsesWorkingDir(t *testing.T) {
+	ctx := newTestContext()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ready.flag"), nil, 0o644))
+
+	env := runtime.GetEnv(ctx)
+	env.WorkingDir = dir
+	ctx = runtime.WithEnv(ctx, env)
+
+	err := runtime.EvalConditions(ctx, []string{"sh"}, []*core.Condition{
+		{Eval: "$(test -f ready.flag && printf ready)", Expected: "ready"},
 	})
 	require.NoError(t, err)
 }

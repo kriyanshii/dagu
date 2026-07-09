@@ -40,7 +40,7 @@ A workflow author can tell, for each field covered here, whether Dagu will:
 
 - use the field exactly as written
 - resolve Dagu value references
-- run `params[].eval`
+- run a dynamic-evaluated field such as `params[].eval` or precondition `eval`
 - leave shell syntax for a later runtime such as `/bin/sh`
 
 ## Motivation
@@ -84,11 +84,11 @@ Dagu uses three evaluation types.
 | --- | --- |
 | Literal | Dagu uses the value exactly as written. It does not resolve `${...}` and does not run dynamic evaluation. |
 | Value-resolved | Dagu resolves Dagu-owned references such as `${params.name}`. It does not run dynamic evaluation. |
-| Dynamic-evaluated | Dagu runs the dynamic evaluation pipeline. In this spec, only `params[].eval` uses this type. |
+| Dynamic-evaluated | Dagu runs the dynamic evaluation pipeline. In this spec, `params[].eval` and precondition `eval` fields use this type. |
 
-An owning spec may define a later command-substitution phase after value
-resolution. That later phase is part of the owning field behavior, not general
-dynamic evaluation.
+No value-resolved field in this spec set runs Dagu command substitution after
+value resolution. Shell-backed fields may still hand `$()` or backtick text to a
+later shell or script interpreter.
 
 Unqualified environment expansion is a separate field-level ownership decision.
 A value-resolved field always resolves Dagu-owned references defined by this
@@ -233,13 +233,15 @@ Dagu-owned references are supported only in value-resolved fields and dynamic-ev
 | `env` | Value-resolved | Run setup before step execution | Root environment values in map form, array-of-map form, or `KEY=value` list form resolve Dagu-owned references. |
 | `dotenv[]` | Value-resolved | Before dotenv files are loaded | Each dotenv path string resolves Dagu-owned references. |
 | `shell`, `shell_args[]`, `working_dir` | Value-resolved | Before the root field is used | Root shell command, shell args, and working directory resolve Dagu-owned references. |
-| `preconditions[].condition` | Value-resolved | Before checking the precondition | Root precondition condition strings resolve Dagu-owned references. Spec 023 defines the later command-substitution phase only for value-match preconditions. |
+| `preconditions[].condition` | Value-resolved | Before checking the precondition | Root precondition condition strings resolve Dagu-owned references. Value-match conditions treat `$()` and backtick text as ordinary text. Command-check conditions may hand shell syntax to the selected shell. |
+| `preconditions[].eval` | Dynamic-evaluated | Before checking the precondition | Root precondition eval strings are allowed only with `expected`. Dagu resolves Dagu-owned references, then runs dynamic evaluation as defined by Spec 011. |
 | `container` | Value-resolved | Before root container settings are used | Root container string form resolves Dagu-owned references. In object form, `exec`, `image`, `name`, `user`, `working_dir`, `network`, `volumes[]`, `ports[]`, `env` values, `command[]`, and `shell[]` resolve Dagu-owned references. |
 | `steps[].run` | Value-resolved | Step start | The string `run` value and each array-form `run` entry resolve Dagu-owned references. Dagu leaves shell syntax for the selected shell or script interpreter. |
 | `steps[].with` | Value-resolved | Step start | Nested string values under the step `with` object resolve Dagu-owned references unless a more specific row or owning action or executor spec defines another evaluation mode. This includes action inputs and run-step shell settings. |
 | `steps[].working_dir` | Value-resolved | Step start | Step working directory resolves Dagu-owned references. |
 | `steps[].env` | Value-resolved | Step start | Step environment values in map form, array-of-map form, or `KEY=value` list form resolve Dagu-owned references. |
-| `steps[].preconditions[].condition` | Value-resolved | Before checking the step precondition | Step precondition condition strings resolve Dagu-owned references. Spec 023 defines the later command-substitution phase only for value-match preconditions. |
+| `steps[].preconditions[].condition` | Value-resolved | Before checking the step precondition | Step precondition condition strings resolve Dagu-owned references. Value-match conditions treat `$()` and backtick text as ordinary text. Command-check conditions may hand shell syntax to the selected shell. |
+| `steps[].preconditions[].eval` | Dynamic-evaluated | Before checking the step precondition | Step precondition eval strings are allowed only with `expected`. Dagu resolves Dagu-owned references, then runs dynamic evaluation as defined by Spec 011. |
 | `steps[].retry_policy.limit` and `steps[].retry_policy.interval_sec` string forms | Value-resolved | Before the retry policy uses the value | Step retry policy string numeric fields resolve Dagu-owned references. Other retry policy fields remain literal unless an owning spec opts in. |
 | `steps[].repeat_policy.condition` | Value-resolved | Before checking the repeat policy | Repeat condition strings resolve Dagu-owned references. |
 | `steps[].repeat_policy.limit`, `steps[].repeat_policy.interval_sec`, and `steps[].repeat_policy.max_interval_sec` string forms | Value-resolved | Before the repeat policy uses the value | Step repeat policy string numeric fields resolve Dagu-owned references. Other repeat policy fields remain literal unless an owning spec opts in. |
@@ -274,8 +276,7 @@ Explicitly literal or excluded field surfaces:
 
 - For value-resolved fields, Dagu resolves Dagu-owned references.
 - Dagu does not run dynamic evaluation in value-resolved fields.
-- Dagu does not run command substitution in value-resolved fields unless the
-  owning field spec explicitly defines a later command-substitution phase.
+- Dagu does not run command substitution in value-resolved fields.
 
 - For `steps[].run`, unqualified `$NAME` and `${NAME}` are shell syntax.
 - Dagu preserves that shell syntax for the selected shell.
@@ -296,14 +297,15 @@ Explicitly literal or excluded field surfaces:
 
 Dagu command substitution is intentionally narrow.
 
-- The only field in this spec authorized to execute command substitution as
-  dynamic evaluation is `params[].eval`.
-- In `params[].eval`, Dagu executes command substitutions written in backtick form or `$()` form as defined by Spec 011.
-- Outside `params[].eval`, Dagu leaves backtick text and `$()` text unchanged
-  during value resolution.
-- The presence of `$()` or backticks outside `params[].eval` is not a validation error by itself.
-- An owning spec may define a later command-substitution phase after value
-  resolution. Spec 023 defines that phase for value-match preconditions.
+- The only fields in this spec authorized to execute command substitution as
+  dynamic evaluation are `params[].eval`, `preconditions[].eval`, and
+  `steps[].preconditions[].eval`.
+- In those fields, Dagu executes command substitutions written in backtick form or `$()` form as defined by Spec 011.
+- Outside dynamic-evaluated fields, Dagu leaves backtick text and `$()` text
+  unchanged during value resolution.
+- The presence of `$()` or backticks outside dynamic-evaluated fields is not a validation error by itself.
+- A later shell, script interpreter, or command runtime may still interpret
+  preserved `$()` or backtick text after Dagu starts that runtime.
 
 For `steps[].run`, Dagu leaves shell syntax in the resolved run text.
 Examples are `$NAME`, `${NAME}`, `$()`, and backticks.
@@ -331,6 +333,20 @@ Rules:
 - A `params[].eval` expression cannot resolve a later computed or default value that has not been selected yet.
 - Dagu does not topologically sort parameter declarations and does not retry preserved parameter references after later declarations are processed.
 - If parameter declarations form a reference cycle, at least one reference in that cycle cannot resolve under the source-order rule and follows the unresolved-reference rules.
+
+### Precondition Evaluation
+
+`preconditions[].eval` computes the value compared to `expected`.
+
+Rules:
+
+- `eval` is valid only on a precondition entry that also has `expected`.
+- `eval` and `condition` are mutually exclusive in the same precondition entry.
+- Dagu resolves Dagu-owned references in `eval`, then runs dynamic evaluation.
+- The evaluated value is used only for the current precondition comparison.
+- The evaluated value is not stored as a parameter, step output, run log, event, or artifact.
+- If `eval` fails, checking the precondition is an evaluation error.
+- `eval` has no `default` fallback.
 
 ### Unresolved Supported References
 

@@ -59,11 +59,15 @@ when a condition is not met.
 A precondition list is the normalized ordered list of condition entries for one
 DAG or step.
 
-A condition entry is one object with required `condition` and optional
-`expected` and `negate` fields.
+A condition entry is one object with exactly one value source, optional
+`expected`, and optional `negate`.
+
+The value source is either `condition` or `eval`.
 
 The condition text is the value of `condition` after Dagu-owned value
 references are resolved.
+
+The eval text is the value of `eval` after dynamic evaluation.
 
 A value-match condition is a condition entry with `expected`.
 
@@ -93,12 +97,13 @@ Rules:
 - Each array item must be a non-empty string shortcut or an object condition
   entry.
 - A string shortcut normalizes to an object with only `condition`.
-- An object condition entry must contain `condition`.
+- An object condition entry must contain exactly one of `condition` or `eval`.
 - Object condition entries may contain `expected`.
 - Object condition entries may contain `negate`.
 - `negate` defaults to `false` when omitted.
 - Object condition entries must not contain fields other than `condition`,
-  `expected`, and `negate`.
+  `eval`, `expected`, and `negate`.
+- `eval` is valid only when `expected` is present.
 - The `command` alias is not part of this spec.
 
 Valid string shortcut:
@@ -122,6 +127,14 @@ preconditions:
     expected: production
 ```
 
+Valid dynamic value-match condition:
+
+```yaml
+preconditions:
+  - eval: $(printf production)
+    expected: production
+```
+
 Valid negated command-check condition:
 
 ```yaml
@@ -134,7 +147,9 @@ preconditions:
 
 Rules:
 
-- `condition` must be a string with at least one non-whitespace character.
+- `condition` is optional.
+- `condition` must be a string with at least one non-whitespace character when
+  present.
 - `condition` is value-resolved before the condition is checked.
 - Value resolution follows Spec 003.
 - Dagu-owned references in `condition` use the normal `${consts.*}`,
@@ -143,13 +158,33 @@ Rules:
   `${NAME}`, resolve according to Spec 006 for precondition condition fields.
 - Unresolved supported references are preserved and reported as passive notices
   by inspection surfaces as defined by Spec 003 and Spec 007.
-- `condition` does not run dynamic evaluation.
-- Value-match conditions execute command substitutions in `condition` after
-  Dagu-owned value resolution and before matching.
+- `condition` does not run dynamic evaluation or Dagu command substitution.
+- In value-match conditions, backtick text and `$()` text are ordinary
+  condition text after value resolution.
 - Command-check conditions do not execute command substitutions as Dagu field
   evaluation. Shell command checks may still execute command substitutions
   through the selected shell.
 - Escaped Dagu-looking text follows Spec 003 escape behavior.
+
+### Eval Text
+
+Rules:
+
+- `eval` is optional.
+- `eval` must be a string with at least one non-whitespace character when
+  present.
+- `eval` is mutually exclusive with `condition`.
+- `eval` may be present only when `expected` is present.
+- `eval` is dynamic-evaluated before the condition is checked.
+- Dynamic evaluation follows Spec 011.
+- Dagu-owned references in `eval` are resolved before command substitution.
+- Backtick and `$()` command substitutions in `eval` are executed by Dagu.
+- Root precondition `eval` command substitutions use the root precondition shell,
+  environment, and working directory.
+- Step precondition `eval` command substitutions use the step precondition shell,
+  environment, and working directory.
+- A dynamic-evaluation failure in `eval` is a precondition evaluation error, not
+  a not-met condition.
 
 ### Expected Value
 
@@ -193,44 +228,39 @@ Rules:
   later condition being skipped only because an earlier condition is not met.
 - Output produced by one command-check condition is not captured as data for a
   later condition entry.
-- Output produced by command substitution in one value-match condition is not
-  captured as data for a later condition entry.
+- Value-match conditions do not publish command output.
 
 ### Value-Match Conditions
 
-A value-match condition evaluates command substitutions in the resolved
-condition text, then compares the resulting text to `expected`.
+A value-match condition compares the actual value from `condition` or `eval` to
+`expected`.
+
+When the source is `condition`, the condition text is data, not a shell command.
+When the source is `eval`, command substitution is explicit dynamic evaluation.
 
 Rules:
 
 - Value-match mode is selected when an object condition entry contains
   `expected`.
-- The condition text is not executed as a command.
-- Dagu executes command substitutions written in backtick form or `$()` form.
-- Command substitution syntax follows Spec 011.
-- Dagu-owned value references are resolved before command substitutions run.
-- Command substitutions run through the selected shell for the owning
-  precondition context.
-- Command substitutions use the environment and working directory for the
-  owning precondition context.
-- Dagu inserts command stdout into the condition text after trimming
-  surrounding whitespace.
-- Successful command-substitution stderr is captured and ignored.
-- A command substitution that exits with a non-zero status is an evaluation
-  error.
-- A command substitution that cannot start is an evaluation error.
-- A command substitution that times out is an evaluation error.
-- Command substitutions are the only shell syntax that Dagu executes in
-  value-match condition text.
-- Shell operators, redirects, glob characters, quotes, and other shell syntax
-  outside command-substitution forms are ordinary text after Dagu-owned value
+- A value-match condition must contain exactly one value source: `condition` or
+  `eval`.
+- `condition` source text is not executed as a command.
+- Dagu-owned value references are resolved before matching.
+- Dagu does not execute command substitutions written in backtick form or `$()`
+  form in `condition`.
+- Dagu does execute command substitutions written in backtick form or `$()` form
+  in `eval`.
+- Shell operators, redirects, glob characters, quotes, command substitutions,
+  and other shell syntax in `condition` are ordinary text after Dagu-owned value
   and environment resolution.
-- Literal `expected` passes when at least one line in the condition text exactly
+- Command-generated values can be computed directly in `eval`, or in
+  `params[].eval` and referenced from `condition`.
+- Literal `expected` passes when at least one line in the actual value exactly
   equals `expected`.
 - `expected: re:<pattern>` passes when `<pattern>` matches at least one line in
-  the condition text.
-- Matching against an empty condition text is allowed only when value resolution
-  produced an empty string.
+  the actual value.
+- Matching against an empty actual value is allowed only when value resolution or
+  dynamic evaluation produced an empty string.
 - An invalid regex pattern is a validation error when it is known before
   runtime.
 - If an invalid regex pattern is not detected until runtime, checking the
@@ -258,7 +288,8 @@ command exits successfully.
 
 Rules:
 
-- Command-check mode is selected when `expected` is omitted.
+- Command-check mode is selected when `expected` is omitted and the entry uses
+  `condition`.
 - The resolved condition text is the command text.
 - Dagu does not execute command substitutions in the command text before
   starting the command check.
@@ -326,11 +357,10 @@ Rules:
 - DAG-level preconditions are checked before `handler_on.init`.
 - DAG-level preconditions are checked before any normal step starts.
 - DAG-level value-match conditions have no step-output lookup scope.
-- DAG-level value-match command substitutions use the DAG-level shell
-  selection.
-- DAG-level value-match command substitutions use the root working directory
-  that normal steps would inherit when they do not set a step working directory.
-- DAG-level value-match command substitutions receive the root run environment.
+- DAG-level value-match conditions use the root run environment for value
+  resolution and dynamic evaluation.
+- DAG-level `eval` command substitutions use the root working directory that
+  normal steps would inherit when they do not set a step working directory.
 - DAG-level command checks use the root working directory that normal steps
   would inherit when they do not set a step working directory.
 - DAG-level command checks receive the root run environment.
@@ -353,14 +383,16 @@ Rules:
   would use.
 - Step-level command checks receive the same runtime environment that the step
   action would receive at start time.
-- Step-level value-match command substitutions use the same shell, working
-  directory, and runtime environment that the step action would use at start
-  time.
+- Step-level value-match conditions use the same runtime environment that the
+  step action would receive at start time for value resolution and dynamic
+  evaluation.
+- Step-level `eval` command substitutions use the same working directory that
+  the step action would use.
 - Step-specific Dagu environment variables, such as the step name and step
   stream file paths, are available to step-level command checks when they are
   available to the step action.
 - Step-specific Dagu environment variables are available to step-level
-  value-match command substitutions under the same rule.
+  value-match condition value resolution under the same rule.
 - Step-level value-match conditions may resolve step-output references only
   when Spec 007 permits the owning step to read those outputs.
 
@@ -410,9 +442,13 @@ Validation must fail when:
 - `preconditions` is neither a string nor an array.
 - A `preconditions` array item is neither a string nor an object.
 - A string shortcut is empty or whitespace only.
-- An object condition entry omits `condition`.
+- An object condition entry omits both `condition` and `eval`.
+- An object condition entry contains both `condition` and `eval`.
 - An object condition entry has empty or whitespace-only `condition`.
 - An object condition entry has non-string `condition`.
+- An object condition entry has empty or whitespace-only `eval`.
+- An object condition entry has non-string `eval`.
+- An object condition entry contains `eval` without `expected`.
 - An object condition entry has non-string `expected`.
 - An object condition entry has empty or whitespace-only `expected`.
 - An object condition entry has non-boolean `negate`.
@@ -426,6 +462,8 @@ Validation must not:
 - Execute command-check conditions.
 - Execute runtime `$()` or backtick command substitution while validating
   `condition`.
+- Execute runtime `$()` or backtick command substitution while validating
+  `eval`.
 - Check whether a command-check executable path exists.
 - Check whether shell syntax in command-check text is valid for the selected
   shell.
@@ -437,11 +475,9 @@ Validation must not:
 Runtime checking must fail the owning DAG or step when:
 
 - Value resolution of `condition` returns an error.
+- Dynamic evaluation of `eval` returns an error.
 - The selected shell cannot be resolved.
 - The selected working directory cannot be used.
-- A value-match command substitution exits with a non-zero status.
-- A value-match command substitution command cannot be started.
-- A value-match command substitution times out.
 - A regex pattern reaches runtime and cannot be compiled.
 - Workflow abort interrupts precondition checking.
 - Workflow timeout interrupts precondition checking.
@@ -553,38 +589,54 @@ Expected behavior:
 - If `maintenance.lock` does not exist, the step action starts.
 - If `maintenance.lock` exists, the step is `skipped`.
 
-### Value Match Command Substitution
+### Value Match With Eval
 
 ```yaml
 steps:
   - id: midnight_job
     preconditions:
-      - condition: "`printf 00`"
+      - eval: `date +%H`
         expected: "00"
     run: touch midnight-ran
 ```
 
 Expected behavior:
 
-- Dagu executes `printf 00` before matching.
-- The resolved condition text is `00`.
-- The precondition passes.
-- The step action starts.
+- Dagu dynamically evaluates the precondition `eval` field before matching.
+- The precondition compares the evaluated value to `expected`.
+- If the value is `00`, the step action starts.
+- If the value is not `00`, the step is `skipped`.
 
-### Value Match With `$()` Command Substitution
+### Value Match Preserves Command Substitution Text
 
 ```yaml
 steps:
-  - id: morning_job
+  - id: literal_text
     preconditions:
-      - condition: "$(printf 08)"
-        expected: "re:0[8-9]"
-    run: touch morning-ran
+      - condition: "$(printf ready)"
+        expected: "$(printf ready)"
+    run: touch literal-ran
 ```
 
 Expected behavior:
 
-- Dagu executes `printf 08` before matching.
-- The resolved condition text is `08`.
-- The regex matches.
+- Dagu does not execute `printf ready` while checking the value-match
+  condition.
+- The condition text matches literally.
 - The step action starts.
+
+### Command Check With Shell Command Substitution
+
+```yaml
+steps:
+  - id: shell_check
+    preconditions:
+      - condition: test "$(printf ready)" = ready
+    run: touch shell-check-ran
+```
+
+Expected behavior:
+
+- Dagu starts the command check through the selected shell.
+- The shell interprets `$(printf ready)`.
+- If the shell command exits `0`, the step action starts.

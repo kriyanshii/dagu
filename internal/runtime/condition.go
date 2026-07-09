@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
@@ -57,8 +56,10 @@ func EvalConditions(ctx context.Context, shell []string, cond []*core.Condition)
 func EvalCondition(ctx context.Context, shell []string, c *core.Condition) error {
 	var err error
 	switch {
-	case c.Condition != "" && c.Expected != "":
+	case c.Expected != "" && (c.Condition != "" || c.Eval != ""):
 		err = matchCondition(ctx, shell, c)
+	case c.Eval != "":
+		err = fmt.Errorf("expected is required when eval is set")
 
 	default:
 		err = evalCommand(ctx, shell, c)
@@ -83,8 +84,15 @@ func EvalCondition(ctx context.Context, shell []string, c *core.Condition) error
 // matchCondition evaluates the condition and checks if it matches the expected value.
 // It returns an error if the condition was not met.
 func matchCondition(ctx context.Context, shell []string, c *core.Condition) error {
-	evalCtx := conditionValueContext(ctx, shell)
-	evaluatedVal, err := resolveRuntimeString(evalCtx, c.Condition, cmnvalue.ConditionRuntimeValueField("condition"))
+	raw := c.Condition
+	field := cmnvalue.ConditionRuntimeValueField("condition")
+	if c.Eval != "" {
+		raw = c.Eval
+		field = cmnvalue.ConditionEvalField("eval")
+		ctx = conditionEvalContext(ctx, shell)
+	}
+
+	evaluatedVal, err := resolveRuntimeString(ctx, raw, field)
 	if err != nil {
 		return fmt.Errorf("failed to evaluate the value: Error=%v", err)
 	}
@@ -107,6 +115,16 @@ func matchCondition(ctx context.Context, shell []string, c *core.Condition) erro
 	return fmt.Errorf("%w: expected %q, got %q", ErrConditionNotMet, c.Expected, evaluatedVal)
 }
 
+func conditionEvalContext(ctx context.Context, shell []string) context.Context {
+	if len(shell) > 0 {
+		ctx = cmnvalue.WithCommandSubstitutionShell(ctx, shell)
+	}
+	if env, ok := conditionEnv(ctx); ok {
+		ctx = cmnvalue.WithCommandSubstitutionWorkingDir(ctx, env.WorkingDir)
+	}
+	return ctx
+}
+
 func evalCommand(ctx context.Context, shell []string, c *core.Condition) error {
 	command := cmnvalue.CommandContext{
 		Target:          cmnvalue.CommandTargetLocal,
@@ -125,14 +143,6 @@ func evalCommand(ctx context.Context, shell []string, c *core.Condition) error {
 		return runShellCommand(ctx, shell, commandToRun, workingDir)
 	}
 	return runDirectCommand(ctx, commandToRun, workingDir)
-}
-
-func conditionValueContext(ctx context.Context, shell []string) context.Context {
-	ctx = cmnvalue.WithCommandSubstitutionShell(ctx, shell)
-	if env, ok := conditionEnv(ctx); ok && env.WorkingDir != "" {
-		ctx = cmnvalue.WithCommandSubstitutionWorkingDir(ctx, filepath.Clean(env.WorkingDir))
-	}
-	return ctx
 }
 
 func conditionEnv(ctx context.Context) (Env, bool) {
