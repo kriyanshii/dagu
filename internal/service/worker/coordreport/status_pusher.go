@@ -21,6 +21,7 @@ type StatusPusher struct {
 	client   coordinator.Client
 	workerID string
 	owner    exec.HostInfo
+	claimKey string
 }
 
 // AttemptRejectedError indicates the coordinator explicitly rejected a status
@@ -44,8 +45,8 @@ func (e *AttemptRejectedError) AttemptRejectedReason() string {
 	return e.Reason
 }
 
-// NewStatusPusher creates a new StatusPusher
-func NewStatusPusher(client coordinator.Client, workerID string, owner ...exec.HostInfo) *StatusPusher {
+// NewStatusPusher creates a StatusPusher bound to a worker claim.
+func NewStatusPusher(client coordinator.Client, workerID, claimKey string, owner ...exec.HostInfo) *StatusPusher {
 	var target exec.HostInfo
 	if len(owner) > 0 {
 		target = owner[0]
@@ -54,11 +55,15 @@ func NewStatusPusher(client coordinator.Client, workerID string, owner ...exec.H
 		client:   client,
 		workerID: workerID,
 		owner:    target,
+		claimKey: claimKey,
 	}
 }
 
 // Push sends a status update to the coordinator
 func (p *StatusPusher) Push(ctx context.Context, status exec.DAGRunStatus) error {
+	if p.claimKey != "" {
+		status.ClaimKey = p.claimKey
+	}
 	protoStatus, err := convert.DAGRunStatusToProto(&status)
 	if err != nil {
 		return fmt.Errorf("failed to convert status to proto: %w", err)

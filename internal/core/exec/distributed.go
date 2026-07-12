@@ -164,7 +164,7 @@ type WorkerHeartbeatStore interface {
 	DeleteStale(ctx context.Context, before time.Time) (int, error)
 }
 
-// DAGRunLease is the shared liveness record for an active distributed attempt.
+// DAGRunLease is the shared liveness record for an accepted worker claim.
 type DAGRunLease struct {
 	AttemptKey      string              `json:"attemptKey"`
 	DAGRun          DAGRunRef           `json:"dagRun"`
@@ -175,6 +175,16 @@ type DAGRunLease struct {
 	Owner           CoordinatorEndpoint `json:"owner"`
 	ClaimedAt       int64               `json:"claimedAt"`
 	LastHeartbeatAt int64               `json:"lastHeartbeatAt"`
+}
+
+// MatchesClaim reports whether the lease identifies claimKey without
+// conflicting with workerID. An empty worker ID on either side is treated as
+// unspecified.
+func (l *DAGRunLease) MatchesClaim(claimKey, workerID string) bool {
+	if l == nil || claimKey == "" || l.AttemptKey != claimKey {
+		return false
+	}
+	return l.WorkerID == "" || workerID == "" || l.WorkerID == workerID
 }
 
 // LastHeartbeatTime returns the last run heartbeat time.
@@ -201,7 +211,7 @@ func (l DAGRunLease) IsFresh(now time.Time, staleThreshold time.Duration) bool {
 	return now.Sub(l.LastHeartbeatTime()) < staleThreshold
 }
 
-// DAGRunLeaseStore persists active distributed attempt leases.
+// DAGRunLeaseStore persists live worker-claim leases.
 type DAGRunLeaseStore interface {
 	Upsert(ctx context.Context, lease DAGRunLease) error
 	Touch(ctx context.Context, attemptKey string, observedAt time.Time) error
@@ -211,8 +221,7 @@ type DAGRunLeaseStore interface {
 	ListAll(ctx context.Context) ([]DAGRunLease, error)
 }
 
-// ActiveDistributedRun is the durable active-set record for a remote attempt
-// that is still expected to own execution authority.
+// ActiveDistributedRun is the durable active-set record for a remote attempt.
 type ActiveDistributedRun struct {
 	AttemptKey string      `json:"attemptKey"`
 	DAGRun     DAGRunRef   `json:"dagRun"`

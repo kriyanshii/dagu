@@ -46,7 +46,7 @@ func newAttemptOwnership(cfg attemptOwnershipConfig) *attemptOwnership {
 	}
 }
 
-func (h *Handler) distributedAttempts() *attemptOwnership {
+func (h *Handler) attemptOwnership() *attemptOwnership {
 	return newAttemptOwnership(attemptOwnershipConfig{
 		Owner:               h.owner,
 		LeaseStore:          h.dagRunLeaseStore,
@@ -70,7 +70,11 @@ func (o *attemptOwnership) statusDecision(
 	if !isTerminalRunStatus(latest.Status) {
 		return true, ""
 	}
-	if o.leaseInactive(ctx, latest.AttemptKey) && (incoming.Status.IsActive() || incoming.Status == core.NotStarted) {
+	claimKey := opts.ClaimKey
+	if claimKey == "" {
+		claimKey = latest.EffectiveClaimKey()
+	}
+	if o.leaseInactive(ctx, claimKey) && (incoming.Status.IsActive() || incoming.Status == core.NotStarted) {
 		return false, remoteAttemptRejectedLeaseInactive
 	}
 	if latest.Status == incoming.Status {
@@ -84,6 +88,7 @@ func (o *attemptOwnership) statusDecision(
 
 type statusDecisionOptions struct {
 	CancellationRequested bool
+	ClaimKey              string
 }
 
 func (o *attemptOwnership) leaseInactive(ctx context.Context, attemptKey string) bool {
@@ -155,6 +160,13 @@ func (o *attemptOwnership) upsertLeaseFromStatus(
 
 	attemptKey := exec.AttemptKeyForStatus(status, fallbackAttemptID)
 	if attemptKey == "" {
+		return
+	}
+	claimKey := status.EffectiveClaimKey()
+	if claimKey == "" {
+		claimKey = attemptKey
+	}
+	if claimKey != attemptKey {
 		return
 	}
 
@@ -432,7 +444,7 @@ func (o *attemptOwnership) indexedRunMatchesStatus(
 	record exec.ActiveDistributedRun,
 	runStatus *exec.DAGRunStatus,
 ) bool {
-	if _, ok := distributedWorkerIDForStatus(runStatus, record.WorkerID); !ok {
+	if _, ok := remoteWorkerID(runStatus, record.WorkerID); !ok {
 		return false
 	}
 	if runStatus.Status != core.Running &&
@@ -484,7 +496,7 @@ func sameAttemptStatus(current, incoming *exec.DAGRunStatus) bool {
 	return current.AttemptKey != "" && current.AttemptKey == incoming.AttemptKey
 }
 
-func distributedWorkerIDForStatus(status *exec.DAGRunStatus, fallbackWorkerID string) (string, bool) {
+func remoteWorkerID(status *exec.DAGRunStatus, fallbackWorkerID string) (string, bool) {
 	if status == nil {
 		return "", false
 	}

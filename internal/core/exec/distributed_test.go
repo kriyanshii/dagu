@@ -42,3 +42,22 @@ func TestAttemptKeyForStatus(t *testing.T) {
 		assert.Empty(t, exec.AttemptKeyForStatus(status, ""))
 	})
 }
+
+func TestDAGRunStatusEffectiveClaimKey(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "attempt-key", (exec.DAGRunStatus{AttemptKey: "attempt-key"}).EffectiveClaimKey())
+	assert.Equal(t, "claim-key", (exec.DAGRunStatus{
+		AttemptKey: "attempt-key",
+		ClaimKey:   "claim-key",
+	}).EffectiveClaimKey())
+}
+
+func TestDAGRunLeaseMatchesClaim(t *testing.T) {
+	t.Parallel()
+
+	lease := &exec.DAGRunLease{AttemptKey: "claim-key", WorkerID: "worker-1"}
+	assert.True(t, lease.MatchesClaim("claim-key", "worker-1"))
+	assert.False(t, lease.MatchesClaim("other-claim", "worker-1"))
+	assert.False(t, lease.MatchesClaim("claim-key", "worker-2"))
+}
