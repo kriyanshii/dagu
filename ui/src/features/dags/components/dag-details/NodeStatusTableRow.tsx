@@ -46,7 +46,7 @@ import {
   RefreshCw,
   X,
 } from 'lucide-react';
-import { useContext, useEffect, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { buildDAGPageURL } from '../../../dag-runs/lib/dagRunUrls';
 import {
@@ -87,6 +87,8 @@ type Props = {
   dagRun: components['schemas']['DAGRunDetails'];
   /** View mode: desktop or mobile */
   view?: 'desktop' | 'mobile';
+  /** Whether the inline log starts expanded */
+  defaultLogExpanded?: boolean;
 };
 
 /**
@@ -149,6 +151,7 @@ function NodeStatusTableRow({
   onNodeStatusUpdated,
   dagRun,
   view = 'desktop',
+  defaultLogExpanded = false,
 }: Props) {
   const { dagRunId, name: dagName } = dagRun;
   const navigate = useNavigate();
@@ -166,9 +169,9 @@ function NodeStatusTableRow({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   // State for inline log expansion
-  const [isLogExpanded, setIsLogExpanded] = useState(false);
+  const [isLogExpanded, setIsLogExpanded] = useState(defaultLogExpanded);
   const [activeLogTab, setActiveLogTab] = useState<'stdout' | 'stderr'>(
-    'stdout'
+    defaultLogExpanded && node.stderr ? 'stderr' : 'stdout'
   );
   // State for status update modal
   const [showStatusModal, setShowStatusModal] = useState(false);
@@ -191,6 +194,22 @@ function NodeStatusTableRow({
     dagRun.rootDAGRunId !== dagRun.dagRunId;
   const shouldFetchLogStepOutput =
     logMessage !== null && hasStdout && !!dagRunId;
+
+  // Expand the log when this row becomes the first failed step while already
+  // mounted (live polling). Applied once per false-to-true transition so a
+  // manual collapse afterwards is respected.
+  const autoExpandApplied = useRef(defaultLogExpanded);
+  useEffect(() => {
+    if (!defaultLogExpanded) {
+      autoExpandApplied.current = false;
+      return;
+    }
+    if (autoExpandApplied.current || !hasLogs) return;
+    autoExpandApplied.current = true;
+    setIsLogExpanded(true);
+    setActiveLogTab(hasStderr ? 'stderr' : 'stdout');
+  }, [defaultLogExpanded, hasLogs, hasStderr]);
+
   const showStepActions = Boolean(dagRunId && config.permissions.runDags);
   const canRetryStep =
     showStepActions &&
