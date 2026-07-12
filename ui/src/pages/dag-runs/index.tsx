@@ -36,6 +36,7 @@ import {
 } from '../../lib/workspace';
 import StatusChip from '@/components/ui/status-chip';
 import Title from '@/components/ui/title';
+import type { StatusTab } from '@/features/dags/components/DAGStatus';
 
 type DAGRunsFilters = {
   searchText: string;
@@ -254,6 +255,22 @@ function DAGRuns() {
     name: string;
     dagRunId: string;
   } | null>(null);
+  const [selectedDAGRunInitialTab, setSelectedDAGRunInitialTab] =
+    React.useState<StatusTab>('status');
+  const selectDAGRun = React.useCallback(
+    (dagRun: { name: string; dagRunId: string } | null) => {
+      setSelectedDAGRunInitialTab('status');
+      setSelectedDAGRun(dagRun);
+    },
+    []
+  );
+  const viewDAGRunArtifacts = React.useCallback(
+    (dagRun: { name: string; dagRunId: string }) => {
+      setSelectedDAGRunInitialTab('artifacts');
+      setSelectedDAGRun(dagRun);
+    },
+    []
+  );
   const loadMoreSentinelRef = React.useRef<HTMLDivElement>(null);
   const autoLoadPendingRef = React.useRef(false);
 
@@ -971,7 +988,8 @@ function DAGRuns() {
           <DAGRunTable
             dagRuns={dagRuns}
             selectedDAGRun={selectedDAGRun}
-            onSelectDAGRun={setSelectedDAGRun}
+            onSelectDAGRun={selectDAGRun}
+            onViewArtifacts={viewDAGRunArtifacts}
             selectedRunKeys={selectedKeys}
             onToggleBulkSelect={toggleSelection}
           />
@@ -979,7 +997,8 @@ function DAGRuns() {
           <DAGRunGroupedView
             dagRuns={dagRuns}
             selectedDAGRun={selectedDAGRun}
-            onSelectDAGRun={setSelectedDAGRun}
+            onSelectDAGRun={selectDAGRun}
+            onViewArtifacts={viewDAGRunArtifacts}
             selectedRunKeys={selectedKeys}
             onToggleBulkSelect={toggleSelection}
           />
@@ -1021,6 +1040,7 @@ function DAGRuns() {
           dagRunId={selectedDAGRun.dagRunId}
           isOpen={!!selectedDAGRun}
           onClose={() => setSelectedDAGRun(null)}
+          initialTab={selectedDAGRunInitialTab}
         />
       )}
     </div>

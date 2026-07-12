@@ -123,8 +123,6 @@ function DAGRunDetailsModal({
   const displayDagRunId = freshDetails
     ? dagRunId
     : (previousDataRef.current?.dagRunId ?? dagRunId);
-  const fillContentHeight = initialTab === 'artifacts';
-
   useEffect(() => {
     if (freshDetails) {
       previousDataRef.current = { name, dagRunId, dagRunDetails: freshDetails };
@@ -217,8 +215,7 @@ function DAGRunDetailsModal({
 
       <div
         className={cn(
-          'fixed top-0 bottom-0 right-0 z-50 h-screen w-full border-l border-indigo-500/30 bg-background transition-all duration-150 ease-out md:w-3/4',
-          fillContentHeight ? 'overflow-hidden' : 'overflow-y-auto',
+          'fixed top-0 bottom-0 right-0 z-50 h-screen w-full overflow-hidden border-l border-indigo-500/30 bg-background transition-all duration-150 ease-out md:w-3/4',
           modalVisibilityClass
         )}
       >
@@ -269,12 +266,7 @@ function DAGRunDetailsModal({
               </div>
             </div>
 
-            <div
-              className={cn(
-                'relative min-h-0 flex-1',
-                fillContentHeight ? 'overflow-hidden' : 'overflow-y-auto'
-              )}
-            >
+            <div className="relative min-h-0 flex-1 overflow-hidden">
               {isTransitioning && (
                 <div className="absolute top-2 right-2 z-10">
                   <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -300,7 +292,7 @@ function DAGRunDetailsModal({
                   refreshFn={refreshFn}
                   dagRunId={displayDagRunId}
                   initialTab={initialTab}
-                  fillHeight={fillContentHeight}
+                  fillHeight
                 />
               )}
             </div>

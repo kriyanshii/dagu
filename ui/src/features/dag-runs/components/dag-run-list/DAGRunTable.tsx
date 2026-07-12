@@ -25,12 +25,14 @@ import {
   getDAGRunSelectionKey,
 } from '../../hooks/useBulkDAGRunSelection';
 import { StepDetailsTooltip } from './StepDetailsTooltip';
+import { DAGRunArtifactsButton } from './DAGRunArtifactsButton';
 
 interface DAGRunTableProps {
   dagRuns: components['schemas']['DAGRunSummary'][];
   selectedRunKeys?: Set<string>;
   selectedDAGRun?: { name: string; dagRunId: string } | null;
   onSelectDAGRun?: (dagRun: { name: string; dagRunId: string } | null) => void;
+  onViewArtifacts?: (dagRun: DAGRunSelectionItem) => void;
   onToggleBulkSelect?: (dagRun: DAGRunSelectionItem) => void;
 }
 
@@ -55,6 +57,7 @@ function DAGRunTable({
   selectedRunKeys,
   selectedDAGRun = null,
   onSelectDAGRun,
+  onViewArtifacts,
   onToggleBulkSelect,
 }: DAGRunTableProps) {
   const config = useConfig();
@@ -334,19 +337,27 @@ function DAGRunTable({
                 )}
                 <div className="font-normal text-sm">{dagRun.name}</div>
               </div>
-              <StepDetailsTooltip dagRun={dagRun}>
-                <div className="flex flex-col items-end gap-1">
-                  <StatusChip status={dagRun.status} size="xs">
-                    {dagRun.statusLabel}
-                  </StatusChip>
-                  <AutoRetryBadge
-                    status={dagRun.status}
-                    count={dagRun.autoRetryCount}
-                    limit={dagRun.autoRetryLimit}
-                    className="text-[10px]"
+              <div className="flex items-start gap-2">
+                {onViewArtifacts && (
+                  <DAGRunArtifactsButton
+                    dagRun={dagRun}
+                    onClick={() => onViewArtifacts(dagRun)}
                   />
-                </div>
-              </StepDetailsTooltip>
+                )}
+                <StepDetailsTooltip dagRun={dagRun}>
+                  <div className="flex flex-col items-end gap-1">
+                    <StatusChip status={dagRun.status} size="xs">
+                      {dagRun.statusLabel}
+                    </StatusChip>
+                    <AutoRetryBadge
+                      status={dagRun.status}
+                      count={dagRun.autoRetryCount}
+                      limit={dagRun.autoRetryLimit}
+                      className="text-[10px]"
+                    />
+                  </div>
+                </StepDetailsTooltip>
+              </div>
             </div>
 
             {/* DAG-run ID and Trigger */}
@@ -524,7 +535,15 @@ function DAGRunTable({
                 </TableCell>
               )}
               <TableCell className="py-1 px-2 font-normal">
-                {dagRun.name}
+                <div className="flex items-center gap-2">
+                  <span className="min-w-0 truncate">{dagRun.name}</span>
+                  {onViewArtifacts && (
+                    <DAGRunArtifactsButton
+                      dagRun={dagRun}
+                      onClick={() => onViewArtifacts(dagRun)}
+                    />
+                  )}
+                </div>
               </TableCell>
               <TableCell className="py-1 px-2 font-mono text-muted-foreground">
                 {dagRun.dagRunId}
