@@ -67,6 +67,7 @@ import (
 const (
 	serverShutdownTimeout = 10 * time.Second
 	httpShutdownBudget    = 5 * time.Second
+	httpWriteTimeout      = 60 * time.Second
 )
 
 type shutdownActions struct {
@@ -741,7 +742,7 @@ func (srv *Server) Serve(ctx context.Context) error {
 		Addr:              addr,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      httpWriteTimeout,
 	}
 
 	metrics.StartUptime(ctx)
@@ -979,7 +980,7 @@ func (srv *Server) setupOIDCRoutes(r *chi.Mux, basePath string) {
 func (srv *Server) setupAPIRoutes(ctx context.Context, r *chi.Mux, apiV1BasePath string) error {
 	var setupErr error
 	r.Route(apiV1BasePath, func(r chi.Router) {
-		if err := srv.apiV1.ConfigureRoutes(ctx, r); err != nil {
+		if err := srv.apiV1.ConfigureRoutes(ctx, r, httpWriteTimeout); err != nil {
 			logger.Error(ctx, "Failed to configure API routes", tag.Error(err))
 			setupErr = err
 		}
