@@ -255,7 +255,7 @@ func TestAgent_Run(t *testing.T) {
 
 		// Set a precondition that always fails
 		dag.Preconditions = []*core.Condition{
-			{Condition: "`" + test.Output("1") + "`", Expected: "0"},
+			{Condition: "1", Expected: "0"},
 		}
 
 		dagAgent := dag.Agent()
@@ -953,12 +953,12 @@ func TestAgent_OutputCollection(t *testing.T) {
 			expected: map[string]string{"myOutputVar": "value"},
 		},
 		{
-			name: "StructuredOutputDoesNotParticipate",
+			name: "StructuredOutputParticipates",
 			dag: `steps:
   - id: publish
     output:
       label: "value"`,
-			expected: map[string]string{},
+			expected: map[string]string{"label": "value"},
 		},
 		{
 			name: "MultipleSteps",

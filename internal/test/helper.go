@@ -22,7 +22,6 @@ import (
 
 	"github.com/spf13/viper"
 
-	agentstore "github.com/dagucloud/dagu/internal/agent"
 	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/cmn/fileutil"
@@ -75,7 +74,7 @@ type Options struct {
 	CoordinatorPort      int
 	ServerOptions        []frontend.ServerOption
 	UseBuiltExecutable   bool // UseBuiltExecutable builds the current ./cmd binary for subprocess-based tests
-	// Coordinator handler options for shared-nothing worker tests
+	// Coordinator handler options for worker tests
 	WithStatusPersistence   bool          // Enable status persistence via DAGRunStore
 	WithLogPersistence      bool          // Enable log persistence to filesystem
 	WithArtifactPersistence bool          // Enable artifact persistence to filesystem
@@ -787,15 +786,13 @@ func (d *DAG) Agent(opts ...AgentOption) *Agent {
 	helper.opts.DAGRunArtifactDir = d.Config.Paths.ArtifactDir
 	if helper.opts.SubWorkflowRunnerFactory == nil {
 		helper.opts.SubWorkflowRunnerFactory = node.NewSubWorkflowRunnerFactory(node.SubWorkflowRunnerConfig{
-			DAGRunMgr:   d.DAGRunMgr,
-			DAGStore:    d.DAGStore,
-			DAGRunStore: d.DAGRunStore,
-			QueueStore:  d.QueueStore,
-			StateStore:  d.StateStore,
-			AgentStores: agentstore.RuntimeStores{
-				SecretStore:  helper.opts.SecretStore,
-				ProfileStore: helper.opts.ProfileStore,
-			},
+			DAGRunMgr:         d.DAGRunMgr,
+			DAGStore:          d.DAGStore,
+			DAGRunStore:       d.DAGRunStore,
+			QueueStore:        d.QueueStore,
+			StateStore:        d.StateStore,
+			SecretStore:       helper.opts.SecretStore,
+			ProfileStore:      helper.opts.ProfileStore,
 			ServiceRegistry:   d.ServiceRegistry,
 			PeerConfig:        d.Config.Core.Peer,
 			DefaultExecMode:   d.Config.DefaultExecMode,
@@ -947,8 +944,8 @@ func testShellPath(t *testing.T) string {
 		if shPath := windowsSystemPowerShellPath(); shPath != "" {
 			return shPath
 		}
-		if shPath := strings.TrimSpace(os.Getenv("COMSPEC")); shPath != "" {
-			if _, err := os.Stat(shPath); err == nil {
+		if shPath := cleanWindowsEnvExecutablePath(os.Getenv("COMSPEC"), "cmd.exe"); shPath != "" {
+			if testFileExists(shPath) {
 				return shPath
 			}
 		}
@@ -966,7 +963,7 @@ func testShellPath(t *testing.T) string {
 }
 
 func windowsSystemPowerShellPath() string {
-	systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
+	systemRoot := cleanWindowsSystemRoot(os.Getenv("SystemRoot"))
 	if systemRoot == "" {
 		return ""
 	}
@@ -975,12 +972,42 @@ func windowsSystemPowerShellPath() string {
 		filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
 		filepath.Join(systemRoot, "Sysnative", "WindowsPowerShell", "v1.0", "powershell.exe"),
 	} {
-		if _, err := os.Stat(candidate); err == nil {
+		if testFileExists(candidate) {
 			return candidate
 		}
 	}
 
 	return ""
+}
+
+func cleanWindowsEnvExecutablePath(raw string, allowedNames ...string) string {
+	pathValue := filepath.Clean(strings.TrimSpace(raw))
+	if pathValue == "." || !filepath.IsAbs(pathValue) {
+		return ""
+	}
+	base := filepath.Base(pathValue)
+	for _, name := range allowedNames {
+		if strings.EqualFold(base, name) {
+			return pathValue
+		}
+	}
+	return ""
+}
+
+func cleanWindowsSystemRoot(raw string) string {
+	pathValue := filepath.Clean(strings.TrimSpace(raw))
+	if pathValue == "." || !filepath.IsAbs(pathValue) {
+		return ""
+	}
+	if filepath.VolumeName(pathValue) == "" {
+		return ""
+	}
+	return pathValue
+}
+
+func testFileExists(path string) bool {
+	_, err := os.Stat(path) //nolint:gosec // path is constrained by the caller before probing the test host.
+	return err == nil
 }
 
 func buildHelperChildEnv(base []string, daguHome, configFile, executablePath, shellPath string) []string {

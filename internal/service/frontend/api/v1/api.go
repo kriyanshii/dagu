@@ -16,14 +16,11 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/agent"
-	"github.com/dagucloud/dagu/internal/agentoauth"
-	"github.com/dagucloud/dagu/internal/agentsnapshot"
 	"github.com/dagucloud/dagu/internal/auth"
 	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/eval"
 	"github.com/dagucloud/dagu/internal/cmn/logger"
 	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/baseconfig"
 	"github.com/dagucloud/dagu/internal/core/exec"
@@ -47,6 +44,7 @@ import (
 	"github.com/dagucloud/dagu/internal/service/resource"
 	"github.com/dagucloud/dagu/internal/service/scheduler"
 	"github.com/dagucloud/dagu/internal/tunnel"
+	"github.com/dagucloud/dagu/internal/view"
 	"github.com/dagucloud/dagu/internal/workspace"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -84,25 +82,17 @@ type API struct {
 	tunnelService        *tunnel.Service
 	defaultExecMode      config.ExecutionMode
 	dagWritesDisabled    bool // True when git sync read-only mode is active
-	agentConfigStore     agent.ConfigStore
-	agentModelStore      agent.ModelStore
-	agentMemoryStore     agent.MemoryStore
-	agentSoulStore       agent.SoulStore
-	agentOAuthManager    *agentoauth.Manager
-	agentAPI             *agent.API
-	docStore             agent.DocStore
 	baseConfigStore      baseconfig.Store
 	dagSettingsStore     dagsettings.Store
 	secretStore          secretpkg.Store
 	profileStore         profilepkg.Store
+	viewStore            view.Store
 	licenseManager       *license.Manager
 	apiKeyCreateMu       sync.Mutex
 	workspaceStore       workspace.Store
 	leaseStaleThreshold  time.Duration
 	schedulerStateStore  scheduler.WatermarkStore
 	dagMutationNotifier  func(fileName string)
-	docMutationNotifier  func()
-	snapshotStoreFactory agentsnapshot.StoreFactory
 	baseConfigFactory    WorkspaceBaseConfigStoreFactory
 }
 
@@ -239,12 +229,6 @@ func WithWorkspaceBaseConfigStoreFactory(factory WorkspaceBaseConfigStoreFactory
 	}
 }
 
-func WithSnapshotStoreFactory(factory agentsnapshot.StoreFactory) APIOption {
-	return func(a *API) {
-		a.snapshotStoreFactory = factory
-	}
-}
-
 // WithSecretStore returns an APIOption that sets the secret registry store.
 func WithSecretStore(store secretpkg.Store) APIOption {
 	return func(a *API) {
@@ -259,6 +243,13 @@ func WithProfileStore(store profilepkg.Store) APIOption {
 	}
 }
 
+// WithViewStore returns an APIOption that sets the saved view store.
+func WithViewStore(store view.Store) APIOption {
+	return func(a *API) {
+		a.viewStore = store
+	}
+}
+
 // WithDAGSettingsStore returns an APIOption that sets the DAG settings store.
 func WithDAGSettingsStore(store dagsettings.Store) APIOption {
 	return func(a *API) {
@@ -266,52 +257,10 @@ func WithDAGSettingsStore(store dagsettings.Store) APIOption {
 	}
 }
 
-// WithAgentConfigStore returns an APIOption that sets the API's agent config store.
-func WithAgentConfigStore(store agent.ConfigStore) APIOption {
-	return func(a *API) {
-		a.agentConfigStore = store
-	}
-}
-
-// WithAgentModelStore returns an APIOption that sets the API's agent model store.
-func WithAgentModelStore(store agent.ModelStore) APIOption {
-	return func(a *API) {
-		a.agentModelStore = store
-	}
-}
-
-// WithAgentMemoryStore returns an APIOption that sets the API's agent memory store.
-func WithAgentMemoryStore(store agent.MemoryStore) APIOption {
-	return func(a *API) {
-		a.agentMemoryStore = store
-	}
-}
-
-// WithAgentSoulStore returns an APIOption that sets the API's agent soul store.
-func WithAgentSoulStore(store agent.SoulStore) APIOption {
-	return func(a *API) {
-		a.agentSoulStore = store
-	}
-}
-
-// WithAgentOAuthManager returns an APIOption that sets the API's agent OAuth manager.
-func WithAgentOAuthManager(manager *agentoauth.Manager) APIOption {
-	return func(a *API) {
-		a.agentOAuthManager = manager
-	}
-}
-
 // WithLicenseManager returns an APIOption that sets the API's license manager.
 func WithLicenseManager(m *license.Manager) APIOption {
 	return func(a *API) {
 		a.licenseManager = m
-	}
-}
-
-// WithDocStore returns an APIOption that sets the API's doc store.
-func WithDocStore(store agent.DocStore) APIOption {
-	return func(a *API) {
-		a.docStore = store
 	}
 }
 
@@ -351,14 +300,6 @@ func WithDAGMutationNotifier(fn func(fileName string)) APIOption {
 	}
 }
 
-// WithDocMutationNotifier returns an APIOption that is called after successful
-// document mutations that should invalidate live document views.
-func WithDocMutationNotifier(fn func()) APIOption {
-	return func(a *API) {
-		a.docMutationNotifier = fn
-	}
-}
-
 // WithDAGRunLeaseStore sets the shared distributed run lease store.
 func WithDAGRunLeaseStore(store exec.DAGRunLeaseStore) APIOption {
 	return func(a *API) {
@@ -379,13 +320,6 @@ func WithWorkerHeartbeatStore(store exec.WorkerHeartbeatStore) APIOption {
 func WithLeaseStaleThreshold(threshold time.Duration) APIOption {
 	return func(a *API) {
 		a.leaseStaleThreshold = threshold
-	}
-}
-
-// WithAgentAPI returns an APIOption that sets the API's agent API instance.
-func WithAgentAPI(a *agent.API) APIOption {
-	return func(api *API) {
-		api.agentAPI = a
 	}
 }
 
@@ -447,12 +381,6 @@ func (a *API) notifyDAGMutation(fileName string) {
 	}
 }
 
-func (a *API) notifyDocMutation() {
-	if a.docMutationNotifier != nil {
-		a.docMutationNotifier()
-	}
-}
-
 func (a *API) webhookMaxPayloadSize() int {
 	if a.config == nil || a.config.Webhooks.MaxPayloadSize <= 0 {
 		return config.DefaultWebhookMaxPayloadSize
@@ -460,7 +388,7 @@ func (a *API) webhookMaxPayloadSize() int {
 	return a.config.Webhooks.MaxPayloadSize
 }
 
-func (a *API) ConfigureRoutes(ctx context.Context, r chi.Router) error {
+func (a *API) ConfigureRoutes(ctx context.Context, r chi.Router, writeTimeout time.Duration) error {
 	swagger, err := a.loadOpenAPISpec(ctx)
 	if err != nil {
 		return err
@@ -487,7 +415,10 @@ func (a *API) ConfigureRoutes(ctx context.Context, r chi.Router) error {
 		r.Use(WithRemoteNode(a.remoteNodeResolver, mountedAPIPath))
 		r.Use(WebhookRequestContextMiddleware(a.webhookMaxPayloadSize()))
 
-		middlewares := []api.StrictMiddlewareFunc{validateDAGFileNameMiddleware}
+		middlewares := []api.StrictMiddlewareFunc{
+			validateDAGFileNameMiddleware,
+			resetSyncWriteDeadline(writeTimeout),
+		}
 		options := api.StrictHTTPServerOptions{
 			ResponseErrorHandlerFunc: a.handleError,
 		}
@@ -496,6 +427,21 @@ func (a *API) ConfigureRoutes(ctx context.Context, r chi.Router) error {
 	})
 
 	return nil
+}
+
+// TODO: Remove this workaround with the deprecated ExecuteDAGSync API.
+func resetSyncWriteDeadline(timeout time.Duration) api.StrictMiddlewareFunc {
+	return func(next api.StrictHandlerFunc, operationID string) api.StrictHandlerFunc {
+		if operationID != "ExecuteDAGSync" {
+			return next
+		}
+
+		return func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error) {
+			response, err := next(ctx, w, r, request)
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(timeout))
+			return response, err
+		}
+	}
 }
 
 func (a *API) restAuditSeedMiddleware() func(http.Handler) http.Handler {
@@ -648,7 +594,8 @@ func validateDAGFileNameFromRequest(request any) error {
 
 func (a *API) evaluateBasePath(ctx context.Context) string {
 	basePath := a.config.Server.BasePath
-	if evaluated, err := eval.String(ctx, basePath, eval.WithOSExpansion()); err != nil {
+	resolver := cmnvalue.NewResolver(cmnvalue.StaticScope{}, cmnvalue.RuntimeScope{})
+	if evaluated, err := resolver.String(ctx, basePath, cmnvalue.ServerBasePathField("server.base_path")); err != nil {
 		logger.Warn(ctx, "Failed to evaluate server base path",
 			tag.Path(basePath),
 			tag.Error(err))

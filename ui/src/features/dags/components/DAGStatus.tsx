@@ -23,8 +23,8 @@ import React, { useEffect, useState } from 'react';
 import { useCookies } from 'react-cookie';
 import { useNavigate } from 'react-router-dom';
 import { components, NodeStatus, Status, Stream } from '../../../api/v1/schema';
-import { AppBarContext } from '../../../contexts/AppBarContext';
 import { useConfig } from '../../../contexts/ConfigContext';
+import { useRemoteNode } from '../../../contexts/RemoteNodeContext';
 import { useClient } from '../../../hooks/api';
 import { cn, toMermaidNodeId } from '../../../lib/utils';
 import BorderedBox from '@/components/ui/bordered-box';
@@ -78,9 +78,9 @@ function DAGStatus({
   initialTab = 'status',
   fillHeight = false,
 }: Props) {
-  const appBarContext = React.useContext(AppBarContext);
   const dagContext = React.useContext(DAGContext);
   const config = useConfig();
+  const remoteNode = useRemoteNode();
   const navigate = useNavigate();
   const { showError } = useErrorModal();
   const [modal, setModal] = useState(false);
@@ -203,7 +203,7 @@ function DAGStatus({
       params: {
         path: pathParams,
         query: {
-          remoteNode: appBarContext.selectedRemoteNode || 'local',
+          remoteNode,
         },
       },
       body: {
@@ -249,7 +249,7 @@ function DAGStatus({
         }
       }
     },
-    [displayDAGRun, navigate, fileName]
+    [displayDAGRun, navigate, fileName, remoteNode]
   );
 
   const onInspectStepOnGraph = React.useCallback(
@@ -294,6 +294,7 @@ function DAGStatus({
         if (isDAGRunContext) {
           // For DAG runs, use query parameters to navigate to the DAG-run details page
           const searchParams = new URLSearchParams();
+          searchParams.set('remoteNode', remoteNode);
           searchParams.set('subDAGRunId', subDAGRun.dagRunId);
 
           // Use root DAG-run information
@@ -313,7 +314,16 @@ function DAGStatus({
           url = `/dag-runs/${rootDAGName}/${dagRunId}?${searchParams.toString()}`;
         } else {
           // For DAGs, use the existing approach with query parameters
-          url = `/dags/${fileName}?subDAGRunId=${subDAGRun.dagRunId}&dagRunId=${dagRunId}&step=${node.step.name}&dagRunName=${encodeURIComponent(displayDAGRun.rootDAGRunName || displayDAGRun.name)}`;
+          const searchParams = new URLSearchParams();
+          searchParams.set('remoteNode', remoteNode);
+          searchParams.set('subDAGRunId', subDAGRun.dagRunId);
+          searchParams.set('dagRunId', dagRunId);
+          searchParams.set('step', node.step.name);
+          searchParams.set(
+            'dagRunName',
+            displayDAGRun.rootDAGRunName || displayDAGRun.name
+          );
+          url = `/dags/${fileName}?${searchParams.toString()}`;
         }
 
         if (openInNewTab) {
@@ -323,7 +333,7 @@ function DAGStatus({
         }
       }
     },
-    [displayDAGRun, navigate, fileName]
+    [displayDAGRun, navigate, fileName, remoteNode]
   );
 
   // Handle right-click on graph node (show status update modal)
@@ -435,76 +445,85 @@ function DAGStatus({
           fillHeight && 'shrink-0'
         )}
       >
-        <div className="w-full min-w-0 max-w-full overflow-x-auto">
-          <Tabs className="min-w-max whitespace-nowrap">
-            <Tab
-              isActive={activeTab === 'status'}
-              onClick={() => setActiveTab('status')}
-              className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
-            >
-              <ActivitySquare className="h-4 w-4" />
-              <span className="hidden sm:inline">Status</span>
-            </Tab>
-            {hasWaitingSteps && (
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+          <div className="min-w-0 flex-1 overflow-x-auto">
+            <Tabs className="min-w-max whitespace-nowrap">
               <Tab
-                isActive={activeTab === 'approval'}
-                onClick={() => setActiveTab('approval')}
+                aria-label="Status"
+                isActive={activeTab === 'status'}
+                onClick={() => setActiveTab('status')}
                 className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
               >
-                <ShieldCheck className="h-4 w-4" />
-                <span className="hidden sm:inline">Approval</span>
-                <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">
-                  {waitingStepCount}
-                </span>
+                <ActivitySquare className="h-4 w-4" />
+                <span className="hidden sm:inline">Status</span>
               </Tab>
-            )}
-            {showTimeline && (
+              {hasWaitingSteps && (
+                <Tab
+                  aria-label="Approval"
+                  isActive={activeTab === 'approval'}
+                  onClick={() => setActiveTab('approval')}
+                  className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                  <span className="hidden sm:inline">Approval</span>
+                  <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">
+                    {waitingStepCount}
+                  </span>
+                </Tab>
+              )}
+              {showTimeline && (
+                <Tab
+                  aria-label="Timeline"
+                  isActive={activeTab === 'timeline'}
+                  onClick={() => setActiveTab('timeline')}
+                  className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
+                >
+                  <GanttChart className="h-4 w-4" />
+                  <span className="hidden sm:inline">Timeline</span>
+                </Tab>
+              )}
               <Tab
-                isActive={activeTab === 'timeline'}
-                onClick={() => setActiveTab('timeline')}
+                aria-label="Outputs"
+                isActive={activeTab === 'outputs'}
+                onClick={() => setActiveTab('outputs')}
                 className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
               >
-                <GanttChart className="h-4 w-4" />
-                <span className="hidden sm:inline">Timeline</span>
+                <Package className="h-4 w-4" />
+                <span className="hidden sm:inline">Outputs</span>
               </Tab>
-            )}
-            <Tab
-              isActive={activeTab === 'outputs'}
-              onClick={() => setActiveTab('outputs')}
-              className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
-            >
-              <Package className="h-4 w-4" />
-              <span className="hidden sm:inline">Outputs</span>
-            </Tab>
-            {hasArtifacts && (
+              {hasArtifacts && (
+                <Tab
+                  aria-label="Artifacts"
+                  isActive={activeTab === 'artifacts'}
+                  onClick={() => setActiveTab('artifacts')}
+                  className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
+                >
+                  <Archive className="h-4 w-4" />
+                  <span className="hidden sm:inline">Artifacts</span>
+                </Tab>
+              )}
+              {hasChatSteps && (
+                <Tab
+                  aria-label="Chat"
+                  isActive={activeTab === 'chat'}
+                  onClick={() => setActiveTab('chat')}
+                  className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
+                >
+                  <MessageSquare className="h-4 w-4" />
+                  <span className="hidden sm:inline">Chat</span>
+                </Tab>
+              )}
               <Tab
-                isActive={activeTab === 'artifacts'}
-                onClick={() => setActiveTab('artifacts')}
+                aria-label="Spec"
+                isActive={activeTab === 'spec'}
+                onClick={() => setActiveTab('spec')}
                 className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
               >
-                <Archive className="h-4 w-4" />
-                <span className="hidden sm:inline">Artifacts</span>
+                <FileCode className="h-4 w-4" />
+                <span className="hidden sm:inline">Spec</span>
               </Tab>
-            )}
-            {hasChatSteps && (
-              <Tab
-                isActive={activeTab === 'chat'}
-                onClick={() => setActiveTab('chat')}
-                className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
-              >
-                <MessageSquare className="h-4 w-4" />
-                <span className="hidden sm:inline">Chat</span>
-              </Tab>
-            )}
-            <Tab
-              isActive={activeTab === 'spec'}
-              onClick={() => setActiveTab('spec')}
-              className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
-            >
-              <FileCode className="h-4 w-4" />
-              <span className="hidden sm:inline">Spec</span>
-            </Tab>
-          </Tabs>
+            </Tabs>
+          </div>
         </div>
       </div>
 

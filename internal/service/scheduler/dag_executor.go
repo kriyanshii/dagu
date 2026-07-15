@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/agentsnapshot"
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/cmn/logger"
 	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
@@ -60,12 +59,11 @@ type DAGExecutor struct {
 	subCmdBuilder   *launcher.SubCmdBuilder
 	defaultExecMode config.ExecutionMode
 	baseConfigPath  string
-	snapshotBuilder func(context.Context, *core.DAG) ([]byte, error)
 	profileResolver DAGProfileResolver
 }
 
 type DAGProfileResolver interface {
-	ResolveProfile(ctx context.Context, dagName string) (string, error)
+	ResolveProfile(ctx context.Context, dagName string, workspaceName string) (string, error)
 }
 
 type DAGExecutorOption func(*DAGExecutor)
@@ -82,7 +80,6 @@ func NewDAGExecutor(
 	subCmdBuilder *launcher.SubCmdBuilder,
 	defaultExecMode config.ExecutionMode,
 	baseConfigPath string,
-	snapshotBuilder func(context.Context, *core.DAG) ([]byte, error),
 	opts ...DAGExecutorOption,
 ) *DAGExecutor {
 	executor := &DAGExecutor{
@@ -90,7 +87,6 @@ func NewDAGExecutor(
 		subCmdBuilder:   subCmdBuilder,
 		defaultExecMode: defaultExecMode,
 		baseConfigPath:  baseConfigPath,
-		snapshotBuilder: snapshotBuilder,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -157,7 +153,7 @@ func (e *DAGExecutor) HandleJob(
 	}
 
 	// For all other cases (local execution or non-START operations), use ExecuteDAG
-	return e.executeDAG(ctx, dag, operation, runID, nil, triggerType, stringutil.FormatTime(scheduleTime), profileName)
+	return e.executeDAG(ctx, dag, operation, runID, nil, triggerType, stringutil.FormatTime(scheduleTime), profileName, "")
 }
 
 // ExecuteDAG executes or dispatches an already-persisted DAG.
@@ -178,7 +174,20 @@ func (e *DAGExecutor) ExecuteDAG(
 	triggerType core.TriggerType,
 	scheduleTime string,
 ) error {
-	return e.executeDAG(ctx, dag, operation, runID, previousStatus, triggerType, scheduleTime, "")
+	return e.executeDAG(ctx, dag, operation, runID, previousStatus, triggerType, scheduleTime, "", "")
+}
+
+func (e *DAGExecutor) ExecuteDAGWithAdmission(
+	ctx context.Context,
+	dag *core.DAG,
+	operation exec.DispatchOperation,
+	runID string,
+	previousStatus *exec.DAGRunStatus,
+	triggerType core.TriggerType,
+	scheduleTime string,
+	admissionReservationToken string,
+) error {
+	return e.executeDAG(ctx, dag, operation, runID, previousStatus, triggerType, scheduleTime, "", admissionReservationToken)
 }
 
 func (e *DAGExecutor) executeDAG(
@@ -190,6 +199,7 @@ func (e *DAGExecutor) executeDAG(
 	triggerType core.TriggerType,
 	scheduleTime string,
 	defaultProfileName string,
+	admissionReservationToken string,
 ) error {
 	if err := validateDispatchOperation(operation); err != nil {
 		return err
@@ -218,15 +228,6 @@ func (e *DAGExecutor) executeDAG(
 		if scheduleTime != "" {
 			taskOpts = append(taskOpts, executor.WithScheduleTime(scheduleTime))
 		}
-		if e.snapshotBuilder != nil {
-			snapshot, err := e.snapshotBuilder(ctx, dag)
-			if err != nil {
-				return fmt.Errorf("build distributed agent snapshot: %w", err)
-			}
-			if len(snapshot) > 0 {
-				taskOpts = append(taskOpts, executor.WithAgentSnapshot(snapshot))
-			}
-		}
 		task := executor.CreateTask(
 			dag.Name,
 			string(dag.YamlData),
@@ -234,7 +235,10 @@ func (e *DAGExecutor) executeDAG(
 			runID,
 			taskOpts...,
 		)
-		return e.dispatchToCoordinator(ctx, task)
+		return e.dispatchToCoordinator(ctx, exec.DispatchRequest{
+			Task:                      task,
+			AdmissionReservationToken: admissionReservationToken,
+		})
 	}
 
 	// Local execution
@@ -281,14 +285,15 @@ func (e *DAGExecutor) defaultProfileName(ctx context.Context, dag *core.DAG) (st
 	if e.profileResolver == nil || dag == nil {
 		return "", nil
 	}
-	dagName := dag.FileName()
-	if dagName == "" {
-		dagName = dag.Name
+	fileName := dag.FileName()
+	if fileName == "" {
+		return "", fmt.Errorf("DAG file name is required to resolve default profile")
 	}
-	if dagName == "" {
-		return "", nil
+	workspaceName, err := dagWorkspaceName(dag)
+	if err != nil {
+		return "", err
 	}
-	return e.profileResolver.ResolveProfile(ctx, dagName)
+	return e.profileResolver.ResolveProfile(ctx, fileName, workspaceName)
 }
 
 func profileNameFromStatus(status *exec.DAGRunStatus) string {
@@ -329,13 +334,14 @@ func (e *DAGExecutor) IsDistributed(dag *core.DAG) bool {
 // 1. Select an appropriate worker based on the task's workerSelector
 // 2. Forward the task to the selected worker
 // 3. Track the execution status
-func (e *DAGExecutor) dispatchToCoordinator(ctx context.Context, task *exec.DispatchTask) error {
+func (e *DAGExecutor) dispatchToCoordinator(ctx context.Context, req exec.DispatchRequest) error {
+	task := req.Task
 	ctx = logger.WithValues(ctx,
 		tag.Target(task.Target),
 		tag.RunID(task.DAGRunID),
 	)
 
-	if err := e.coordinatorCli.Dispatch(ctx, task); err != nil {
+	if err := e.coordinatorCli.Dispatch(ctx, req); err != nil {
 		logger.Error(ctx, "Failed to dispatch task to coordinator",
 			tag.Error(err),
 			slog.String("operation", task.Operation.String()),
@@ -348,12 +354,6 @@ func (e *DAGExecutor) dispatchToCoordinator(ctx context.Context, task *exec.Disp
 	)
 
 	return nil
-}
-
-func buildSnapshotBuilder(paths config.PathsConfig, dagStore exec.DAGStore, storeFactory agentsnapshot.StoreFactory) func(context.Context, *core.DAG) ([]byte, error) {
-	return func(ctx context.Context, dag *core.DAG) ([]byte, error) {
-		return agentsnapshot.BuildFromPaths(ctx, dag, paths, dagStore, storeFactory)
-	}
 }
 
 // Restart restarts a DAG unconditionally.

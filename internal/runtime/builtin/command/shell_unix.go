@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"slices"
+	"strings"
 
 	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
 )
@@ -43,6 +44,11 @@ func (s *unixShell) Build(ctx context.Context, b *shellCommandBuilder) (*exec.Cm
 	if b.Script != "" {
 		args := cloneArgs(b.Shell[1:])
 		args = append(args, b.Args...)
+		if cmdutil.IsUnixLikeShell(cmd) {
+			if arg, ok := unixScriptCarrierConflict(args); ok {
+				return nil, fmt.Errorf("script form cannot be used with shell argument %q because it consumes command text or stdin", arg)
+			}
+		}
 		// Add errexit flag for Unix-like shells (unless user specified shell)
 		if !b.UserSpecifiedShell && cmdutil.IsUnixLikeShell(cmd) && !slices.Contains(args, "-e") {
 			args = append(args, "-e")
@@ -53,22 +59,71 @@ func (s *unixShell) Build(ctx context.Context, b *shellCommandBuilder) (*exec.Cm
 
 	// Running a command string via shell
 	args := cloneArgs(b.Shell[1:])
+	carrierIdx, err := unixCommandCarrierIndex(args, cmdutil.IsUnixLikeShell(cmd))
+	if err != nil {
+		return nil, err
+	}
 
 	// Add errexit flag for Unix-like shells (unless user specified shell)
 	if !b.UserSpecifiedShell && cmdutil.IsUnixLikeShell(cmd) && !slices.Contains(args, "-e") {
-		args = append(args, "-e")
+		args = insertShellArgsBeforeCarrier(args, carrierIdx, "-e")
 	}
 
-	// Add -c flag and the shell command string
-	// Note: We use ShellCommandArgs (the full command string) rather than Args
-	// because shell commands may contain pipes, redirections, etc. that need
-	// to be interpreted by the shell
-	if !slices.Contains(args, "-c") {
+	if carrierIdx < 0 {
 		args = append(args, "-c")
 	}
 	args = append(args, b.ShellCommandArgs)
 
 	return exec.CommandContext(ctx, cmd, args...), nil // nolint: gosec
+}
+
+func unixScriptCarrierConflict(args []string) (string, bool) {
+	for _, arg := range args {
+		if arg == "-c" || arg == "-s" {
+			return arg, true
+		}
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") {
+			flags := strings.TrimLeft(arg, "-")
+			if strings.ContainsAny(flags, "cs") {
+				return arg, true
+			}
+		}
+	}
+	return "", false
+}
+
+func unixCommandCarrierIndex(args []string, unixLike bool) (int, error) {
+	carrierIdx := -1
+	for i, arg := range args {
+		if arg == "-c" {
+			if carrierIdx >= 0 {
+				return -1, fmt.Errorf("command-form run accepts only one -c shell argument")
+			}
+			carrierIdx = i
+			continue
+		}
+		if unixCommandCarrierConflict(arg, unixLike) {
+			return -1, fmt.Errorf("command-form run requires command-string carrier -c as a separate shell argument; got %q", arg)
+		}
+	}
+	if carrierIdx >= 0 && carrierIdx != len(args)-1 {
+		return -1, fmt.Errorf("command-form run requires shell argument -c to be final before the command payload")
+	}
+	return carrierIdx, nil
+}
+
+func unixCommandCarrierConflict(arg string, unixLike bool) bool {
+	if !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") {
+		return false
+	}
+	if arg == "-c" {
+		return false
+	}
+	flags := strings.TrimLeft(arg, "-")
+	if unixLike {
+		return strings.Contains(flags, "c")
+	}
+	return strings.HasPrefix(flags, "c")
 }
 
 // cloneArgs returns a shallow copy of the provided args slice so callers can modify the result without mutating the original.

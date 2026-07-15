@@ -49,7 +49,6 @@ func init() {
 	rootCmd.AddCommand(cmd.CmdWorker())
 	rootCmd.AddCommand(cmd.Retry())
 	rootCmd.AddCommand(cmd.StartAll())
-	rootCmd.AddCommand(cmd.Migrate())
 	rootCmd.AddCommand(cmd.Cleanup())
 	rootCmd.AddCommand(cmd.Sync())
 	rootCmd.AddCommand(cmd.Upgrade())
@@ -59,7 +58,6 @@ func init() {
 	rootCmd.AddCommand(cmd.Config())
 	rootCmd.AddCommand(cmd.ContextCommand())
 	rootCmd.AddCommand(cmd.Profile())
-	rootCmd.AddCommand(cmd.Agent())
 
 	config.Version = version
 }

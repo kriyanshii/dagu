@@ -19,7 +19,6 @@ import (
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/launcher"
-	"github.com/google/uuid"
 )
 
 const staleLocalRunStartupGrace = 2 * time.Second
@@ -145,15 +144,47 @@ func (m *Manager) Stop(ctx context.Context, dag *core.DAG, dagRunID string) erro
 func (m *Manager) stopSingleDAGRun(ctx context.Context, dag *core.DAG, dagRunID string) error {
 	// Set run ID in context for all logs in this function
 	ctx = logger.WithValues(ctx, tag.RunID(dagRunID))
+	runRef := exec.NewDAGRunRef(dag.Name, dagRunID)
+	run, findErr := m.dagRunStore.FindAttempt(ctx, runRef)
+
+	if findErr == nil {
+		status, statusErr := run.ReadStatus(ctx)
+		if statusErr == nil && exec.CanCancelFailedAutoRetryPendingRun(status) {
+			if err := exec.CancelFailedAutoRetryPendingRun(ctx, m.dagRunStore, status); err != nil {
+				return fmt.Errorf("failed to cancel pending auto-retry for dag-run %s: %w", dagRunID, err)
+			}
+			logger.Info(ctx, "Canceled pending auto-retry for failed DAG run")
+			return nil
+		}
+	}
 
 	// Check if the process is running locally using proc store
-	alive, err := m.procStore.IsRunAlive(ctx, dag.ProcGroup(), exec.NewDAGRunRef(dag.Name, dagRunID))
+	alive, err := m.procStore.IsRunAlive(ctx, dag.ProcGroup(), runRef)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve status from proc store: %w", err)
 	}
 
-	// If running locally, try to stop via socket first
+	abortRequested := false
+	requestAbort := func() error {
+		if abortRequested {
+			return nil
+		}
+		if err := run.Abort(ctx); err != nil {
+			return fmt.Errorf("failed to request cancel for dag-run %s: %w", dagRunID, err)
+		}
+		abortRequested = true
+		logger.Info(ctx, "Abort flag created for DAG run")
+		return nil
+	}
+
+	// Running local attempts receive a durable cancel request before the
+	// live socket is notified for immediate process termination.
 	if alive {
+		if findErr == nil {
+			if err := requestAbort(); err != nil {
+				return err
+			}
+		}
 		addr := dag.SockAddr(dagRunID)
 		if fileutil.FileExists(addr) {
 			// In case the socket exists, we try to send a stop request
@@ -167,26 +198,11 @@ func (m *Manager) stopSingleDAGRun(ctx context.Context, dag *core.DAG, dagRunID 
 		}
 	}
 
-	runRef := exec.NewDAGRunRef(dag.Name, dagRunID)
-	run, err := m.dagRunStore.FindAttempt(ctx, runRef)
-	if err == nil {
-		status, statusErr := run.ReadStatus(ctx)
-		if statusErr == nil && exec.CanCancelFailedAutoRetryPendingRun(status) {
-			if err := exec.CancelFailedAutoRetryPendingRun(ctx, m.dagRunStore, status); err != nil {
-				return fmt.Errorf("failed to cancel pending auto-retry for dag-run %s: %w", dagRunID, err)
-			}
-			logger.Info(ctx, "Canceled pending auto-retry for failed DAG run")
-			return nil
-		}
-
+	if findErr == nil {
 		// Request cancel for active runs (works for both local and distributed
 		// execution). This creates an abort flag that the runner or coordinator
 		// can detect on heartbeat.
-		if err := run.Abort(ctx); err != nil {
-			return fmt.Errorf("failed to request cancel for dag-run %s: %w", dagRunID, err)
-		}
-		logger.Info(ctx, "Abort flag created for DAG run")
-		return nil
+		return requestAbort()
 	}
 
 	// If we couldn't find the attempt and the process isn't running locally, nothing to do
@@ -196,16 +212,16 @@ func (m *Manager) stopSingleDAGRun(ctx context.Context, dag *core.DAG, dagRunID 
 	}
 
 	// Process is alive but we couldn't find the attempt - this shouldn't happen
-	return fmt.Errorf("failed to find dag-run attempt: %w", err)
+	return fmt.Errorf("failed to find dag-run attempt: %w", findErr)
 }
 
-// GenDAGRunID generates a unique ID for a dag-run using UUID version 7.
+// GenDAGRunID generates a unique ID for a dag-run.
 func (m *Manager) GenDAGRunID(_ context.Context) (string, error) {
-	id, err := uuid.NewV7()
+	id, err := exec.NewDAGRunID()
 	if err != nil {
 		return "", fmt.Errorf("failed to generate dag-run ID: %w", err)
 	}
-	return id.String(), nil
+	return id, nil
 }
 
 // IsRunning checks if a dag-run is currently running. It prefers the live socket
@@ -304,8 +320,12 @@ func (m *Manager) getPersistedOrCurrentStatus(ctx context.Context, dag *core.DAG
 }
 
 // FindSubDAGRunStatus retrieves the status of a sub dag-run by its ID.
-// It looks up the child attempt in the dag-run store and reads its status.
+// It repairs stale local child runs before returning their status.
 func (m *Manager) FindSubDAGRunStatus(ctx context.Context, rootDAGRun exec.DAGRunRef, subRunID string) (*exec.DAGRunStatus, error) {
+	if m == nil || m.dagRunStore == nil {
+		return nil, exec.ErrNoStatusData
+	}
+
 	attempt, err := m.dagRunStore.FindSubAttempt(ctx, rootDAGRun, subRunID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find sub dag-run attempt: %w", err)
@@ -314,7 +334,23 @@ func (m *Manager) FindSubDAGRunStatus(ctx context.Context, rootDAGRun exec.DAGRu
 	if err != nil {
 		return nil, fmt.Errorf("failed to read status: %w", err)
 	}
-	return status, nil
+	if status == nil {
+		return nil, exec.ErrNoStatusData
+	}
+	if status.Status != core.Running || !isLocalWorkerID(status.WorkerID) {
+		return status, nil
+	}
+
+	dag, err := attempt.ReadDAG(ctx)
+	if err != nil {
+		logger.Error(ctx, "Failed to read sub DAG for stale status check",
+			tag.RunID(subRunID),
+			tag.Error(err),
+		)
+		return status, nil
+	}
+
+	return m.resolveRunningStatus(ctx, dag, attempt, status, false), nil
 }
 
 // currentStatus retrieves the current status of a running DAG by querying its socket.

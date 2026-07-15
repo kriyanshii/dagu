@@ -33,7 +33,6 @@ const config = {
   oidcButtonLabel: '',
   terminalEnabled: false,
   gitSyncEnabled: false,
-  agentEnabled: false,
   updateAvailable: false,
   latestVersion: '',
   permissions: {
@@ -95,7 +94,8 @@ describe('DAGRunTable', () => {
 
     expect(screen.getByText('Scheduled At')).toBeInTheDocument();
     expect(screen.getByText('2026-03-13T10:00:00Z')).toBeInTheDocument();
-    expect(screen.getByText('2026-03-13T10:00:30Z')).toBeInTheDocument();
+    // Queued At renders as relative time with the absolute time in the tooltip
+    expect(screen.getByTitle('2026-03-13T10:00:30Z')).toBeInTheDocument();
     expect(screen.getByText('1/3 auto retries')).toBeInTheDocument();
     expect(screen.queryByText('Select')).not.toBeInTheDocument();
   });
@@ -196,6 +196,47 @@ describe('DAGRunTable', () => {
       name: 'bulk-dag',
       dagRunId: 'run-1',
     });
+    expect(onSelectDAGRun).not.toHaveBeenCalled();
+  });
+
+  it('opens available artifacts without opening the status view', () => {
+    const onSelectDAGRun = vi.fn();
+    const onViewArtifacts = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <ConfigContext.Provider value={config}>
+          <DAGRunTable
+            dagRuns={[
+              {
+                dagRunId: 'run-1',
+                name: 'artifact-dag',
+                status: Status.Success,
+                statusLabel: StatusLabel.succeeded,
+                artifactsAvailable: true,
+                autoRetryCount: 0,
+                triggerType: TriggerType.manual,
+                queuedAt: '2026-03-13T10:00:30Z',
+                startedAt: '2026-03-13T10:01:00Z',
+                finishedAt: '2026-03-13T10:02:00Z',
+              },
+            ]}
+            onSelectDAGRun={onSelectDAGRun}
+            onViewArtifacts={onViewArtifacts}
+          />
+        </ConfigContext.Provider>
+      </MemoryRouter>
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'View artifacts for artifact-dag run-1',
+      })
+    );
+
+    expect(onViewArtifacts).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'artifact-dag', dagRunId: 'run-1' })
+    );
     expect(onSelectDAGRun).not.toHaveBeenCalled();
   });
 

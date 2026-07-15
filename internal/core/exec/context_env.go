@@ -5,9 +5,7 @@ package exec
 
 import (
 	"context"
-	"path/filepath"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/core"
 )
 
@@ -36,21 +34,6 @@ var managedDAGRunEnvs = []managedDAGRunEnv{
 		},
 	},
 	{
-		key: EnvKeyDAGDocsDir,
-		value: func(ctx context.Context, dag *core.DAG, _ string, _ string, _ *contextOptions) (string, bool) {
-			cfg := config.GetConfig(ctx)
-			if cfg.Paths.DocsDir == "" {
-				return "", false
-			}
-
-			docsDir := filepath.Join(cfg.Paths.DocsDir, dag.Name)
-			if workspaceName, ok := WorkspaceNameFromLabels(dag.Labels); ok {
-				docsDir = filepath.Join(cfg.Paths.DocsDir, workspaceName, dag.Name)
-			}
-			return docsDir, true
-		},
-	},
-	{
 		key: EnvKeyDAGRunWorkDir,
 		value: func(_ context.Context, _ *core.DAG, _ string, _ string, options *contextOptions) (string, bool) {
 			if options.workDir == "" {
@@ -69,23 +52,20 @@ var managedDAGRunEnvs = []managedDAGRunEnv{
 		},
 	},
 	{
-		key: EnvKeyDAGParamsJSONCompat,
-		value: func(_ context.Context, dag *core.DAG, _ string, _ string, _ *contextOptions) (string, bool) {
-			if dag.ParamsJSON == "" {
-				return "", false
-			}
-			return dag.ParamsJSON, true
-		},
+		key:   EnvKeyDAGParamsJSON,
+		value: dagParamsJSONEnvValue,
 	},
 	{
-		key: EnvKeyDAGParamsJSON,
-		value: func(_ context.Context, dag *core.DAG, _ string, _ string, _ *contextOptions) (string, bool) {
-			if dag.ParamsJSON == "" {
-				return "", false
-			}
-			return dag.ParamsJSON, true
-		},
+		key:   EnvKeyDAGParamsJSONCompat,
+		value: dagParamsJSONEnvValue,
 	},
+}
+
+func dagParamsJSONEnvValue(_ context.Context, dag *core.DAG, _ string, _ string, _ *contextOptions) (string, bool) {
+	if dag.ParamsJSON == "" {
+		return "", false
+	}
+	return dag.ParamsJSON, true
 }
 
 func buildManagedDAGRunEnvs(

@@ -19,12 +19,12 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/agentsnapshot"
 	"github.com/dagucloud/dagu/internal/auth"
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/cmn/logger"
 	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/internal/cmn/procutil"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/core/spec"
@@ -33,6 +33,7 @@ import (
 	"github.com/dagucloud/dagu/internal/runtime/executor"
 	"github.com/dagucloud/dagu/internal/service/audit"
 	"github.com/dagucloud/dagu/internal/service/scheduler"
+	"github.com/dagucloud/dagu/internal/workspace"
 )
 
 const defaultHistoryLimit = 30
@@ -231,11 +232,23 @@ func (a *API) GetDAGSpec(ctx context.Context, request api.GetDAGSpecRequestObjec
 		return nil, err
 	}
 
-	dag, err := a.dagStore.LoadSpec(ctx,
-		[]byte(yamlSpec),
+	loadOpts := []spec.LoadOption{
 		spec.WithName(request.FileName),
 		spec.WithAllowBuildErrors(),
-	)
+		spec.WithoutEval(),
+		spec.WithWorkspaceBaseConfigDir(workspace.BaseConfigDir(a.config.Paths.DAGsDir)),
+	}
+	if a.config.Paths.BaseConfig != "" {
+		loadOpts = append(loadOpts, spec.WithBaseConfig(a.config.Paths.BaseConfig))
+	}
+
+	loadResult, err := spec.LoadYAMLWithResult(ctx, []byte(yamlSpec), loadOpts...)
+	var dag *core.DAG
+	valueReferenceNotices := []api.ValueReferenceNotice{}
+	if loadResult != nil {
+		dag = loadResult.DAG
+		valueReferenceNotices = toAPIValueReferenceNotices(loadResult.ValueReferenceNotices)
+	}
 	var errs []string
 
 	var loadErrs core.ErrorList
@@ -273,10 +286,32 @@ func (a *API) GetDAGSpec(ctx context.Context, request api.GetDAGSpecRequestObjec
 	}
 
 	return &api.GetDAGSpec200JSONResponse{
-		Dag:    details,
-		Spec:   yamlSpec,
-		Errors: errs,
+		Dag:                   details,
+		Spec:                  yamlSpec,
+		Errors:                errs,
+		ValueReferenceNotices: valueReferenceNotices,
 	}, nil
+}
+
+func toAPIValueReferenceNotices(notices []cmnvalue.ValueReferenceNotice) []api.ValueReferenceNotice {
+	out := make([]api.ValueReferenceNotice, 0, len(notices))
+	for _, notice := range notices {
+		apiNotice := api.ValueReferenceNotice{
+			Message: notice.Message,
+		}
+		if notice.Reason != "" {
+			reason := api.ValueReferenceNoticeReason(notice.Reason)
+			apiNotice.Reason = &reason
+		}
+		if notice.FieldPath != "" {
+			apiNotice.FieldPath = ptrOf(notice.FieldPath)
+		}
+		if notice.Token != "" {
+			apiNotice.Token = ptrOf(notice.Token)
+		}
+		out = append(out, apiNotice)
+	}
+	return out
 }
 
 func (a *API) UpdateDAGSpec(ctx context.Context, request api.UpdateDAGSpecRequestObject) (api.UpdateDAGSpecResponseObject, error) {
@@ -890,7 +925,7 @@ func (a *API) GetDAGDAGRunDetails(ctx context.Context, request api.GetDAGDAGRunD
 		if err != nil {
 			return nil, fmt.Errorf("error getting latest status: %w", err)
 		}
-		latestStatusPtr := a.repairConfirmedStaleDistributedRunOnRead(ctx, &latestStatus, attempt.ID())
+		latestStatusPtr := a.repairStaleRunOnRead(ctx, &latestStatus, attempt.ID())
 		if latestStatusPtr != nil {
 			latestStatus = *latestStatusPtr
 		}
@@ -923,7 +958,7 @@ func (a *API) GetDAGDAGRunDetails(ctx context.Context, request api.GetDAGDAGRunD
 		return nil, fmt.Errorf("error getting status by dag-run ID: %w", err)
 	}
 
-	dagStatus = a.repairConfirmedStaleDistributedRunOnRead(ctx, dagStatus, attempt.ID())
+	dagStatus = a.repairStaleRunOnRead(ctx, dagStatus, attempt.ID())
 
 	return &api.GetDAGDAGRunDetails200JSONResponse{
 		DagRun: a.toDAGRunDetailsWithSpecSource(ctx, attempt, *dagStatus),
@@ -1000,7 +1035,7 @@ func (a *API) ExecuteDAG(ctx context.Context, request api.ExecuteDAGRequestObjec
 	if err != nil {
 		return nil, err
 	}
-	profileName, err := a.runProfileForDAG(ctx, request.FileName, request.Body.Profile)
+	profileName, err := a.runProfileForDAG(ctx, request.FileName, dagWorkspaceName(dag), request.Body.Profile)
 	if err != nil {
 		return nil, err
 	}
@@ -1097,7 +1132,7 @@ func (a *API) ExecuteDAGSync(ctx context.Context, request api.ExecuteDAGSyncRequ
 	if err != nil {
 		return nil, err
 	}
-	profileName, err := a.runProfileForDAG(ctx, request.FileName, request.Body.Profile)
+	profileName, err := a.runProfileForDAG(ctx, request.FileName, dagWorkspaceName(dag), request.Body.Profile)
 	if err != nil {
 		return nil, err
 	}
@@ -1432,12 +1467,6 @@ func (a *API) dispatchStartToCoordinator(ctx context.Context, dag *core.DAG, dag
 	if dag.SourceFile != "" {
 		taskOpts = append(taskOpts, executor.WithSourceFile(dag.SourceFile))
 	}
-	if snapshot, err := agentsnapshot.BuildFromPaths(ctx, dag, a.config.Paths, a.dagStore, a.snapshotStoreFactory); err != nil {
-		return fmt.Errorf("build distributed agent snapshot: %w", err)
-	} else if len(snapshot) > 0 {
-		taskOpts = append(taskOpts, executor.WithAgentSnapshot(snapshot))
-	}
-
 	task := executor.CreateTask(
 		dag.Name,
 		string(dag.YamlData),
@@ -1446,7 +1475,7 @@ func (a *API) dispatchStartToCoordinator(ctx context.Context, dag *core.DAG, dag
 		taskOpts...,
 	)
 
-	if err := a.coordinatorCli.Dispatch(ctx, task); err != nil {
+	if err := a.coordinatorCli.Dispatch(ctx, exec.DispatchRequest{Task: task}); err != nil {
 		return fmt.Errorf("error dispatching to coordinator: %w", err)
 	}
 
@@ -1539,7 +1568,6 @@ func (a *API) startPreparedDAGRunWithOptions(
 		Labels:       opts.labels,
 		ProfileName:  opts.profileName,
 	})
-
 	started, err := launcher.StartProcess(ctx, spec)
 	if err != nil {
 		return fmt.Errorf("error starting DAG: %w", err)
@@ -1646,7 +1674,7 @@ func (a *API) EnqueueDAGDAGRun(ctx context.Context, request api.EnqueueDAGDAGRun
 	if err != nil {
 		return nil, err
 	}
-	profileName, err := a.runProfileForDAG(ctx, request.FileName, request.Body.Profile)
+	profileName, err := a.runProfileForDAG(ctx, request.FileName, dagWorkspaceName(dag), request.Body.Profile)
 	if err != nil {
 		return nil, err
 	}
@@ -2012,6 +2040,11 @@ func (a *API) projectNextRun(ctx context.Context, dag *core.DAG) *time.Time {
 }
 
 func (a *API) nextRunProjection(ctx context.Context) func(*core.DAG, time.Time) time.Time {
+	location := time.Local
+	if a.config != nil && a.config.Core.Location != nil {
+		location = a.config.Core.Location
+	}
+
 	var schedulerState *scheduler.SchedulerState
 	if a.schedulerStateStore != nil {
 		state, loadErr := a.schedulerStateStore.Load(ctx)
@@ -2023,8 +2056,28 @@ func (a *API) nextRunProjection(ctx context.Context) func(*core.DAG, time.Time) 
 	}
 
 	return func(dag *core.DAG, now time.Time) time.Time {
-		return scheduler.NextPlannedRun(dag, now, schedulerState)
+		if schedulerState != nil {
+			if nextRun, ok := scheduler.ProjectedNextRun(dag, schedulerState); ok {
+				return nextRun
+			}
+			if hasProfileSchedule(dag) {
+				return time.Time{}
+			}
+		}
+		return scheduler.NextPlannedRun(dag, now.In(location), schedulerState)
 	}
+}
+
+func hasProfileSchedule(dag *core.DAG) bool {
+	if dag == nil {
+		return false
+	}
+	for _, schedule := range dag.Schedule {
+		if schedule.Profile != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // parseIntParam parses an integer string, returning defaultVal if parsing fails or value is <= 0.

@@ -14,8 +14,9 @@ import (
 
 const defaultStaleWorkerHeartbeatThreshold = 30 * time.Second
 
-// DistributedRunRepairConfig configures conservative stale distributed-run repair.
-type DistributedRunRepairConfig struct {
+// StaleRunRepairConfig provides the stores, thresholds, and clock used to
+// confirm and repair stale remote runs.
+type StaleRunRepairConfig struct {
 	DAGRunStore                   exec.DAGRunStore
 	DAGRunLeaseStore              exec.DAGRunLeaseStore
 	WorkerHeartbeatStore          exec.WorkerHeartbeatStore
@@ -24,11 +25,11 @@ type DistributedRunRepairConfig struct {
 	Now                           func() time.Time
 }
 
-// ConfirmAndRepairStaleDistributedRun marks a remote active attempt failed only
-// when both the run lease and worker evidence confirm that the exact attempt is gone.
-func ConfirmAndRepairStaleDistributedRun(
+// RepairStaleRemoteRun marks an active remote run failed only when both the
+// claim lease and worker evidence confirm that its execution claim is gone.
+func RepairStaleRemoteRun(
 	ctx context.Context,
-	cfg DistributedRunRepairConfig,
+	cfg StaleRunRepairConfig,
 	status *exec.DAGRunStatus,
 	fallbackAttemptID string,
 	fallbackWorkerID string,
@@ -41,7 +42,7 @@ func ConfirmAndRepairStaleDistributedRun(
 	if !ok {
 		return status, false, nil
 	}
-	if !statusEligibleForDistributedRepair(status.Status) {
+	if !statusRepairable(status.Status) {
 		return status, false, nil
 	}
 
@@ -63,18 +64,22 @@ func ConfirmAndRepairStaleDistributedRun(
 		now = cfg.Now().UTC()
 	}
 
-	lease, err := cfg.DAGRunLeaseStore.Get(ctx, attemptKey)
+	claimKey := status.EffectiveClaimKey()
+	if claimKey == "" {
+		claimKey = attemptKey
+	}
+	lease, err := cfg.DAGRunLeaseStore.Get(ctx, claimKey)
 	switch {
 	case err == nil:
-		if exec.LeaseMatchesStatus(lease, status, attemptID, now, staleLeaseThresholdOrDefault(cfg.StaleLeaseThreshold)) {
-			return status, false, nil
-		}
-		if lease != nil && !exec.LeaseIdentityMatchesStatus(lease, status, attemptID) {
+		if lease != nil && lease.AttemptKey != claimKey {
 			return status, false, nil
 		}
 	case errors.Is(err, exec.ErrDAGRunLeaseNotFound):
 	default:
 		return status, false, err
+	}
+	if lease.MatchesClaim(claimKey, workerID) && lease.IsFresh(now, staleLeaseThresholdOrDefault(cfg.StaleLeaseThreshold)) {
+		return status, false, nil
 	}
 
 	record, err := cfg.WorkerHeartbeatStore.Get(ctx, workerID)
@@ -84,7 +89,7 @@ func ConfirmAndRepairStaleDistributedRun(
 			if record.Stats == nil {
 				return status, false, nil
 			}
-			if workerHeartbeatReportsAttempt(record, status, attemptKey) {
+			if workerReportsClaim(record, status, attemptKey, claimKey) {
 				return status, false, nil
 			}
 		}
@@ -137,7 +142,7 @@ func remoteWorkerIDForStatus(status *exec.DAGRunStatus, fallbackWorkerID string)
 	return fallbackWorkerID, true
 }
 
-func statusEligibleForDistributedRepair(status core.Status) bool {
+func statusRepairable(status core.Status) bool {
 	return status == core.Running || status == core.Queued || status == core.NotStarted
 }
 
@@ -148,7 +153,7 @@ func workerHeartbeatFresh(record *exec.WorkerHeartbeatRecord, now time.Time, thr
 	return now.Sub(record.LastHeartbeatTime()) < threshold
 }
 
-func workerHeartbeatReportsAttempt(record *exec.WorkerHeartbeatRecord, status *exec.DAGRunStatus, attemptKey string) bool {
+func workerReportsClaim(record *exec.WorkerHeartbeatRecord, status *exec.DAGRunStatus, attemptKey, claimKey string) bool {
 	if record == nil || record.Stats == nil {
 		return false
 	}
@@ -157,10 +162,10 @@ func workerHeartbeatReportsAttempt(record *exec.WorkerHeartbeatRecord, status *e
 		if task == nil {
 			continue
 		}
-		if task.AttemptKey != "" && task.AttemptKey == attemptKey {
+		if task.AttemptKey != "" && task.AttemptKey == claimKey {
 			return true
 		}
-		if task.AttemptKey == "" && task.DAGRunID == status.DAGRunID && task.DAGName == status.Name {
+		if task.AttemptKey == "" && claimKey == attemptKey && task.DAGRunID == status.DAGRunID && task.DAGName == status.Name {
 			return true
 		}
 	}

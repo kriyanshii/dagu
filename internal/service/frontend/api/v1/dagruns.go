@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/agentsnapshot"
 	"github.com/dagucloud/dagu/internal/auth"
 	"github.com/dagucloud/dagu/internal/cmn/buildenv"
 	"github.com/dagucloud/dagu/internal/cmn/collections"
@@ -569,7 +568,9 @@ func (a *API) loadInlineDAG(ctx context.Context, specContent string, name *strin
 func restoreDAGRunSnapshot(ctx context.Context, dag *core.DAG, status *exec.DAGRunStatus) (*core.DAG, string, error) {
 	runtimeParams := append([]string(nil), status.ParamsList...)
 	dag.Params = runtimeParams
-	dagwarning.LoadDotEnv(ctx, dag)
+	if err := dagwarning.LoadDotEnv(ctx, dag); err != nil {
+		return nil, "", err
+	}
 
 	quotedParams := spec.QuoteRuntimeParams(runtimeParams, dag.ParamDefs)
 	restored, err := rebuildDAGRunSnapshotFromYAML(ctx, dag, quotedParams)
@@ -1249,6 +1250,12 @@ func (a *API) ApproveDAGRunStep(ctx context.Context, request api.ApproveDAGRunSt
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for dag-run to settle: %w", err)
 	}
+	if dagStatus.Status != core.Waiting {
+		return &api.ApproveDAGRunStep400JSONResponse{
+			Code:    api.ErrorCodeBadRequest,
+			Message: fmt.Sprintf("dag-run is not waiting for approval (status: %s)", dagStatus.Status),
+		}, nil
+	}
 
 	stepIdx := findStepByName(dagStatus.Nodes, request.StepName)
 	if stepIdx < 0 {
@@ -1327,6 +1334,24 @@ func (a *API) ApproveSubDAGRunStep(ctx context.Context, request api.ApproveSubDA
 	dagStatus, err = a.waitForManualStepMutationReady(ctx, attempt, dagStatus)
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for sub DAG-run to settle: %w", err)
+	}
+	if dagStatus.Status != core.Waiting {
+		return &api.ApproveSubDAGRunStep400JSONResponse{
+			Code:    api.ErrorCodeBadRequest,
+			Message: fmt.Sprintf("sub DAG-run is not waiting for approval (status: %s)", dagStatus.Status),
+		}, nil
+	}
+	if mutationRef == rootRef {
+		rootStatus, err := a.dagRunMgr.GetSavedStatus(ctx, rootRef)
+		if err != nil {
+			return nil, fmt.Errorf("error reading root dag-run status: %w", err)
+		}
+		if rootStatus.Status == core.Running {
+			return &api.ApproveSubDAGRunStep400JSONResponse{
+				Code:    api.ErrorCodeBadRequest,
+				Message: "root dag-run is still running; wait until it enters waiting status before approving a sub DAG-run step",
+			}, nil
+		}
 	}
 
 	stepIdx := findStepByName(dagStatus.Nodes, request.StepName)
@@ -1934,7 +1959,7 @@ func (a *API) loadRootDAGRunDetailsAttemptAndStatus(
 			return nil, nil, fmt.Errorf("latest dag-run status is unavailable for DAG %s", dagName)
 		}
 
-		return attempt, a.repairConfirmedStaleDistributedRunOnRead(ctx, dagStatus, attempt.ID()), nil
+		return attempt, a.repairStaleRunOnRead(ctx, dagStatus, attempt.ID()), nil
 	}
 
 	ref := exec.NewDAGRunRef(dagName, dagRunId)
@@ -1951,10 +1976,10 @@ func (a *API) loadRootDAGRunDetailsAttemptAndStatus(
 		return nil, nil, err
 	}
 
-	return attempt, a.repairConfirmedStaleDistributedRunOnRead(ctx, dagStatus, attempt.ID()), nil
+	return attempt, a.repairStaleRunOnRead(ctx, dagStatus, attempt.ID()), nil
 }
 
-func (a *API) repairConfirmedStaleDistributedRunOnRead(
+func (a *API) repairStaleRunOnRead(
 	ctx context.Context,
 	status *exec.DAGRunStatus,
 	fallbackAttemptID string,
@@ -1969,10 +1994,10 @@ func (a *API) repairConfirmedStaleDistributedRunOnRead(
 	}
 	fallbackWorkerID := status.WorkerID
 	if fallbackWorkerID == "" {
-		fallbackWorkerID = a.distributedFallbackWorkerIDFromLease(ctx, status, attemptID)
+		fallbackWorkerID = a.workerIDFromClaim(ctx, status, attemptID)
 	}
 
-	reconciled, _, err := runtime.ConfirmAndRepairStaleDistributedRun(ctx, runtime.DistributedRunRepairConfig{
+	reconciled, _, err := runtime.RepairStaleRemoteRun(ctx, runtime.StaleRunRepairConfig{
 		DAGRunStore:          a.dagRunStore,
 		DAGRunLeaseStore:     a.dagRunLeaseStore,
 		WorkerHeartbeatStore: a.workerHeartbeatStore,
@@ -1993,7 +2018,7 @@ func (a *API) repairConfirmedStaleDistributedRunOnRead(
 	return status
 }
 
-func (a *API) distributedFallbackWorkerIDFromLease(
+func (a *API) workerIDFromClaim(
 	ctx context.Context,
 	status *exec.DAGRunStatus,
 	fallbackAttemptID string,
@@ -2002,12 +2027,15 @@ func (a *API) distributedFallbackWorkerIDFromLease(
 		return ""
 	}
 
-	attemptKey := exec.AttemptKeyForStatus(status, fallbackAttemptID)
-	if attemptKey == "" {
+	claimKey := status.EffectiveClaimKey()
+	if claimKey == "" {
+		claimKey = exec.AttemptKeyForStatus(status, fallbackAttemptID)
+	}
+	if claimKey == "" {
 		return ""
 	}
 
-	lease, err := a.dagRunLeaseStore.Get(ctx, attemptKey)
+	lease, err := a.dagRunLeaseStore.Get(ctx, claimKey)
 	if err != nil || lease == nil || !exec.IsRemoteWorkerID(lease.WorkerID) {
 		return ""
 	}
@@ -2676,12 +2704,6 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 		if profileName != "" {
 			opts = append(opts, executor.WithProfileName(profileName))
 		}
-		if snapshot, err := agentsnapshot.BuildFromPaths(ctx, dag, a.config.Paths, a.dagStore, a.snapshotStoreFactory); err != nil {
-			return retryDAGRunResult{}, fmt.Errorf("build distributed agent snapshot: %w", err)
-		} else if len(snapshot) > 0 {
-			opts = append(opts, executor.WithAgentSnapshot(snapshot))
-		}
-
 		task := executor.CreateTask(
 			dag.Name,
 			string(dag.YamlData),
@@ -2690,7 +2712,7 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 			opts...,
 		)
 
-		if err := a.coordinatorCli.Dispatch(ctx, task); err != nil {
+		if err := a.coordinatorCli.Dispatch(ctx, exec.DispatchRequest{Task: task}); err != nil {
 			return retryDAGRunResult{}, fmt.Errorf("error dispatching retry to coordinator: %w", err)
 		}
 
@@ -3133,10 +3155,7 @@ func (a *API) rescheduleDAGRun(ctx context.Context, dagName, dagRunID string, op
 		return rescheduleDAGRunResult{}, fmt.Errorf("failed to enqueue dag-run: %w", enqueueErr)
 	}
 
-	queued := false
-	if dagStatus, _ := a.dagRunMgr.GetCurrentStatus(ctx, dag, newDagRunID); dagStatus != nil {
-		queued = dagStatus.Status == core.Queued
-	}
+	queued := true
 
 	detailsMap := map[string]any{
 		"dag_name":        dagName,
@@ -3510,6 +3529,9 @@ func (a *API) resumeSubDAGRun(ctx context.Context, rootRef exec.DAGRunRef, subDA
 	}
 
 	retrySpec := a.subCmdBuilder.Retry(prepared, subDAGRunID, "")
+	if !status.Root.Zero() && status.Root.ID != subDAGRunID {
+		retrySpec = a.subCmdBuilder.RetryWithRootDAGRun(prepared, subDAGRunID, "", status.Root)
+	}
 	return launcher.Start(ctx, retrySpec)
 }
 
@@ -4203,7 +4225,9 @@ func buildArtifactPreview(archiveDir, relPath string) (api.ArtifactPreviewRespon
 		previewBytes = previewBytes[:previewLimit]
 		resp.Truncated = true
 	}
-	if kind == api.ArtifactPreviewKindMarkdown || kind == api.ArtifactPreviewKindText {
+	if kind == api.ArtifactPreviewKindMarkdown ||
+		kind == api.ArtifactPreviewKindHtml ||
+		kind == api.ArtifactPreviewKindText {
 		content := string(previewBytes)
 		resp.Content = &content
 	}
@@ -4250,9 +4274,14 @@ func artifactPreviewKind(path, mimeType string) api.ArtifactPreviewKind {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".md", ".markdown", ".mdown", ".mkd":
 		return api.ArtifactPreviewKindMarkdown
+	case ".html", ".htm":
+		return api.ArtifactPreviewKindHtml
 	}
 	if strings.HasPrefix(mimeType, "image/") {
 		return api.ArtifactPreviewKindImage
+	}
+	if mimeType == "text/html" {
+		return api.ArtifactPreviewKindHtml
 	}
 	if strings.HasPrefix(mimeType, "text/") ||
 		strings.Contains(mimeType, "json") ||
@@ -4267,7 +4296,7 @@ func artifactPreviewKind(path, mimeType string) api.ArtifactPreviewKind {
 
 func artifactPreviewLimit(kind api.ArtifactPreviewKind) int64 {
 	switch kind {
-	case api.ArtifactPreviewKindMarkdown, api.ArtifactPreviewKindText:
+	case api.ArtifactPreviewKindMarkdown, api.ArtifactPreviewKindHtml, api.ArtifactPreviewKindText:
 		return artifactTextPreviewMaxBytes
 	case api.ArtifactPreviewKindImage:
 		return artifactImagePreviewMaxBytes

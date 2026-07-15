@@ -6,35 +6,33 @@ package frontend
 import (
 	"context"
 
-	"github.com/dagucloud/dagu/internal/agent"
-	"github.com/dagucloud/dagu/internal/agentsnapshot"
 	authmodel "github.com/dagucloud/dagu/internal/auth"
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
 	"github.com/dagucloud/dagu/internal/core/baseconfig"
 	"github.com/dagucloud/dagu/internal/dagsettings"
 	"github.com/dagucloud/dagu/internal/incident"
 	"github.com/dagucloud/dagu/internal/notification"
+	"github.com/dagucloud/dagu/internal/profile"
 	"github.com/dagucloud/dagu/internal/remotenode"
+	"github.com/dagucloud/dagu/internal/secret"
 	"github.com/dagucloud/dagu/internal/service/audit"
 	authservice "github.com/dagucloud/dagu/internal/service/auth"
 	"github.com/dagucloud/dagu/internal/service/eventstore"
 	apiv1 "github.com/dagucloud/dagu/internal/service/frontend/api/v1"
 	"github.com/dagucloud/dagu/internal/upgrade"
+	"github.com/dagucloud/dagu/internal/view"
 	"github.com/dagucloud/dagu/internal/workspace"
 )
 
 // StoreFactories contains backend-specific persistence wiring for the frontend server.
 type StoreFactories struct {
-	SnapshotStoreFactory             agentsnapshot.StoreFactory
 	WorkspaceBaseConfigStoreFactory  apiv1.WorkspaceBaseConfigStoreFactory
 	BaseConfigStoreFactory           BaseConfigStoreFactory
-	AgentStoresFactory               AgentStoresFactory
-	AgentSessionStoreFactory         AgentSessionStoreFactory
-	DocStoreFactory                  DocStoreFactory
 	BuiltinAuthFactory               BuiltinAuthFactory
 	RemoteNodeStoreFactory           RemoteNodeStoreFactory
+	SecretStoreFactory               SecretStoreFactory
+	ProfileStoreFactory              ProfileStoreFactory
 	DAGSettingsStoreFactory          DAGSettingsStoreFactory
 	NotificationStoreFactory         NotificationStoreFactory
 	NotificationMonitorStateFileFunc MonitorStateFileFunc
@@ -44,21 +42,14 @@ type StoreFactories struct {
 	UpgradeCheckStoreFactory         UpgradeCheckStoreFactory
 	AuditStoreFactory                AuditStoreFactory
 	EventStoreFactory                EventStoreFactory
+	ViewStoreFactory                 ViewStoreFactory
 }
 
 type BaseConfigStoreFactory func(filePath string) (baseconfig.Store, error)
 
-type AgentStoresFactory func(context.Context, *config.Config, AgentStoresOptions) agent.RuntimeStores
+type SecretStoreFactory func(context.Context, *config.Config) secret.Store
 
-type AgentStoresOptions struct {
-	MemoryCache      *fileutil.Cache[string]
-	SeedReferences   bool
-	SeedExampleSouls bool
-}
-
-type AgentSessionStoreFactory func(*config.Config) (agent.SessionStore, error)
-
-type DocStoreFactory func(*config.Config) agent.DocStore
+type ProfileStoreFactory func(context.Context, *config.Config) profile.Store
 
 type BuiltinAuthFactory func(context.Context, *config.Config) (*BuiltinAuthResult, bool, error)
 
@@ -77,6 +68,8 @@ type UpgradeCheckStoreFactory func(*config.Config) (upgrade.CacheStore, error)
 type AuditStoreFactory func(*config.Config) (AuditStore, error)
 
 type EventStoreFactory func(*config.Config) (eventstore.Store, error)
+
+type ViewStoreFactory func(*config.Config) (view.Store, error)
 
 type MonitorStateFileFunc func(*config.Config) string
 

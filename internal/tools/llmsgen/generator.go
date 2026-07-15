@@ -16,7 +16,7 @@ var sourceFiles = []string{
 	filepath.Join("references", "steptypes.md"),
 	filepath.Join("references", "dagu-action.md"),
 	filepath.Join("references", "cli.md"),
-	filepath.Join("references", "env.md"),
+	filepath.Join("references", "context.md"),
 	filepath.Join("references", "codingagent.md"),
 }
 
@@ -44,7 +44,7 @@ func Generate(opts Options) ([]byte, error) {
 	buf.WriteString("It runs as a single binary without requiring an external database or message broker. ")
 	buf.WriteString("It stores state locally by default and supports local, queued, and distributed execution modes.\n\n")
 	buf.WriteString("Use this compact reference when authoring, validating, or troubleshooting Dagu workflows with an AI agent. ")
-	buf.WriteString("For the full human documentation, see https://docs.dagu.sh/.\n")
+	buf.WriteString("It summarizes repository-local workflow references.\n")
 
 	for _, file := range sourceFiles {
 		path := filepath.Join(sourceDir, file)
@@ -91,12 +91,12 @@ func stripFrontMatter(content string) string {
 	}
 
 	rest := strings.TrimPrefix(content, "---\n")
-	end := strings.Index(rest, "\n---\n")
-	if end < 0 {
+	_, after, ok := strings.Cut(rest, "\n---\n")
+	if !ok {
 		return strings.TrimLeft(content, "\n")
 	}
 
-	return strings.TrimLeft(rest[end+len("\n---\n"):], "\n")
+	return strings.TrimLeft(after, "\n")
 }
 
 func cleanPrefix(prefix string) string {

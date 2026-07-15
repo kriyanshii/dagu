@@ -52,11 +52,11 @@ type Options struct {
 
 	// DefaultMode is used when a run does not set WithMode.
 	DefaultMode ExecutionMode
-	// Distributed configures dispatch and worker clients for shared-nothing mode.
+	// Distributed configures dispatch and worker clients.
 	Distributed *DistributedOptions
 }
 
-// DistributedOptions configures shared-nothing distributed execution.
+// DistributedOptions configures distributed execution.
 type DistributedOptions struct {
 	// Coordinators are coordinator gRPC addresses.
 	Coordinators []string
@@ -105,7 +105,7 @@ type Status struct {
 	TriggerType string
 }
 
-// WorkerOptions configures an embedded shared-nothing worker.
+// WorkerOptions configures an embedded distributed worker.
 type WorkerOptions struct {
 	// ID is the worker identifier. A host and process based ID is generated when empty.
 	ID string
@@ -134,7 +134,7 @@ type Run struct {
 	inner *iengine.Run
 }
 
-// Worker is a shared-nothing worker connected to configured coordinators.
+// Worker is a distributed worker connected to configured coordinators.
 type Worker struct {
 	inner *iengine.Worker
 }
@@ -225,7 +225,7 @@ func (e *Engine) Stop(ctx context.Context, ref RunRef) error {
 	return e.inner.Stop(ctx, internalRunRef(ref))
 }
 
-// NewWorker creates an embedded worker for shared-nothing distributed execution.
+// NewWorker creates an embedded distributed worker.
 func (e *Engine) NewWorker(opts WorkerOptions) (*Worker, error) {
 	if e == nil || e.inner == nil {
 		return nil, fmt.Errorf("engine is not initialized")
@@ -440,8 +440,7 @@ func filePersistenceFactory(ctx context.Context, cfg *config.Config) (iengine.Pe
 		ServiceRegistry: file.NewServiceRegistry(cfg),
 
 		DAGStoreFactory:      fileEngineDAGStore,
-		AgentStoresFactory:   fileEngineAgentStores,
-		SnapshotStoreFactory: file.NewSnapshotStores,
+		RuntimeStoresFactory: fileEngineRuntimeStores,
 	}, nil
 }
 
@@ -453,8 +452,11 @@ func fileEngineDAGStore(_ context.Context, cfg *config.Config, opts iengine.DAGS
 	return file.NewDAGStore(cfg, fileOpts...)
 }
 
-func fileEngineAgentStores(ctx context.Context, cfg *config.Config) iengine.AgentStores {
-	return file.NewAgentStores(ctx, cfg, file.WithAgentContextResolverFromConfig())
+func fileEngineRuntimeStores(ctx context.Context, cfg *config.Config) iengine.RuntimeStores {
+	return iengine.RuntimeStores{
+		SecretStore:  file.NewSecretStore(ctx, cfg),
+		ProfileStore: file.NewProfileStore(ctx, cfg),
+	}
 }
 
 func internalDistributedOptions(opts DistributedOptions) iengine.DistributedOptions {

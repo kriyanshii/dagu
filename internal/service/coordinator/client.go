@@ -57,7 +57,7 @@ type Client interface {
 	// RunHeartbeat refreshes leases for tasks owned by a specific coordinator.
 	RunHeartbeatTo(ctx context.Context, owner exec.HostInfo, req *coordinatorv1.RunHeartbeatRequest) (*coordinatorv1.RunHeartbeatResponse, error)
 
-	// ReportStatus sends a status update to the coordinator (for shared-nothing workers)
+	// ReportStatus sends a worker status update to the coordinator.
 	ReportStatus(ctx context.Context, req *coordinatorv1.ReportStatusRequest) (*coordinatorv1.ReportStatusResponse, error)
 
 	// ReportStatusTo sends a status update to a specific owner coordinator.
@@ -76,10 +76,14 @@ type Client interface {
 	StreamArtifactsTo(ctx context.Context, owner exec.HostInfo) (coordinatorv1.CoordinatorService_StreamArtifactsClient, error)
 
 	// RequestCancel requests cancellation of a DAG run through the coordinator.
-	// Used in shared-nothing mode for sub-DAG cancellation.
+	// Used by worker sub-DAG cancellation.
 	RequestCancel(ctx context.Context, dagName, dagRunID string, rootRef *exec.DAGRunRef) error
 
 	// GetDAGRunStatus is inherited from execution.Dispatcher
+
+	// GetDAG retrieves a DAG definition (raw YAML) from the coordinator's DAG store.
+	// Used as a fallback when a worker's local DAG store misses a definition.
+	GetDAG(ctx context.Context, name string) (string, error)
 
 	// Metrics returns the metrics for the coordinator client
 	Metrics() Metrics
@@ -106,8 +110,9 @@ type Metrics struct {
 }
 
 var (
-	_ Client          = (*clientImpl)(nil)
-	_ exec.Dispatcher = (*clientImpl)(nil)
+	_ Client                = (*clientImpl)(nil)
+	_ SecretReferenceClient = (*clientImpl)(nil)
+	_ exec.Dispatcher       = (*clientImpl)(nil)
 )
 
 // clientImpl is the concrete implementation
@@ -142,7 +147,7 @@ type client struct {
 
 // grpcMaxMsgSize is the maximum message size for gRPC calls.
 // Default gRPC limit is 4 MB; we increase to 16 MB to handle large status
-// payloads that include LLM session messages in shared-nothing mode.
+// payloads that include LLM session messages from workers.
 const grpcMaxMsgSize = 16 * 1024 * 1024
 
 const maxPinnedStateCoordinators = 1024
@@ -166,7 +171,8 @@ func New(registry exec.ServiceRegistry, config *Config) Client {
 }
 
 // Dispatch sends a task to the coordinator.
-func (cli *clientImpl) Dispatch(ctx context.Context, task *exec.DispatchTask) error {
+func (cli *clientImpl) Dispatch(ctx context.Context, req exec.DispatchRequest) error {
+	task := req.Task
 	if task == nil {
 		return fmt.Errorf("dispatch task is nil")
 	}
@@ -201,14 +207,17 @@ func (cli *clientImpl) Dispatch(ctx context.Context, task *exec.DispatchTask) er
 
 		return cli.attemptCall(ctx, members, func(ctx context.Context, member exec.HostInfo, client *client) error {
 			// Create request
-			req := &coordinatorv1.DispatchRequest{Task: protoTask}
+			protoReq := &coordinatorv1.DispatchRequest{
+				Task:                      protoTask,
+				AdmissionReservationToken: req.AdmissionReservationToken,
+			}
 
 			// Apply request timeout
 			dispatchCtx, cancel := context.WithTimeout(ctx, cli.config.RequestTimeout)
 			defer cancel()
 
 			// Try to dispatch
-			if _, err := client.client.Dispatch(dispatchCtx, req); err != nil {
+			if _, err := client.client.Dispatch(dispatchCtx, protoReq); err != nil {
 				logger.Warn(ctx, "Failed to dispatch task to coordinator",
 					tag.RunID(task.DAGRunID),
 					tag.Target(task.Target),
@@ -1000,6 +1009,38 @@ func (cli *clientImpl) GetDAGRunStatus(ctx context.Context, dagName, dagRunID st
 		result.Status = status
 	}
 	return result, nil
+}
+
+// GetDAG retrieves a DAG definition (raw YAML spec) from the coordinator's DAG store.
+func (cli *clientImpl) GetDAG(ctx context.Context, name string) (string, error) {
+	members, err := cli.getCoordinatorMembers(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	req := &coordinatorv1.GetDAGRequest{
+		Name: name,
+	}
+
+	var resp *coordinatorv1.GetDAGResponse
+	err = cli.attemptCall(ctx, members, func(ctx context.Context, member exec.HostInfo, client *client) error {
+		var callErr error
+		resp, callErr = client.client.GetDAG(ctx, req)
+		if callErr != nil {
+			return fmt.Errorf("get DAG definition failed: %w", callErr)
+		}
+		if resp == nil {
+			return fmt.Errorf("coordinator %s returned empty DAG definition response", member.ID)
+		}
+		if resp.Error != "" {
+			return fmt.Errorf("coordinator %s get DAG failed: %s", member.ID, resp.Error)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.Spec, nil
 }
 
 // RequestCancel requests cancellation of a DAG run through the coordinator

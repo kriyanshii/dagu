@@ -35,7 +35,6 @@ const STATIC_ROUTE_LABELS: Record<string, string> = {
   '/dags': 'DAGs',
   '/search': 'Search',
   '/base-config': 'Base Config',
-  '/docs': 'Runbooks',
   '/queues': 'Queues',
   '/dag-runs': 'DAG Runs',
   '/system-status': 'System Status',
@@ -49,12 +48,6 @@ const STATIC_ROUTE_LABELS: Record<string, string> = {
   '/audit-logs': 'Audit Logs',
   '/license': 'License',
   '/git-sync': 'Git Sync',
-  '/agent': 'Agent',
-  '/agent-settings': 'Models',
-  '/agent-tools': 'Tools',
-  '/agent-memory': 'Memory',
-  '/agent-souls': 'Souls',
-  '/agent-souls/new': 'New Soul',
 };
 
 function decodePathSegment(segment: string): string {
@@ -114,44 +107,6 @@ export function getBreadcrumbItems(pathname: string): BreadcrumbItemData[] {
     if (segments[1]) {
       items.push({ label: decodePathSegment(segments[1]) });
     }
-    return items;
-  }
-
-  if (segments[0] === 'docs') {
-    items.push({ label: 'Workflows' }, { label: 'Runbooks', to: '/docs' });
-    for (const segment of segments.slice(1)) {
-      items.push({ label: decodePathSegment(segment) });
-    }
-    return items;
-  }
-
-  if (segments[0]?.startsWith('agent')) {
-    items.push(
-      { label: 'Administration', to: '/administration' },
-      { label: 'Agent', to: normalized === '/agent' ? undefined : '/agent' }
-    );
-
-    if (normalized === '/agent') {
-      return items;
-    }
-
-    const sectionPath = `/${segments[0]}`;
-    items.push({
-      label:
-        STATIC_ROUTE_LABELS[sectionPath] ??
-        humanizePathSegment(segments[0] ?? ''),
-      to: normalized === sectionPath ? undefined : sectionPath,
-    });
-
-    for (let index = 1; index < segments.length; index += 1) {
-      const path = `${sectionPath}/${segments.slice(1, index + 1).join('/')}`;
-      items.push({
-        label:
-          STATIC_ROUTE_LABELS[path] ?? decodePathSegment(segments[index] ?? ''),
-        to: index === segments.length - 1 ? undefined : path,
-      });
-    }
-
     return items;
   }
 

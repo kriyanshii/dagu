@@ -7,6 +7,7 @@ import (
 	"context"
 	"testing"
 
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core/spec/types"
 	"github.com/goccy/go-yaml"
 	"github.com/stretchr/testify/assert"
@@ -220,6 +221,18 @@ func TestLoadVariables(t *testing.T) {
 		assert.Equal(t, "hello", result["GREETING"])
 	})
 
+	t.Run("PreservesBacktickSubstitution", func(t *testing.T) {
+		ctx := BuildContext{
+			ctx:  context.Background(),
+			opts: BuildOpts{},
+		}
+
+		input := map[string]any{"CMD": "`echo hello`"}
+		result, err := loadVariables(ctx, input)
+		require.NoError(t, err)
+		assert.Equal(t, "`echo hello`", result["CMD"])
+	})
+
 	t.Run("NoEvalFlag", func(t *testing.T) {
 		t.Parallel()
 
@@ -228,7 +241,7 @@ func TestLoadVariables(t *testing.T) {
 			opts: BuildOpts{Flags: BuildFlagNoEval},
 		}
 
-		// With NoEval, command substitution should not be executed
+		// With NoEval, command-like text is preserved.
 		input := map[string]any{"CMD": "$(echo hello)"}
 		result, err := loadVariables(ctx, input)
 		require.NoError(t, err)
@@ -357,6 +370,20 @@ GREETING: hello
 		assert.Equal(t, "hello", result["GREETING"])
 	})
 
+	t.Run("PreservesBacktickSubstitution", func(t *testing.T) {
+		ctx := BuildContext{
+			ctx:  context.Background(),
+			opts: BuildOpts{},
+		}
+
+		env := envValueFromYAML(t, `
+CMD: "`+"`echo hello`"+`"
+`)
+		result, err := loadVariablesFromEnvValue(ctx, env)
+		require.NoError(t, err)
+		assert.Equal(t, "`echo hello`", result["CMD"])
+	})
+
 	t.Run("NoEvalFlag", func(t *testing.T) {
 		t.Parallel()
 
@@ -387,6 +414,24 @@ CMD: "$(echo hello)"
 		require.NoError(t, err)
 		assert.Equal(t, "/opt", result["BASE"])
 		assert.Equal(t, "/opt/bin", result["PATH_VAR"])
+	})
+
+	t.Run("ParamReference", func(t *testing.T) {
+		ctx := BuildContext{
+			ctx: context.Background(),
+			envScope: &envScopeState{
+				scope:             cmnvalue.NewEnvScope(nil, false),
+				params:            cmnvalue.Values{"environment": "prod"},
+				paramDeclarations: cmnvalue.Values{"environment": ""},
+			},
+		}
+
+		env := envValueFromYAML(t, `
+ENVIRONMENT: ${params.environment}
+`)
+		result, err := loadVariablesFromEnvValue(ctx, env)
+		require.NoError(t, err)
+		assert.Equal(t, "prod", result["ENVIRONMENT"])
 	})
 
 	t.Run("IntegerValue", func(t *testing.T) {

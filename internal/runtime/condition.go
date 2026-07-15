@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"slices"
+	"strings"
 
+	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
 	"github.com/dagucloud/dagu/internal/cmn/stringutil"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 )
 
@@ -54,8 +56,10 @@ func EvalConditions(ctx context.Context, shell []string, cond []*core.Condition)
 func EvalCondition(ctx context.Context, shell []string, c *core.Condition) error {
 	var err error
 	switch {
-	case c.Condition != "" && c.Expected != "":
-		err = matchCondition(ctx, c)
+	case c.Expected != "" && (c.Condition != "" || c.Eval != ""):
+		err = matchCondition(ctx, shell, c)
+	case c.Eval != "":
+		err = fmt.Errorf("expected is required when eval is set")
 
 	default:
 		err = evalCommand(ctx, shell, c)
@@ -79,8 +83,16 @@ func EvalCondition(ctx context.Context, shell []string, c *core.Condition) error
 
 // matchCondition evaluates the condition and checks if it matches the expected value.
 // It returns an error if the condition was not met.
-func matchCondition(ctx context.Context, c *core.Condition) error {
-	evaluatedVal, err := EvalString(ctx, c.Condition)
+func matchCondition(ctx context.Context, shell []string, c *core.Condition) error {
+	raw := c.Condition
+	field := cmnvalue.ConditionRuntimeValueField("condition")
+	if c.Eval != "" {
+		raw = c.Eval
+		field = cmnvalue.ConditionEvalField("eval")
+		ctx = conditionEvalContext(ctx, shell)
+	}
+
+	evaluatedVal, err := resolveRuntimeString(ctx, raw, field)
 	if err != nil {
 		return fmt.Errorf("failed to evaluate the value: Error=%v", err)
 	}
@@ -103,26 +115,57 @@ func matchCondition(ctx context.Context, c *core.Condition) error {
 	return fmt.Errorf("%w: expected %q, got %q", ErrConditionNotMet, c.Expected, evaluatedVal)
 }
 
+func conditionEvalContext(ctx context.Context, shell []string) context.Context {
+	if len(shell) > 0 {
+		ctx = cmnvalue.WithCommandSubstitutionShell(ctx, shell)
+	}
+	if env, ok := conditionEnv(ctx); ok {
+		ctx = cmnvalue.WithCommandSubstitutionWorkingDir(ctx, env.WorkingDir)
+	}
+	return ctx
+}
+
 func evalCommand(ctx context.Context, shell []string, c *core.Condition) error {
-	commandToRun, err := EvalString(ctx, c.Condition, CommandEvalOptions(shell)...)
+	command := cmnvalue.CommandContext{
+		Target:          cmnvalue.CommandTargetLocal,
+		Shell:           shell,
+		ShellConfigured: len(shell) > 0,
+	}
+	commandToRun, err := resolveRuntimeString(ctx, c.Condition, cmnvalue.ConditionCommandField("condition", command))
 	if err != nil {
 		return fmt.Errorf("failed to evaluate command: %w", err)
 	}
-	if len(shell) > 0 {
-		return runShellCommand(ctx, shell, commandToRun)
+	workingDir := ""
+	if env, ok := conditionEnv(ctx); ok {
+		workingDir = env.WorkingDir
 	}
-	return runDirectCommand(ctx, commandToRun)
+	if len(shell) > 0 {
+		return runShellCommand(ctx, shell, commandToRun, workingDir)
+	}
+	return runDirectCommand(ctx, commandToRun, workingDir)
 }
 
-func runShellCommand(ctx context.Context, shell []string, commandToRun string) error {
+func conditionEnv(ctx context.Context) (Env, bool) {
+	if env, ok := LookupEnv(ctx); ok {
+		return env, true
+	}
+	rCtx, ok := LookupDAGContext(ctx)
+	if !ok || rCtx.DAG == nil {
+		return Env{}, false
+	}
+	return NewEnv(ctx, core.Step{}), true
+}
+
+func runShellCommand(ctx context.Context, shell []string, commandToRun string, workingDir string) error {
 	args := make([]string, len(shell)-1)
 	copy(args, shell[1:])
-	if !slices.Contains(args, "-c") {
-		args = append(args, "-c")
-	}
+	args = appendShellCommandFlag(shell[0], args)
 	args = append(args, commandToRun)
 	cmd := exec.CommandContext(ctx, shell[0], args...) // nolint:gosec
 	cmd.Env = append(cmd.Env, AllEnvs(ctx)...)
+	if workingDir != "" {
+		cmd.Dir = workingDir
+	}
 	_, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrConditionNotMet, err)
@@ -130,9 +173,43 @@ func runShellCommand(ctx context.Context, shell []string, commandToRun string) e
 	return nil
 }
 
-func runDirectCommand(ctx context.Context, commandToRun string) error {
+func appendShellCommandFlag(shell string, args []string) []string {
+	if hasShellCommandFlag(shell, args) {
+		return args
+	}
+	return append(args, cmdutil.ShellCommandFlag(shell))
+}
+
+func hasShellCommandFlag(shell string, args []string) bool {
+	for _, arg := range args {
+		switch {
+		case cmdutil.IsPowerShell(shell):
+			if strings.EqualFold(arg, "-Command") || strings.EqualFold(arg, "-C") {
+				return true
+			}
+		case cmdutil.IsCmdShell(shell):
+			if strings.EqualFold(arg, "/c") {
+				return true
+			}
+		case cmdutil.IsNixShell(shell):
+			if arg == "--run" {
+				return true
+			}
+		default:
+			if arg == "-c" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func runDirectCommand(ctx context.Context, commandToRun string, workingDir string) error {
 	cmd := exec.CommandContext(ctx, commandToRun)
 	cmd.Env = append(cmd.Env, AllEnvs(ctx)...)
+	if workingDir != "" {
+		cmd.Dir = workingDir
+	}
 	_, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrConditionNotMet, err)

@@ -4,7 +4,6 @@
 package chatbridge
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -12,10 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/agent"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/llm"
 	"github.com/dagucloud/dagu/internal/service/eventstore"
 )
 
@@ -358,6 +355,31 @@ func (b *NotificationBatcher) DiscardDestinations(destinations []string) {
 	}
 }
 
+// flushBucketsLocked synchronously moves buffered buckets of the given class
+// to the ready queue, stopping any pending timers. It is safe to call when the
+// batcher has not been stopped.
+func (b *NotificationBatcher) flushBucketsLocked(class NotificationClass) {
+	b.mu.Lock()
+	type bucketRef struct {
+		key string
+		id  uint64
+	}
+	refs := make([]bucketRef, 0)
+	for key, bucket := range b.buckets {
+		if bucket != nil && bucket.class == class {
+			if bucket.timer != nil {
+				bucket.timer.Stop()
+			}
+			refs = append(refs, bucketRef{key: key, id: bucket.id})
+		}
+	}
+	b.mu.Unlock()
+
+	for _, ref := range refs {
+		b.readyBucket(ref.key, ref.id)
+	}
+}
+
 func (b *NotificationBatcher) readyBucket(bucketKey string, bucketID uint64) {
 	b.mu.Lock()
 	if b.stopped {
@@ -499,26 +521,6 @@ DAG Run ID: %s`, intro, status.Name, status.Status.String(), status.DAGRunID)
 	}
 	prompt.WriteString("\n\nWrite a notification message. Do NOT use tools or execute any commands. Just write the message text directly.")
 	return prompt.String()
-}
-
-// GenerateNotificationMessage returns the assistant message content for a flushed batch.
-func GenerateNotificationMessage(
-	ctx context.Context,
-	svc AgentService,
-	sessionID string,
-	user agent.UserIdentity,
-	batch NotificationBatch,
-) (agent.Message, error) {
-	if svc != nil && batch.Class == NotificationClassUrgent && len(batch.Events) == 1 {
-		status := batch.Events[0].Status
-		msg, err := svc.GenerateAssistantMessage(ctx, sessionID, user, status.Name, BuildNotificationPrompt(status))
-		if err == nil {
-			return msg, nil
-		}
-		return newNotificationMessage(FormatNotificationBatch(batch)), err
-	}
-
-	return newNotificationMessage(FormatNotificationBatch(batch)), nil
 }
 
 // FormatNotificationBatch renders a deterministic notification message for a flushed batch.
@@ -726,18 +728,6 @@ func waitingNotificationDetail(status *exec.DAGRunStatus) string {
 		return trimNotificationDetail(detail)
 	}
 	return "Action is required to resume the DAG."
-}
-
-func newNotificationMessage(content string) agent.Message {
-	return agent.Message{
-		Type:      agent.MessageTypeAssistant,
-		Content:   content,
-		CreatedAt: time.Now(),
-		LLMData: &llm.Message{
-			Role:    llm.RoleAssistant,
-			Content: content,
-		},
-	}
 }
 
 func cloneNotificationStatus(status *exec.DAGRunStatus) *exec.DAGRunStatus {

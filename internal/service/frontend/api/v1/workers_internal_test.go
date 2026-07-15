@@ -25,7 +25,7 @@ type stubCoordinatorClient struct {
 	err     error
 }
 
-func (s *stubCoordinatorClient) Dispatch(context.Context, *exec.DispatchTask) error {
+func (s *stubCoordinatorClient) Dispatch(context.Context, exec.DispatchRequest) error {
 	return nil
 }
 
@@ -87,6 +87,10 @@ func (s *stubCoordinatorClient) StreamArtifactsTo(ctx context.Context, _ exec.Ho
 
 func (s *stubCoordinatorClient) Metrics() coordinator.Metrics {
 	return coordinator.Metrics{}
+}
+
+func (s *stubCoordinatorClient) GetDAG(_ context.Context, _ string) (string, error) {
+	return "", errors.New("not implemented")
 }
 
 func TestAPIGetWorkers_ReturnsPartialResultsWithErrors(t *testing.T) {

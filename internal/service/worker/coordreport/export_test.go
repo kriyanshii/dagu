@@ -21,6 +21,7 @@ type StepLogWriter = stepLogWriter
 // StatusPusherSnapshot captures status pusher construction state for tests.
 type StatusPusherSnapshot struct {
 	WorkerID string
+	ClaimKey string
 	Client   coordinator.Client
 }
 
@@ -28,6 +29,7 @@ type StatusPusherSnapshot struct {
 func SnapshotStatusPusher(p *StatusPusher) StatusPusherSnapshot {
 	return StatusPusherSnapshot{
 		WorkerID: p.workerID,
+		ClaimKey: p.claimKey,
 		Client:   p.client,
 	}
 }

@@ -61,7 +61,7 @@ func TestReconcileOneOffState_NewEntriesRespectAddSemantics(t *testing.T) {
 		Schedule: []core.Schedule{future, past},
 	}
 
-	next, changed := reconcileOneOffState(DAGWatermark{}, dag, now)
+	next, changed := reconcileOneOffState(DAGWatermark{}, dag.Schedule, now)
 	require.True(t, changed)
 	require.Len(t, next.OneOffs, 2)
 	assert.Equal(t, OneOffStatusPending, next.OneOffs[future.Fingerprint()].Status)
@@ -79,7 +79,7 @@ func TestReconcileOneOffState_ScheduledNowStaysPending(t *testing.T) {
 		Schedule: []core.Schedule{schedule},
 	}
 
-	next, changed := reconcileOneOffState(DAGWatermark{}, dag, now)
+	next, changed := reconcileOneOffState(DAGWatermark{}, dag.Schedule, now)
 	require.True(t, changed)
 	require.Len(t, next.OneOffs, 1)
 	assert.Equal(t, OneOffStatusPending, next.OneOffs[schedule.Fingerprint()].Status)
@@ -155,6 +155,56 @@ func TestTickPlanner_DispatchRun_ExistingOneOffAttemptConsumesState(t *testing.T
 	require.True(t, ok)
 	tp.DispatchRun(context.Background(), run)
 
+	state := store.lastSaved()
+	require.NotNil(t, state)
+	assert.Equal(t, OneOffStatusConsumed, state.DAGs[dag.Name].OneOffs[schedule.Fingerprint()].Status)
+}
+
+func TestTickPlanner_DispatchRun_LegacyOneOffAttemptConsumesState(t *testing.T) {
+	t.Parallel()
+
+	scheduledTime := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	schedule := mustOneOffSchedule(t, "2026-02-07T12:00:00Z")
+	dag := &core.DAG{Name: "one.off-dag", Schedule: []core.Schedule{schedule}}
+	legacyRunID := generateLegacyOneOffRunID(dag.Name, schedule.Fingerprint(), scheduledTime)
+
+	store := &mockWatermarkStore{}
+	var checkedRunIDs []string
+	tp := NewTickPlanner(TickPlannerConfig{
+		WatermarkStore: store,
+		Dispatch: func(context.Context, *core.DAG, string, core.TriggerType, time.Time) error {
+			t.Fatal("dispatch should not be called when the legacy run already exists")
+			return nil
+		},
+		RunExists: func(_ context.Context, _ *core.DAG, runID string) (bool, error) {
+			checkedRunIDs = append(checkedRunIDs, runID)
+			return runID == legacyRunID, nil
+		},
+		Clock: func() time.Time {
+			return scheduledTime
+		},
+	})
+
+	store.state = &SchedulerState{
+		Version: SchedulerStateVersion,
+		DAGs: map[string]DAGWatermark{
+			dag.Name: {
+				OneOffs: map[string]OneOffScheduleState{
+					schedule.Fingerprint(): {
+						ScheduledTime: scheduledTime,
+						Status:        OneOffStatusPending,
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, tp.Init(context.Background(), []*core.DAG{dag}))
+
+	run, ok := tp.createPlannedRun(context.Background(), dag, schedule, scheduledTime, core.TriggerTypeScheduler)
+	require.True(t, ok)
+	tp.DispatchRun(context.Background(), run)
+
+	assert.Equal(t, []string{run.RunID, legacyRunID}, checkedRunIDs)
 	state := store.lastSaved()
 	require.NotNil(t, state)
 	assert.Equal(t, OneOffStatusConsumed, state.DAGs[dag.Name].OneOffs[schedule.Fingerprint()].Status)

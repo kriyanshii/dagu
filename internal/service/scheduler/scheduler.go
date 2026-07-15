@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/agentsnapshot"
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/cmn/dirlock"
 	"github.com/dagucloud/dagu/internal/cmn/logger"
@@ -57,7 +56,6 @@ type Scheduler struct {
 	lockHeld            atomic.Bool
 	clock               Clock // Clock function for getting current time
 	eventCollector      eventCollector
-	githubDispatch      githubDispatchRunner
 	notificationMonitor backgroundRunner
 	incidentMonitor     backgroundRunner
 }
@@ -67,17 +65,10 @@ type schedulerHooks struct {
 }
 
 type schedulerOptions struct {
-	snapshotStoreFactory agentsnapshot.StoreFactory
-	profileResolver      DAGProfileResolver
+	profileResolver DAGProfileResolver
 }
 
 type Option func(*schedulerOptions)
-
-func WithSnapshotStoreFactory(factory agentsnapshot.StoreFactory) Option {
-	return func(opts *schedulerOptions) {
-		opts.snapshotStoreFactory = factory
-	}
-}
 
 func WithDAGProfileResolver(resolver DAGProfileResolver) Option {
 	return func(opts *schedulerOptions) {
@@ -157,7 +148,6 @@ func newScheduler(
 		subCmdBuilder,
 		cfg.DefaultExecMode,
 		cfg.Paths.BaseConfig,
-		buildSnapshotBuilder(cfg.Paths, dagStore, options.snapshotStoreFactory),
 		WithDAGExecutorProfileResolver(options.profileResolver),
 	)
 	healthServer := NewHealthServer(cfg.Scheduler.Port)
@@ -227,12 +217,13 @@ func newScheduler(
 		Restart: func(ctx context.Context, dag *core.DAG, scheduleTime time.Time) error {
 			return dagExecutor.Restart(ctx, dag, scheduleTime)
 		},
-		Clock:         defaultClock,
-		Location:      timeLoc,
-		Events:        eventCh,
-		QueuesEnabled: queuesEnabled,
-		Enqueue:       enqueueFunc,
-		IsQueued:      isQueued,
+		Clock:           defaultClock,
+		Location:        timeLoc,
+		Events:          eventCh,
+		ProfileResolver: options.profileResolver,
+		QueuesEnabled:   queuesEnabled,
+		Enqueue:         enqueueFunc,
+		IsQueued:        isQueued,
 		RunExists: func(ctx context.Context, dag *core.DAG, runID string) (bool, error) {
 			_, err := dagRunStore.FindAttempt(ctx, exec.NewDAGRunRef(dag.Name, runID))
 			switch {
@@ -330,6 +321,7 @@ func (s *Scheduler) SetDispatchTaskStore(store exec.DispatchTaskStore) {
 		return
 	}
 	s.queueProcessor.dispatchTaskStore = store
+	s.queueProcessor.dispatchAdmissionStore = dispatchAdmissionStoreFromTaskStore(store)
 }
 
 // SetRestartFunc overrides the planner's restart function for testing purposes.
@@ -622,10 +614,6 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	})
 
 	wg.Go(func() {
-		s.startGitHubDispatch(ctx)
-	})
-
-	wg.Go(func() {
 		s.entryReader.Start(ctx)
 	})
 
@@ -798,6 +786,7 @@ func (s *Scheduler) runTick(ctx context.Context, tickTime time.Time) {
 		s.dispatchRun(ctx, run)
 	}
 	s.planner.Advance(tickTime)
+	s.planner.Flush(ctx)
 }
 
 // NextTick returns the next tick time for the scheduler.

@@ -233,7 +233,7 @@ func TestBuildStepScript(t *testing.T) {
 	}{
 		{name: "SimpleScript", input: "echo hello", expected: "echo hello"},
 		{name: "MultilineScript", input: "echo hello\necho world", expected: "echo hello\necho world"},
-		{name: "Trimmed", input: "  script  ", expected: "script"},
+		{name: "Trimmed", input: "  script  \n", expected: "script"},
 		{name: "Empty", input: "", expected: ""},
 	}
 
@@ -1013,6 +1013,11 @@ func TestBuildStepCommand(t *testing.T) {
 			expectedScript: "echo hello\necho world",
 		},
 		{
+			name:           "MultilineCommandPreservesBoundaryWhitespace",
+			command:        "\n  echo hello  \n",
+			expectedScript: "\n  echo hello  \n",
+		},
+		{
 			name:    "EmptyStringCommand",
 			command: "   ",
 			wantErr: true,
@@ -1213,6 +1218,11 @@ func TestBuildSingleCommand(t *testing.T) {
 			name:           "MultilineBecomesScript",
 			command:        "echo line1\necho line2",
 			expectedScript: "echo line1\necho line2",
+		},
+		{
+			name:           "MultilinePreservesBoundaryWhitespace",
+			command:        "  echo line1\n echo line2\n",
+			expectedScript: "  echo line1\n echo line2\n",
 		},
 		{
 			name:            "CommandOnly",
@@ -1691,15 +1701,12 @@ func TestBuildStepParallel(t *testing.T) {
 			},
 		},
 		{
-			name: "MaxConcurrentAsFloat64",
+			name: "InvalidMaxConcurrentAsFloat64",
 			parallel: map[string]any{
 				"items":          "${ITEMS}",
 				"max_concurrent": float64(7),
 			},
-			expected: &core.ParallelConfig{
-				Variable:      "${ITEMS}",
-				MaxConcurrent: 7,
-			},
+			wantErr: true,
 		},
 		{
 			name:     "InvalidType",
@@ -1987,6 +1994,16 @@ func TestBuildStepContainer(t *testing.T) {
 			input: &container{
 				Image:      "alpine:3.18",
 				PullPolicy: "missing",
+			},
+			expected: &core.Container{
+				Image:      "alpine:3.18",
+				PullPolicy: core.PullPolicyMissing,
+			},
+		},
+		{
+			name: "RuntimeDefaultsToDocker",
+			input: &container{
+				Image: "alpine:3.18",
 			},
 			expected: &core.Container{
 				Image:      "alpine:3.18",
@@ -3588,88 +3605,6 @@ func TestBuildStepMessages(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				assert.Len(t, result.Messages, tt.wantLen)
-			}
-		})
-	}
-}
-
-func TestValidateAgent_SkillIDs(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		skills  []string
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name:    "valid skill IDs",
-			skills:  []string{"sql-optimizer", "docker-deploy", "go-testing"},
-			wantErr: false,
-		},
-		{
-			name:    "no skills is valid",
-			skills:  nil,
-			wantErr: false,
-		},
-		{
-			name:    "empty string skill ID",
-			skills:  []string{""},
-			wantErr: true,
-			errMsg:  "invalid skill ID",
-		},
-		{
-			name:    "uppercase not allowed",
-			skills:  []string{"SQL-Optimizer"},
-			wantErr: true,
-			errMsg:  "invalid skill ID",
-		},
-		{
-			name:    "spaces not allowed",
-			skills:  []string{"sql optimizer"},
-			wantErr: true,
-			errMsg:  "invalid skill ID",
-		},
-		{
-			name:    "special characters not allowed",
-			skills:  []string{"sql_optimizer"},
-			wantErr: true,
-			errMsg:  "invalid skill ID",
-		},
-		{
-			name:    "path traversal not allowed",
-			skills:  []string{"../etc/passwd"},
-			wantErr: true,
-			errMsg:  "invalid skill ID",
-		},
-		{
-			name:    "single segment valid",
-			skills:  []string{"optimizer"},
-			wantErr: false,
-		},
-		{
-			name:    "one invalid among valid fails",
-			skills:  []string{"valid-id", "INVALID!", "also-valid"},
-			wantErr: true,
-			errMsg:  "invalid skill ID",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			step := &core.Step{
-				Agent: &core.AgentStepConfig{
-					Skills: tt.skills,
-				},
-				Messages: []core.LLMMessage{{Role: "user", Content: "test"}},
-			}
-			err := validateAgent(step)
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errMsg)
-			} else {
-				require.NoError(t, err)
 			}
 		})
 	}

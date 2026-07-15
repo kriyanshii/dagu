@@ -405,11 +405,6 @@ func TestBuildType(t *testing.T) {
 			expected: core.TypeChain,
 		},
 		{
-			name:    "AgentTypeNotSupported",
-			input:   "agent",
-			wantErr: true,
-		},
-		{
 			name:    "InvalidType",
 			input:   "invalid",
 			wantErr: true,
@@ -2787,17 +2782,27 @@ steps:
 			expected: &core.ArtifactsConfig{Enabled: true},
 		},
 		{
-			name: "AutoEnableWhenNestedExecutorConfigReferencesArtifactsDir",
+			name: "AutoEnableWhenNestedExecutorConfigReferencesContextArtifactsDir",
 			yaml: `
 steps:
   - name: render
     action: template.render
     with:
-      output: ${DAG_RUN_ARTIFACTS_DIR}/greeting.txt
+      output: ${context.paths.artifacts_dir}/greeting.txt
       data:
         name: tom
       template: |
         Hello, {{ .name }}!
+`,
+			expected: &core.ArtifactsConfig{Enabled: true},
+		},
+		{
+			name: "AutoEnableWhenEnvReferencesArtifactsDir",
+			yaml: `
+env:
+  REPORT_DIR: ${DAG_RUN_ARTIFACTS_DIR}/reports
+steps:
+  - run: ./generate-report
 `,
 			expected: &core.ArtifactsConfig{Enabled: true},
 		},

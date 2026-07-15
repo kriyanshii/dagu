@@ -20,6 +20,7 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
 	"github.com/dagucloud/dagu/internal/cmn/collections"
 	"github.com/dagucloud/dagu/internal/cmn/signal"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/spec/types"
 	"github.com/dagucloud/dagu/internal/llm"
@@ -67,6 +68,8 @@ type step struct {
 	Output any `yaml:"output,omitempty"`
 	// OutputSchema validates stdout JSON against an inline JSON Schema object.
 	OutputSchema any `yaml:"output_schema,omitempty"`
+	// Outputs declares file-based outputs published through DAGU_OUTPUT_FILE.
+	Outputs any `yaml:"outputs,omitempty"`
 	// Depends is the list of steps to depend on.
 	Depends types.StringOrArray `yaml:"depends,omitempty"`
 	// ContinueOn is the condition to continue on.
@@ -94,6 +97,8 @@ type step struct {
 	// - Static array: parallel: [item1, item2]
 	// - Object configuration: parallel: {items: ${ITEMS}, max_concurrent: 5}
 	Parallel any `yaml:"parallel,omitempty"`
+	// Foreach specifies inline item-body iteration configuration.
+	Foreach any `yaml:"foreach,omitempty"`
 	// WorkerSelector specifies required worker labels for execution.
 	WorkerSelector map[string]string `yaml:"worker_selector,omitempty"`
 	// Env specifies the environment variables for the step.
@@ -115,17 +120,13 @@ type step struct {
 	// Deprecated: use With.
 	Config map[string]any `yaml:"config,omitempty"`
 
-	// LLM contains the configuration for LLM-based executors (chat, agent, etc.).
-	// Requires explicit type: chat (or future type: agent).
+	// LLM contains the configuration for LLM-based executors.
+	// Requires explicit type: chat.
 	LLM *llmConfig `yaml:"llm,omitempty"`
 
 	// Messages contains the session messages for chat steps.
 	// Only valid when type is "chat".
 	Messages []llmMessage `yaml:"messages,omitempty"`
-
-	// Agent contains the configuration for agent-type steps.
-	// Only valid when type is "agent".
-	Agent *agentConfig `yaml:"agent,omitempty"`
 
 	// Approval configures a human approval gate after step execution.
 	Approval *approvalConfig `yaml:"approval,omitempty"`
@@ -140,6 +141,7 @@ type step struct {
 	parsedOutput       *outputConfig
 	parsedOutputErr    error
 	parsedOutputCached bool
+	outputsSet         bool
 }
 
 type execSpec struct {
@@ -320,64 +322,6 @@ type llmMessage struct {
 	Content string `yaml:"content,omitempty"`
 }
 
-// agentConfig defines the agent configuration for an agent step.
-type agentConfig struct {
-	// Model overrides the global default model for this step.
-	Model string `yaml:"model,omitempty"`
-	// Tools configures which tools are available and their policies.
-	Tools *agentToolsConfig `yaml:"tools,omitempty"`
-	// Skills lists skill IDs the agent is allowed to use.
-	// If omitted, falls back to globally enabled skills.
-	Skills []string `yaml:"skills,omitempty"`
-	// Soul is the soul ID for this step's agent identity.
-	Soul string `yaml:"soul,omitempty"`
-	// Memory controls whether persistent memory is loaded.
-	Memory *agentMemoryConfig `yaml:"memory,omitempty"`
-	// Prompt is additional instructions appended to the built-in system prompt.
-	Prompt string `yaml:"prompt,omitempty"`
-	// MaxIterations is the maximum number of tool call rounds.
-	MaxIterations *int `yaml:"max_iterations,omitempty"`
-	// SafeMode enables command approval via human review.
-	SafeMode *bool `yaml:"safe_mode,omitempty"`
-	// WebSearch configures provider-native web search for this agent step.
-	// Overrides the global agent web search setting.
-	WebSearch *webSearchConfig `yaml:"web_search,omitempty"`
-}
-
-// agentToolsConfig configures available tools and policies.
-type agentToolsConfig struct {
-	// Enabled lists the tools to enable.
-	Enabled []string `yaml:"enabled,omitempty"`
-	// BashPolicy configures bash command security rules.
-	BashPolicy *agentBashPolicy `yaml:"bash_policy,omitempty"`
-}
-
-// agentBashPolicy configures bash command security enforcement.
-type agentBashPolicy struct {
-	// DefaultBehavior is the default action when no rule matches.
-	DefaultBehavior string `yaml:"default_behavior,omitempty"`
-	// DenyBehavior determines what happens when a command is denied.
-	DenyBehavior string `yaml:"deny_behavior,omitempty"`
-	// Rules is an ordered list of pattern-matching rules.
-	Rules []agentBashRule `yaml:"rules,omitempty"`
-}
-
-// agentBashRule is a single bash command policy rule.
-type agentBashRule struct {
-	// Name is a human-readable name for the rule.
-	Name string `yaml:"name,omitempty"`
-	// Pattern is a regex pattern to match against commands.
-	Pattern string `yaml:"pattern"`
-	// Action is the action to take when the pattern matches.
-	Action string `yaml:"action"`
-}
-
-// agentMemoryConfig configures memory for the agent step.
-type agentMemoryConfig struct {
-	// Enabled controls whether global and per-DAG memory is loaded.
-	Enabled bool `yaml:"enabled,omitempty"`
-}
-
 // stepTransformer is a generic implementation for step field transformations
 type stepTransformer[T any] struct {
 	fieldName string
@@ -451,6 +395,7 @@ var stepStructuredOutputStage = stepTransformStage{
 	{"output", newStepTransformer("Output", buildStepOutput)},
 	{"structured_output", newStepTransformer("StructuredOutput", buildStepStructuredOutput)},
 	{"output_schema", newStepTransformer("OutputSchema", buildStepOutputSchema)},
+	{"outputs", newStepTransformer("Outputs", buildStepDeclaredOutputs)},
 }
 
 var stepEnvConditionStage = stepTransformStage{
@@ -494,8 +439,18 @@ type stepActionStage []stepActionBuilder
 var stepExecutionTargetStage = stepActionStage{
 	{"container", buildStepContainer, false},
 	{"parallel", buildStepParallel, false},
+	{"foreach", nil, false},
 	{"subDAG", buildStepSubDAG, false},
 	{"executor", buildStepExecutor, true},
+}
+
+func init() {
+	for idx := range stepExecutionTargetStage {
+		if stepExecutionTargetStage[idx].name == "foreach" {
+			stepExecutionTargetStage[idx].build = buildStepForeach
+			return
+		}
+	}
 }
 
 var stepInteractionActionStage = stepActionStage{
@@ -504,7 +459,6 @@ var stepInteractionActionStage = stepActionStage{
 	{"messages", func(_ StepBuildContext, s *step, result *core.Step) error {
 		return buildStepMessages(s, result)
 	}, false},
-	{"agent", buildStepAgent, false},
 	{"router", buildStepRouter, false},
 	{"approval", buildStepApproval, false},
 }
@@ -558,7 +512,6 @@ var stepExecutionValidationStage = stepValidationStage{
 var stepInteractionValidationStage = stepValidationStage{
 	{"llm", validateLLM},
 	{"messages", validateMessages},
-	{"agent", validateAgent},
 }
 
 var stepValidationStages = []stepValidationStage{
@@ -861,7 +814,11 @@ func buildStepShellArgs(ctx StepBuildContext, s *step) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(result.Args, s.ShellArgs...), nil
+	if s.ShellArgs != nil {
+		args := append([]string{}, result.Args...)
+		return append(args, s.ShellArgs...), nil
+	}
+	return result.Args, nil
 }
 
 func buildStepTimeout(_ StepBuildContext, s *step) (time.Duration, error) {
@@ -1136,6 +1093,104 @@ var stdoutOutputsConfigFields = map[string]struct{}{
 	"decode": {},
 	"select": {},
 	"fields": {},
+}
+
+var declaredOutputNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+
+var declaredOutputFields = map[string]struct{}{
+	"name": {},
+	"type": {},
+}
+
+func parseDeclaredOutputs(raw any) ([]core.StepOutputDeclaration, error) {
+	if raw == nil {
+		return nil, fmt.Errorf("outputs must be a non-empty sequence")
+	}
+
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("outputs must be a non-empty sequence")
+	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("outputs must be a non-empty sequence")
+	}
+
+	result := make([]core.StepOutputDeclaration, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for idx, item := range items {
+		obj, err := declaredOutputItemMap(item)
+		if err != nil {
+			return nil, fmt.Errorf("outputs[%d]: %w", idx, err)
+		}
+		for key := range obj {
+			if _, ok := declaredOutputFields[key]; !ok {
+				return nil, fmt.Errorf("outputs[%d]: unknown field %q", idx, key)
+			}
+		}
+
+		nameRaw, ok := obj["name"]
+		if !ok {
+			return nil, fmt.Errorf("outputs[%d]: name is required", idx)
+		}
+		name, ok := nameRaw.(string)
+		if !ok {
+			return nil, fmt.Errorf("outputs[%d]: name must be a string", idx)
+		}
+		name = strings.TrimSpace(name)
+		if !declaredOutputNamePattern.MatchString(name) {
+			return nil, fmt.Errorf("outputs[%d]: name must match %q", idx, declaredOutputNamePattern.String())
+		}
+		if _, ok := seen[name]; ok {
+			return nil, fmt.Errorf("outputs[%d]: duplicate output name %q", idx, name)
+		}
+		seen[name] = struct{}{}
+
+		outputType := core.StepDeclaredOutputTypeString
+		if rawType, ok := obj["type"]; ok {
+			str, ok := rawType.(string)
+			if !ok {
+				return nil, fmt.Errorf("outputs[%d]: type must be a string", idx)
+			}
+			outputType = strings.TrimSpace(str)
+			switch outputType {
+			case core.StepDeclaredOutputTypeString, core.StepDeclaredOutputTypeJSON:
+			default:
+				return nil, fmt.Errorf("outputs[%d]: type must be %q or %q",
+					idx, core.StepDeclaredOutputTypeString, core.StepDeclaredOutputTypeJSON)
+			}
+		}
+
+		result = append(result, core.StepOutputDeclaration{
+			Name: name,
+			Type: outputType,
+		})
+	}
+	return result, nil
+}
+
+func declaredOutputItemMap(raw any) (map[string]any, error) {
+	switch v := raw.(type) {
+	case map[string]any:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("item must not be empty")
+		}
+		return v, nil
+	case map[any]any:
+		if len(v) == 0 {
+			return nil, fmt.Errorf("item must not be empty")
+		}
+		converted := make(map[string]any, len(v))
+		for key, value := range v {
+			keyString, ok := key.(string)
+			if !ok {
+				return nil, fmt.Errorf("item keys must be strings")
+			}
+			converted[keyString] = value
+		}
+		return converted, nil
+	default:
+		return nil, fmt.Errorf("item must be an object")
+	}
 }
 
 func parseStdoutOutputsConfig(raw any) (*core.StepOutputsConfig, error) {
@@ -1472,12 +1527,29 @@ func buildStepOutputSchema(_ StepBuildContext, s *step) (map[string]any, error) 
 	return schemaMap, nil
 }
 
+func buildStepDeclaredOutputs(_ StepBuildContext, s *step) ([]core.StepOutputDeclaration, error) {
+	if !s.outputsSet {
+		return nil, nil
+	}
+	if strings.TrimSpace(s.ID) == "" {
+		return nil, fmt.Errorf("a step with outputs must define id")
+	}
+	return parseDeclaredOutputs(s.Outputs)
+}
+
 func buildStepEnvs(_ StepBuildContext, s *step) ([]string, error) {
 	if s.Env.IsZero() {
 		return nil, nil
 	}
 	var envs []string
-	for _, entry := range s.Env.Entries() {
+	for i, entry := range s.Env.Entries() {
+		if !cmnvalue.ValidEnvName(entry.Key) {
+			return nil, core.NewValidationError(
+				"env",
+				entry.Key,
+				fmt.Errorf("%w: invalid environment variable name %q at env[%d]", ErrInvalidEnvValue, entry.Key, i),
+			)
+		}
 		envs = append(envs, fmt.Sprintf("%s=%s", entry.Key, entry.Value))
 	}
 	return envs, nil
@@ -1574,27 +1646,30 @@ func buildDisplayArgsSuffix(args []string) string {
 
 // buildSingleCommand parses a single command string and populates the Step fields.
 func buildSingleCommand(val string, result *core.Step) error {
-	val = strings.TrimSpace(val)
-	if val == "" {
-		return core.NewValidationError("command", val, ErrStepCommandIsEmpty)
+	raw := val
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return core.NewValidationError("command", raw, ErrStepCommandIsEmpty)
 	}
 
 	// Harness uses command as a prompt, so preserve multiline text as a single
 	// command entry instead of reclassifying it as an inline script.
-	if strings.Contains(val, "\n") && result.ExecutorConfig.Type == "harness" {
+	if strings.Contains(raw, "\n") && result.ExecutorConfig.Type == "harness" {
 		result.Commands = []core.CommandEntry{
 			{
-				CmdWithArgs: val,
+				CmdWithArgs: raw,
 			},
 		}
 		return nil
 	}
 
 	// If the value is multi-line, treat it as a script
-	if strings.Contains(val, "\n") {
-		result.Script = val
+	if strings.Contains(raw, "\n") {
+		result.Script = raw
 		return nil
 	}
+
+	val = trimmed
 
 	// We need to split the command into command and args.
 	cmd, args, err := cmdutil.SplitCommand(val)
@@ -1865,11 +1940,11 @@ func validateMessages(result *core.Step) error {
 	if len(result.Messages) == 0 {
 		return nil
 	}
-	if !core.SupportsLLM(result.ExecutorConfig.Type) && !core.SupportsAgent(result.ExecutorConfig.Type) {
+	if !core.SupportsLLM(result.ExecutorConfig.Type) {
 		return core.NewValidationError(
 			"messages",
 			result.Messages,
-			fmt.Errorf("action %q does not support messages field; use action: chat or action: agent", result.ExecutorConfig.Type),
+			fmt.Errorf("action %q does not support messages field; use action: chat", result.ExecutorConfig.Type),
 		)
 	}
 	return nil
@@ -2125,17 +2200,20 @@ func buildStepParallel(_ StepBuildContext, s *step, result *core.Step) error {
 				case int:
 					result.Parallel.MaxConcurrent = mc
 				case int64:
+					if mc > math.MaxInt || mc < math.MinInt {
+						return core.NewValidationError("parallel.max_concurrent", mc, fmt.Errorf("value %d exceeds integer range", mc))
+					}
 					result.Parallel.MaxConcurrent = int(mc)
 				case uint64:
 					if mc > math.MaxInt {
 						return core.NewValidationError("parallel.max_concurrent", mc, fmt.Errorf("value %d exceeds maximum int", mc))
 					}
 					result.Parallel.MaxConcurrent = int(mc)
-				case float64:
-					result.Parallel.MaxConcurrent = int(mc)
 				default:
-					return core.NewValidationError("parallel.max_concurrent", val, fmt.Errorf("parallel.max_concurrent must be int, got %T", val))
+					return core.NewValidationError("parallel.max_concurrent", val, fmt.Errorf("parallel.max_concurrent must be an integer, got %T", val))
 				}
+			default:
+				return core.NewValidationError("parallel", v, fmt.Errorf("unknown parallel field %q", key))
 			}
 		}
 
@@ -2143,6 +2221,220 @@ func buildStepParallel(_ StepBuildContext, s *step, result *core.Step) error {
 		return core.NewValidationError("parallel", v, fmt.Errorf("parallel must be string, array, or object, got %T", v))
 	}
 
+	return nil
+}
+
+var foreachIdentifierPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+
+// buildStepForeach parses the foreach field in the step definition.
+func buildStepForeach(ctx StepBuildContext, s *step, result *core.Step) error {
+	if s.Foreach == nil {
+		return nil
+	}
+
+	if err := validateForeachExecutionTarget(s); err != nil {
+		return err
+	}
+
+	cfg, err := parseForeachConfig(ctx, s.Foreach)
+	if err != nil {
+		return err
+	}
+
+	result.Foreach = cfg
+	result.ExecutorConfig.Type = core.ExecutorTypeForeach
+	return nil
+}
+
+func validateForeachExecutionTarget(s *step) error {
+	targets := map[string]bool{
+		"run":      s.Run != nil,
+		"action":   s.Action != "",
+		"command":  s.Command != nil,
+		"exec":     s.Exec != nil,
+		"script":   s.Script != "",
+		"call":     s.Call != "",
+		"parallel": s.Parallel != nil,
+		"type":     s.Type != "",
+	}
+	for name, present := range targets {
+		if present {
+			return core.NewValidationError("foreach", s.Foreach,
+				fmt.Errorf("foreach cannot be combined with %q on the same step", name))
+		}
+	}
+	return nil
+}
+
+func parseForeachConfig(ctx StepBuildContext, raw any) (*core.ForeachConfig, error) {
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil, core.NewValidationError("foreach", raw,
+			fmt.Errorf("foreach must be an object, got %T", raw))
+	}
+
+	cfg := &core.ForeachConfig{
+		As:            "item",
+		MaxConcurrent: core.DefaultMaxConcurrent,
+	}
+
+	for key, value := range obj {
+		switch key {
+		case "items":
+			if err := parseForeachItems(value, cfg); err != nil {
+				return nil, err
+			}
+		case "as":
+			alias, ok := value.(string)
+			if !ok {
+				return nil, core.NewValidationError("foreach.as", value,
+					fmt.Errorf("foreach.as must be a string, got %T", value))
+			}
+			if err := validateForeachIdentifier("foreach.as", alias); err != nil {
+				return nil, core.NewValidationError("foreach.as", alias, err)
+			}
+			if alias == "index" || alias == "key" {
+				return nil, core.NewValidationError("foreach.as", alias,
+					fmt.Errorf("foreach.as %q is reserved", alias))
+			}
+			cfg.As = alias
+		case "key":
+			keyExpr, ok := value.(string)
+			if !ok {
+				return nil, core.NewValidationError("foreach.key", value,
+					fmt.Errorf("foreach.key must be a string, got %T", value))
+			}
+			cfg.Key = keyExpr
+		case "max_concurrent":
+			maxConcurrent, err := parseForeachMaxConcurrent(value)
+			if err != nil {
+				return nil, err
+			}
+			cfg.MaxConcurrent = maxConcurrent
+		case "steps":
+			steps, err := parseForeachSteps(ctx, value)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Steps = steps
+		case "collect":
+			collect, err := parseForeachCollect(value)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Collect = collect
+		default:
+			return nil, core.NewValidationError("foreach", raw,
+				fmt.Errorf("unknown foreach field %q", key))
+		}
+	}
+
+	if cfg.ItemsExpr == "" && cfg.Items == nil {
+		return nil, core.NewValidationError("foreach.items", nil,
+			fmt.Errorf("foreach.items is required"))
+	}
+	if len(cfg.Steps) == 0 {
+		return nil, core.NewValidationError("foreach.steps", nil,
+			fmt.Errorf("foreach.steps must contain at least one step"))
+	}
+	return cfg, nil
+}
+
+func parseForeachItems(value any, cfg *core.ForeachConfig) error {
+	switch items := value.(type) {
+	case string:
+		cfg.ItemsExpr = items
+	case []any:
+		cfg.Items = slices.Clone(items)
+	default:
+		return core.NewValidationError("foreach.items", value,
+			fmt.Errorf("foreach.items must be string or array, got %T", value))
+	}
+	return nil
+}
+
+func parseForeachMaxConcurrent(value any) (int, error) {
+	var maxConcurrent int
+	switch mc := value.(type) {
+	case int:
+		maxConcurrent = mc
+	case int64:
+		if mc > math.MaxInt || mc < math.MinInt {
+			return 0, core.NewValidationError("foreach.max_concurrent", mc,
+				fmt.Errorf("value %d exceeds integer range", mc))
+		}
+		maxConcurrent = int(mc)
+	case uint64:
+		if mc > math.MaxInt {
+			return 0, core.NewValidationError("foreach.max_concurrent", mc,
+				fmt.Errorf("value %d exceeds maximum int", mc))
+		}
+		maxConcurrent = int(mc)
+	default:
+		return 0, core.NewValidationError("foreach.max_concurrent", value,
+			fmt.Errorf("foreach.max_concurrent must be an integer, got %T", value))
+	}
+	if maxConcurrent < 1 || maxConcurrent > core.MaxExpansionConcurrency {
+		return 0, core.NewValidationError("foreach.max_concurrent", value,
+			fmt.Errorf("max_concurrent must be an integer from 1 through %d", core.MaxExpansionConcurrency))
+	}
+	return maxConcurrent, nil
+}
+
+func parseForeachSteps(ctx StepBuildContext, value any) ([]core.Step, error) {
+	rawSteps, ok := value.([]any)
+	if !ok {
+		return nil, core.NewValidationError("foreach.steps", value,
+			fmt.Errorf("foreach.steps must be an array, got %T", value))
+	}
+	if len(rawSteps) == 0 {
+		return nil, core.NewValidationError("foreach.steps", value,
+			fmt.Errorf("foreach.steps must contain at least one step"))
+	}
+
+	steps := make([]core.Step, 0, len(rawSteps))
+	names := map[string]struct{}{}
+	for idx, rawStep := range rawSteps {
+		stepMap, ok := rawStep.(map[string]any)
+		if !ok {
+			return nil, core.NewValidationError("foreach.steps", rawStep,
+				fmt.Errorf("foreach.steps[%d] must be an object, got %T", idx, rawStep))
+		}
+		builtStep, err := buildStepFromRaw(ctx, idx, stepMap, names, nil)
+		if err != nil {
+			return nil, core.NewValidationError("foreach.steps", rawStep, err)
+		}
+		steps = append(steps, *builtStep)
+	}
+	return steps, nil
+}
+
+func parseForeachCollect(value any) (map[string]string, error) {
+	rawCollect, ok := value.(map[string]any)
+	if !ok {
+		return nil, core.NewValidationError("foreach.collect", value,
+			fmt.Errorf("foreach.collect must be an object, got %T", value))
+	}
+
+	collect := make(map[string]string, len(rawCollect))
+	for name, rawExpr := range rawCollect {
+		if err := validateForeachIdentifier("foreach.collect", name); err != nil {
+			return nil, core.NewValidationError("foreach.collect", name, err)
+		}
+		expr, ok := rawExpr.(string)
+		if !ok {
+			return nil, core.NewValidationError("foreach.collect", rawExpr,
+				fmt.Errorf("foreach.collect.%s must be a string, got %T", name, rawExpr))
+		}
+		collect[name] = expr
+	}
+	return collect, nil
+}
+
+func validateForeachIdentifier(fieldName, value string) error {
+	if !foreachIdentifierPattern.MatchString(value) {
+		return fmt.Errorf("%s must match %s", fieldName, foreachIdentifierPattern.String())
+	}
 	return nil
 }
 
@@ -2426,108 +2718,6 @@ func buildStepRouter(_ StepBuildContext, s *step, result *core.Step) error {
 	}
 	result.ExecutorConfig.Type = core.ExecutorTypeRouter
 
-	return nil
-}
-
-// buildStepAgent parses the agent configuration from step fields.
-func buildStepAgent(_ StepBuildContext, s *step, result *core.Step) error {
-	if !core.SupportsAgent(result.ExecutorConfig.Type) {
-		if s.Agent != nil {
-			return core.NewValidationError("agent", result.ExecutorConfig.Type,
-				fmt.Errorf("agent configuration is only valid for steps with type %q", core.ExecutorTypeAgent))
-		}
-		return nil
-	}
-
-	cfg := &core.AgentStepConfig{
-		SafeMode:      true, // default: safe mode enabled
-		MaxIterations: 50,   // default: 50 iterations
-	}
-
-	if s.Agent != nil {
-		cfg.Model = strings.TrimSpace(s.Agent.Model)
-		cfg.Prompt = s.Agent.Prompt
-
-		if s.Agent.MaxIterations != nil {
-			cfg.MaxIterations = *s.Agent.MaxIterations
-			if cfg.MaxIterations < 1 {
-				return core.NewValidationError("agent.max_iterations", cfg.MaxIterations,
-					fmt.Errorf("must be at least 1"))
-			}
-		}
-		if s.Agent.SafeMode != nil {
-			cfg.SafeMode = *s.Agent.SafeMode
-		}
-
-		if s.Agent.Tools != nil {
-			cfg.Tools = &core.AgentToolsConfig{
-				Enabled: s.Agent.Tools.Enabled,
-			}
-			if s.Agent.Tools.BashPolicy != nil {
-				bp := s.Agent.Tools.BashPolicy
-				cfg.Tools.BashPolicy = &core.AgentBashPolicy{
-					DefaultBehavior: bp.DefaultBehavior,
-					DenyBehavior:    bp.DenyBehavior,
-				}
-				for _, r := range bp.Rules {
-					cfg.Tools.BashPolicy.Rules = append(cfg.Tools.BashPolicy.Rules, core.AgentBashRule{
-						Name:    r.Name,
-						Pattern: r.Pattern,
-						Action:  r.Action,
-					})
-				}
-			}
-		}
-
-		if len(s.Agent.Skills) > 0 {
-			cfg.Skills = s.Agent.Skills
-		}
-
-		cfg.Soul = strings.TrimSpace(s.Agent.Soul)
-
-		if s.Agent.Memory != nil {
-			cfg.Memory = &core.AgentMemoryConfig{
-				Enabled: s.Agent.Memory.Enabled,
-			}
-		}
-
-		cfg.WebSearch = buildWebSearchConfig(s.Agent.WebSearch)
-	}
-
-	result.Agent = cfg
-	return nil
-}
-
-// validSlugIDRegexp matches a valid slug ID: lowercase alphanumeric segments separated by hyphens.
-// Duplicated from agent.validSlugRegexp to avoid an import cycle (spec -> agent -> spec).
-var validSlugIDRegexp = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-
-const maxSlugIDLength = 128
-
-// validateAgent checks that agent steps have required configuration.
-func validateAgent(result *core.Step) error {
-	if result.Agent == nil {
-		return nil
-	}
-	if len(result.Messages) == 0 {
-		return core.NewValidationError(
-			"messages",
-			result.Messages,
-			fmt.Errorf("agent step requires at least one message"),
-		)
-	}
-	for _, id := range result.Agent.Skills {
-		if id == "" || len(id) > maxSlugIDLength || !validSlugIDRegexp.MatchString(id) {
-			return core.NewValidationError("agent.skills", id,
-				fmt.Errorf("invalid skill ID %q: must be lowercase alphanumeric with hyphens, max %d chars", id, maxSlugIDLength))
-		}
-	}
-	if result.Agent.Soul != "" {
-		if len(result.Agent.Soul) > maxSlugIDLength || !validSlugIDRegexp.MatchString(result.Agent.Soul) {
-			return core.NewValidationError("agent.soul", result.Agent.Soul,
-				fmt.Errorf("invalid soul ID %q: must be lowercase alphanumeric with hyphens, max %d chars", result.Agent.Soul, maxSlugIDLength))
-		}
-	}
 	return nil
 }
 

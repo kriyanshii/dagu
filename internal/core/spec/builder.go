@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/dagucloud/dagu/internal/cmn/eval"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/go-viper/mapstructure/v2"
 )
@@ -43,13 +43,20 @@ type BuildContext struct {
 	// paramsState caches DAG-level parameter parsing/resolution during a single build.
 	// This avoids reparsing params for Params, DefaultParams, ParamsJSON, and ParamDefs.
 	paramsState *paramsState
+
+	// valueReferenceNotices receives passive notices produced while building the DAG.
+	valueReferenceNotices cmnvalue.ValueReferenceNoticeSink
 }
 
 // envScopeState holds mutable state that needs to be shared across transformers.
 // Using a pointer allows value-passed BuildContext to share state.
 type envScopeState struct {
-	scope    *eval.EnvScope
-	buildEnv map[string]string // Also store as map for WithVariables
+	scope             *cmnvalue.EnvScope
+	buildEnv          map[string]string // Also store as map for WithVariables
+	consts            map[string]any
+	params            cmnvalue.Values
+	paramsJSON        string
+	paramDeclarations cmnvalue.Values
 }
 
 type paramsState struct {
@@ -116,7 +123,6 @@ type BuildOpts struct {
 	// DAGsDir is the directory containing the core.DAG files.
 	DAGsDir string
 	// DefaultWorkingDir is the default working directory for DAGs without explicit workingDir.
-	// This is used for sub-DAG execution to inherit the parent's working directory.
 	DefaultWorkingDir string
 	// Flags stores all boolean options controlling build behaviour.
 	Flags BuildFlag
@@ -139,32 +145,70 @@ func parsePrecondition(ctx BuildContext, precondition any) ([]*core.Condition, e
 		return nil, nil
 
 	case string:
+		return parsePreconditionEntry(ctx, v)
+
+	case []any:
+		var ret []*core.Condition
+		for _, vv := range v {
+			parsed, err := parsePreconditionEntry(ctx, vv)
+			if err != nil {
+				return nil, err
+			}
+			ret = append(ret, parsed...)
+		}
+		return ret, nil
+
+	default:
+		return nil, core.NewValidationError("preconditions", v, ErrPreconditionMustBeArrayOrString)
+	}
+}
+
+func parsePreconditionEntry(_ BuildContext, precondition any) ([]*core.Condition, error) {
+	switch v := precondition.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil, core.NewValidationError("preconditions", v, ErrPreconditionValueMustBeString)
+		}
 		return []*core.Condition{{Condition: v}}, nil
 
 	case map[string]any:
 		var ret core.Condition
+		hasCondition := false
+		hasEval := false
+		hasExpected := false
 		for key, vv := range v {
 			switch strings.ToLower(key) {
 			case "condition":
 				val, ok := vv.(string)
-				if !ok {
+				if !ok || strings.TrimSpace(val) == "" {
 					return nil, core.NewValidationError("preconditions", vv, ErrPreconditionValueMustBeString)
 				}
 				ret.Condition = val
+				hasCondition = true
+
+			case "eval":
+				val, ok := vv.(string)
+				if !ok || strings.TrimSpace(val) == "" {
+					return nil, core.NewValidationError("preconditions", vv, fmt.Errorf("eval must be a non-empty string: %w", ErrPreconditionValueMustBeString))
+				}
+				ret.Eval = val
+				hasEval = true
 
 			case "expected":
 				val, ok := vv.(string)
-				if !ok {
+				if !ok || strings.TrimSpace(val) == "" {
 					return nil, core.NewValidationError("preconditions", vv, ErrPreconditionValueMustBeString)
+				}
+				if after, ok0 := strings.CutPrefix(val, "re:"); ok0 {
+					if strings.TrimSpace(after) == "" {
+						return nil, core.NewValidationError("preconditions", vv, fmt.Errorf("expected regexp is empty"))
+					}
+					if _, err := regexp.Compile(after); err != nil {
+						return nil, core.NewValidationError("preconditions", vv, fmt.Errorf("expected regexp is invalid: %w", err))
+					}
 				}
 				ret.Expected = val
-
-			case "command":
-				val, ok := vv.(string)
-				if !ok {
-					return nil, core.NewValidationError("preconditions", vv, ErrPreconditionValueMustBeString)
-				}
-				ret.Condition = val
+				hasExpected = true
 
 			case "negate":
 				val, ok := vv.(bool)
@@ -179,26 +223,26 @@ func parsePrecondition(ctx BuildContext, precondition any) ([]*core.Condition, e
 			}
 		}
 
+		if hasCondition && hasEval {
+			return nil, core.NewValidationError("preconditions", v, fmt.Errorf("only one of condition or eval is allowed"))
+		}
+		if !hasCondition && !hasEval {
+			return nil, core.NewValidationError("preconditions", v, fmt.Errorf("condition or eval is required"))
+		}
+		if hasEval && !hasExpected {
+			return nil, core.NewValidationError("preconditions", v, fmt.Errorf("expected is required when eval is set"))
+		}
+		if hasExpected && strings.TrimSpace(ret.Expected) == "" {
+			return nil, core.NewValidationError("preconditions", v, fmt.Errorf("expected is required when set"))
+		}
 		if err := ret.Validate(); err != nil {
 			return nil, core.NewValidationError("preconditions", v, err)
 		}
 
 		return []*core.Condition{&ret}, nil
 
-	case []any:
-		var ret []*core.Condition
-		for _, vv := range v {
-			parsed, err := parsePrecondition(ctx, vv)
-			if err != nil {
-				return nil, err
-			}
-			ret = append(ret, parsed...)
-		}
-		return ret, nil
-
 	default:
-		return nil, core.NewValidationError("preconditions", v, ErrPreconditionMustBeArrayOrString)
-
+		return nil, core.NewValidationError("preconditions", v, ErrPreconditionValueMustBeString)
 	}
 }
 
@@ -217,9 +261,8 @@ var reservedSecretEnvNames = []string{
 	"DAG_RUN_STEP_STDOUT_FILE",
 	"DAG_RUN_STEP_STDERR_FILE",
 	"DAG_RUN_STATUS",
-	"DAGU_PARAMS_JSON",
-	"DAG_DOCS_DIR",
 	"DAG_PARAMS_JSON",
+	"DAGU_PARAMS_JSON",
 	"DAG_RUN_WORK_DIR",
 	"DAG_RUN_ARTIFACTS_DIR",
 	"DAG_PUSHBACK",
@@ -364,6 +407,7 @@ func decodeStep(raw map[string]any) (*step, error) {
 	if err := md.Decode(raw); err != nil {
 		return nil, core.NewValidationError("steps", raw, withSnakeCaseKeyHint(err))
 	}
+	_, st.outputsSet = raw["outputs"]
 	return &st, nil
 }
 
@@ -429,6 +473,9 @@ func buildStepFromSpec(
 	}
 
 	stCopy := *st
+	if raw != nil {
+		_, stCopy.outputsSet = raw["outputs"]
+	}
 	if forcedName != "" {
 		stCopy.Name = forcedName
 	}

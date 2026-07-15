@@ -9,8 +9,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -32,6 +35,14 @@ func testContext(t *testing.T) context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	return ctx
+}
+
+func testAppStream(t *testing.T) *sse.AppStreamService {
+	t.Helper()
+	stream, err := sse.NewAppStreamService(sse.AppStreamConfig{})
+	require.NoError(t, err)
+	t.Cleanup(stream.Shutdown)
+	return stream
 }
 
 func TestRegisterDedicatedSSEFetchersUsesEventStoreInvalidationForRunTopics(t *testing.T) {
@@ -91,6 +102,7 @@ func TestRegisterDedicatedSSEFetchersUsesEventStoreInvalidationForRunTopics(t *t
 			srv := &Server{
 				apiV1:        &apiv1.API{},
 				eventService: eventstore.New(nil),
+				appStream:    testAppStream(t),
 			}
 			srv.registerDedicatedSSEFetchers(mux)
 
@@ -142,94 +154,186 @@ func TestRegisterDedicatedSSEFetchersUsesEventStoreInvalidationForRunTopics(t *t
 	}
 }
 
-func TestRegisterDedicatedSSEFetchersUsesMutationInvalidationForDocTopics(t *testing.T) {
+func TestRegisterDedicatedSSEFetchersKeepsDAGsListPollingWithoutAppStream(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name       string
-		topicType  sse.TopicType
-		topic      string
-		identifier string
-	}{
-		{
-			name:       "doc content",
-			topicType:  sse.TopicTypeDoc,
-			topic:      "doc:runbooks/deploy",
-			identifier: "runbooks/deploy",
+	mux := sse.NewMultiplexer(sse.StreamConfig{HeartbeatInterval: time.Hour}, nil)
+	t.Cleanup(mux.Shutdown)
+
+	srv := &Server{
+		apiV1:        &apiv1.API{},
+		eventService: eventstore.New(nil),
+	}
+	srv.registerDedicatedSSEFetchers(mux)
+
+	var fetches atomic.Int64
+	mux.RegisterFetcher(sse.TopicTypeDAGsList, func(_ context.Context, identifier string) (any, error) {
+		return map[string]any{
+			"id":      identifier,
+			"fetches": fetches.Add(1),
+		}, nil
+	})
+
+	handler := sse.NewMultiplexHandler(mux, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req := httptest.NewRequest(
+			http.MethodGet,
+			"/api/v1/events/stream?topic="+url.QueryEscape("dagslist:page=1&perPage=100"),
+			nil,
+		).WithContext(ctx)
+		handler.HandleStream(httptest.NewRecorder(), req)
+	}()
+
+	require.Eventually(t, func() bool {
+		return fetches.Load() > 1
+	}, 2*time.Second, 10*time.Millisecond)
+
+	cancel()
+	require.Eventually(t, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestDAGFileChangeWakesDAGsListSSETopic(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	dagsDir := filepath.Join(rootDir, "dags")
+	require.NoError(t, os.MkdirAll(dagsDir, 0750))
+
+	srv := &Server{
+		config: &config.Config{
+			Paths: config.PathsConfig{
+				DAGsDir:         dagsDir,
+				SuspendFlagsDir: filepath.Join(rootDir, "flags"),
+				DAGRunsDir:      filepath.Join(rootDir, "dag-runs"),
+				QueueDir:        filepath.Join(rootDir, "queue"),
+			},
 		},
-		{
-			name:       "doc tree",
-			topicType:  sse.TopicTypeDocTree,
-			topic:      "doctree:page=1&perPage=200",
-			identifier: "page=1&perPage=200",
-		},
+		apiV1:        &apiv1.API{},
+		eventService: eventstore.New(nil),
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	router := chi.NewMux()
+	srv.setupSSERoute(testContext(t), router, "/api/v1")
+	require.NotNil(t, srv.appStream)
+	require.NotNil(t, srv.sseMultiplexer)
+	t.Cleanup(func() {
+		if srv.appStream != nil {
+			srv.appStream.Shutdown()
+		}
+		if srv.sseMultiplexer != nil {
+			srv.sseMultiplexer.Shutdown()
+		}
+	})
 
-			mux := sse.NewMultiplexer(sse.StreamConfig{HeartbeatInterval: time.Hour}, nil)
-			t.Cleanup(mux.Shutdown)
+	var fetches atomic.Int64
+	srv.sseMultiplexer.RegisterFetcher(sse.TopicTypeDAGsList, func(context.Context, string) (any, error) {
+		return map[string]any{
+			"fetches": fetches.Add(1),
+		}, nil
+	})
 
-			srv := &Server{
-				apiV1: &apiv1.API{},
-			}
-			srv.registerDedicatedSSEFetchers(mux)
+	handler := sse.NewMultiplexHandler(srv.sseMultiplexer, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-			var fetches atomic.Int64
-			mux.RegisterFetcher(tt.topicType, func(_ context.Context, identifier string) (any, error) {
-				return map[string]any{
-					"id":      identifier,
-					"fetches": fetches.Add(1),
-				}, nil
-			})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req := httptest.NewRequest(
+			http.MethodGet,
+			"/api/v1/events/stream?topic="+url.QueryEscape("dagslist:page=1&perPage=100"),
+			nil,
+		).WithContext(ctx)
+		handler.HandleStream(httptest.NewRecorder(), req)
+	}()
 
-			handler := sse.NewMultiplexHandler(mux, nil)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+	require.Eventually(t, func() bool {
+		return fetches.Load() == 1
+	}, time.Second, 10*time.Millisecond)
 
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				req := httptest.NewRequest(
-					http.MethodGet,
-					"/api/v1/events/stream?topic="+url.QueryEscape(tt.topic),
-					nil,
-				).WithContext(ctx)
-				handler.HandleStream(httptest.NewRecorder(), req)
-			}()
+	require.NoError(t, os.WriteFile(filepath.Join(dagsDir, "external-edit.yaml"), []byte(`schedule: "0 8 * * 6"
+steps:
+  - run: echo ok
+`), 0600))
 
-			require.Eventually(t, func() bool {
-				return fetches.Load() == 1
-			}, time.Second, 10*time.Millisecond)
-			require.Never(t, func() bool {
-				return fetches.Load() > 1
-			}, 1200*time.Millisecond, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return fetches.Load() >= 2
+	}, 3*time.Second, 20*time.Millisecond)
 
-			mux.WakeTopic(tt.topicType, tt.identifier)
-			require.Eventually(t, func() bool {
-				return fetches.Load() == 2
-			}, time.Second, 10*time.Millisecond)
+	cancel()
+	require.Eventually(t, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+}
 
-			cancel()
-			require.Eventually(t, func() bool {
-				select {
-				case <-done:
-					return true
-				default:
-					return false
-				}
-			}, time.Second, 10*time.Millisecond)
-		})
+func TestSetupSSERouteDoesNotExposeAppStreamEndpoint(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{
+		config: &config.Config{},
+		apiV1:  &apiv1.API{},
 	}
+
+	router := chi.NewMux()
+	srv.setupSSERoute(testContext(t), router, "/api/v1")
+	t.Cleanup(func() {
+		if srv.appStream != nil {
+			srv.appStream.Shutdown()
+		}
+		if srv.sseMultiplexer != nil {
+			srv.sseMultiplexer.Shutdown()
+		}
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/events/app", nil))
+
+	assert.Equal(t, http.StatusNotFound, recorder.Code)
 }
 
 func TestCacheControlForAssetDisablesJavaScriptCaching(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "no-cache, no-store, must-revalidate", cacheControlForAsset("/assets/bundle.js"))
-	assert.Equal(t, "no-cache, no-store, must-revalidate", cacheControlForAsset("/assets/legacy.js"))
+	assert.Equal(t, "no-cache, no-store, must-revalidate", cacheControlForAsset("/assets/bundle.js", false))
+	assert.Equal(t, "no-cache, no-store, must-revalidate", cacheControlForAsset("/assets/legacy.js", false))
+}
+
+func TestCacheControlForAssetCachesCurrentVersionedMainBundle(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "max-age=31536000, immutable", cacheControlForAsset("/assets/bundle.js", true))
+}
+
+func TestAssetRouteCachesCurrentVersionedMainBundle(t *testing.T) {
+	router := chi.NewMux()
+	srv := &Server{}
+	srv.setupAssetRoutesWithFS(router, "", fstest.MapFS{
+		"assets/bundle.js": {Data: []byte("bundle")},
+	})
+
+	requestURL := "/assets/bundle.js?v=" + url.QueryEscape(currentAssetVersion())
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, requestURL, nil))
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, "max-age=31536000, immutable", recorder.Header().Get("Cache-Control"))
 }
 
 func TestCacheControlForAssetCachesContentHashedJavaScriptChunks(t *testing.T) {
@@ -238,14 +342,29 @@ func TestCacheControlForAssetCachesContentHashedJavaScriptChunks(t *testing.T) {
 	assert.Equal(
 		t,
 		"max-age=31536000, immutable",
-		cacheControlForAsset("/assets/vendors.a1b2c3d4e5f6a1b2.bundle.js"),
+		cacheControlForAsset("/assets/vendors.a1b2c3d4e5f6a1b2.bundle.js", false),
+	)
+}
+
+func TestCacheControlForAssetCachesContentHashedJavaScriptWorkers(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(
+		t,
+		"max-age=31536000, immutable",
+		cacheControlForAsset("/assets/yaml.a1b2c3d4e5f6a1b2.worker.js", false),
+	)
+	assert.Equal(
+		t,
+		"no-cache, no-store, must-revalidate",
+		cacheControlForAsset("/assets/yaml.worker.js", false),
 	)
 }
 
 func TestCacheControlForAssetCachesNonJavaScriptAssets(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "max-age=86400", cacheControlForAsset("/assets/favicon.ico"))
+	assert.Equal(t, "max-age=86400", cacheControlForAsset("/assets/favicon.ico", false))
 }
 
 func TestServerUsesEvaluatedBasePathForOIDCAndAPI(t *testing.T) {

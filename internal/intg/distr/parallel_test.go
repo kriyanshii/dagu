@@ -8,12 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/core"
+	"github.com/dagucloud/dagu/internal/test/intgharness"
 	"github.com/stretchr/testify/require"
 )
 
@@ -216,11 +217,63 @@ steps:
 	})
 }
 
+func TestParallel_ForceLocalSubDAGsFromDistributedWorker(t *testing.T) {
+	t.Run("workerDispatchedParentRunsLocalChildren", func(t *testing.T) {
+		f := newTestFixture(t, `
+steps:
+  - name: process-items
+    action: dag.run
+    with:
+      dag: local-child
+    parallel:
+      items: ["item1", "item2", "item3"]
+      max_concurrent: 3
+    output: RESULTS
+
+---
+name: local-child
+worker_selector: local
+steps:
+  - name: process
+    run: echo "processed $1 locally"
+`, withConfigMutator(func(c *config.Config) {
+			c.DefaultExecMode = config.ExecutionModeDistributed
+		}), withLogPersistence())
+		defer f.cleanup()
+
+		require.NoError(t, f.enqueue())
+		f.waitForQueued()
+		f.startScheduler(30 * time.Second)
+
+		status := f.waitForStatusIn([]core.Status{core.Succeeded, core.Failed, core.Aborted}, 25*time.Second)
+
+		require.Equal(t, core.Succeeded, status.Status)
+		require.Len(t, status.Nodes, 1)
+
+		node := status.Nodes[0]
+		require.Equal(t, "process-items", node.Step.Name)
+		require.Equal(t, core.NodeSucceeded, node.Status)
+		require.Len(t, node.SubRuns, 3)
+
+		value, ok := node.OutputVariables.Load("RESULTS")
+		require.True(t, ok)
+		results := value.(string)
+		require.Contains(t, results, `"succeeded": 3`)
+		require.Contains(t, results, `"failed": 0`)
+	})
+}
+
 func TestParallel_MixedLocalAndDistributed(t *testing.T) {
 	t.Run("mixedLocalAndDistributedExecution", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		releaseFile := filepath.Join(t.TempDir(), "release")
-		waitForReleaseFile := strings.ReplaceAll(waitForReleaseFileScript(releaseFile), "\n", "\n      ")
+		startedDir := t.TempDir()
+		localStartedFile := filepath.Join(startedDir, "local-started")
+		distributedStartedFile := filepath.Join(startedDir, "distributed-started")
+		commands := intgharness.PortableCommands()
+		waitStepScript := func(startedFile string) string {
+			return indentYAMLBlock(commands.WriteFile(startedFile, "started")+"\n"+commands.WaitForFile(releaseFile), 6)
+		}
 		f := newTestFixture(t, `
 type: graph
 steps:
@@ -246,7 +299,7 @@ name: child-local
 steps:
   - name: wait
     run: |
-      `+waitForReleaseFile+`
+`+waitStepScript(localStartedFile)+`
 
 ---
 name: child-distributed
@@ -255,7 +308,7 @@ worker_selector:
 steps:
   - name: wait
     run: |
-      `+waitForReleaseFile+`
+`+waitStepScript(distributedStartedFile)+`
 `, withLabels(map[string]string{"type": "test-worker"}), withDAGsDir(tmpDir), withLogPersistence())
 
 		agent := f.dagWrapper.Agent()
@@ -281,6 +334,12 @@ steps:
 				return false
 			}
 			if len(st.Nodes) == 0 {
+				return false
+			}
+			if _, err := os.Stat(localStartedFile); err != nil {
+				return false
+			}
+			if _, err := os.Stat(distributedStartedFile); err != nil {
 				return false
 			}
 			var started int

@@ -371,7 +371,10 @@ export interface paths {
         put?: never;
         /**
          * Execute DAG synchronously and wait for completion
-         * @description Creates a DAG-run from the DAG definition, starts its execution, waits for it to complete (or timeout), and returns the full execution details including node statuses.
+         * @deprecated
+         * @description **Deprecated:** Use `POST /dags/{fileName}/start`, then monitor the DAG run through the DAG-run status API or SSE.
+         *
+         *     Creates a DAG-run from the DAG definition, starts its execution, waits for it to complete (or timeout), and returns the full execution details including node statuses.
          *
          *     **Important behaviors:**
          *     - If the timeout is exceeded, the DAG run continues executing in the background. The 408 response includes the `dagRunId` so clients can monitor or cancel the run.
@@ -569,26 +572,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/search/docs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Search documents
-         * @description Returns cursor-based, lightweight document search results for the global search page.
-         */
-        get: operations["searchDocFeed"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/search/dags/{fileName}/matches": {
         parameters: {
             query?: never;
@@ -601,26 +584,6 @@ export interface paths {
          * @description Returns cursor-based snippets for one matching DAG definition.
          */
         get: operations["searchDagMatches"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/search/docs/matches": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Search document match snippets
-         * @description Returns cursor-based snippets for one matching document.
-         */
-        get: operations["searchDocMatches"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2612,414 +2575,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/settings/agent": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get agent configuration
-         * @description Returns the current AI agent configuration. Requires admin role.
-         */
-        get: operations["getAgentConfig"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /**
-         * Update agent configuration
-         * @description Updates the AI agent configuration. Requires admin role.
-         */
-        patch: operations["updateAgentConfig"];
-        trace?: never;
-    };
-    "/settings/agent/models": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List agent models
-         * @description Returns all configured AI agent models. Requires admin role.
-         */
-        get: operations["listAgentModels"];
-        put?: never;
-        /**
-         * Create agent model
-         * @description Creates a new AI agent model configuration. Requires admin role.
-         */
-        post: operations["createAgentModel"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/settings/agent/auth/providers": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List agent auth providers
-         * @description Returns subscription-backed agent auth provider status for the selected node. Requires admin role.
-         */
-        get: operations["listAgentAuthProviders"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/settings/agent/auth/providers/{providerId}/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Start agent auth provider login
-         * @description Starts a manual OAuth login flow for the selected provider. Requires admin role.
-         */
-        post: operations["startAgentAuthProviderLogin"];
-        /**
-         * Disconnect agent auth provider login
-         * @description Removes the stored OAuth credential for the selected provider. Requires admin role.
-         */
-        delete: operations["disconnectAgentAuthProviderLogin"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/settings/agent/auth/providers/{providerId}/login/complete": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Complete agent auth provider login
-         * @description Completes a manual OAuth login flow using the pasted redirect URL or authorization code. Requires admin role.
-         */
-        post: operations["completeAgentAuthProviderLogin"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/settings/agent/models/{modelId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Delete agent model
-         * @description Deletes an AI agent model configuration. Requires admin role.
-         */
-        delete: operations["deleteAgentModel"];
-        options?: never;
-        head?: never;
-        /**
-         * Update agent model
-         * @description Updates an existing AI agent model configuration. Requires admin role.
-         */
-        patch: operations["updateAgentModel"];
-        trace?: never;
-    };
-    "/settings/agent/default-model": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /**
-         * Set default agent model
-         * @description Sets the default model for the AI agent. Requires admin role.
-         */
-        put: operations["setDefaultAgentModel"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/settings/agent/memory": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get agent memory
-         * @description Returns global memory content and list of DAGs with memory. Requires admin role.
-         */
-        get: operations["getAgentMemory"];
-        /**
-         * Update global agent memory
-         * @description Updates the global MEMORY.md content. Requires admin role.
-         */
-        put: operations["updateAgentMemory"];
-        post?: never;
-        /**
-         * Clear global agent memory
-         * @description Deletes the global MEMORY.md file. Requires admin role.
-         */
-        delete: operations["deleteAgentMemory"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/settings/agent/memory/dags/{dagName}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get DAG-specific agent memory
-         * @description Returns memory content for a specific DAG. Requires admin role.
-         */
-        get: operations["getAgentDAGMemory"];
-        /**
-         * Update DAG-specific agent memory
-         * @description Updates the memory content for a specific DAG. Requires admin role.
-         */
-        put: operations["updateAgentDAGMemory"];
-        post?: never;
-        /**
-         * Clear DAG-specific agent memory
-         * @description Deletes the memory file for a specific DAG. Requires admin role.
-         */
-        delete: operations["deleteAgentDAGMemory"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/settings/agent/model-presets": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List model presets
-         * @description Returns hardcoded model presets with metadata. Requires admin role.
-         */
-        get: operations["listModelPresets"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/settings/agent/tools": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List agent tools
-         * @description Returns metadata for all registered agent tools.
-         */
-        get: operations["listAgentTools"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/settings/agent/souls": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List agent souls
-         * @description Returns all configured agent souls (personalities). Requires admin role.
-         */
-        get: operations["listAgentSouls"];
-        put?: never;
-        /**
-         * Create agent soul
-         * @description Creates a new agent soul (personality). Requires admin role.
-         */
-        post: operations["createAgentSoul"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/settings/agent/souls/{soulId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get agent soul
-         * @description Returns a single agent soul by ID. Requires admin role.
-         */
-        get: operations["getAgentSoul"];
-        put?: never;
-        post?: never;
-        /**
-         * Delete agent soul
-         * @description Deletes an agent soul. Requires admin role.
-         */
-        delete: operations["deleteAgentSoul"];
-        options?: never;
-        head?: never;
-        /**
-         * Update agent soul
-         * @description Updates an existing agent soul. Requires admin role.
-         */
-        patch: operations["updateAgentSoul"];
-        trace?: never;
-    };
-    "/agent/sessions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List agent sessions
-         * @description Lists sessions for the current user. `listAgentSessions` uses `AgentSessionPaginationMode=cursor` or an `AgentSessionCursor` value to return cursor pages and `nextCursor`; cursor mode rejects `Page` because mixed cursor/page requests are ambiguous, while `PerPage` still controls page size. Without cursor mode it uses `Page` and `PerPage` offset pagination. `RemoteNode` selects the target node for either pagination mode. Malformed or invalid cursor values return 400.
-         */
-        get: operations["listAgentSessions"];
-        put?: never;
-        /**
-         * Create agent session
-         * @description Creates a new agent session and sends the first message.
-         */
-        post: operations["createAgentSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent/sessions/{sessionId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get agent session
-         * @description Returns session details including messages and current state.
-         */
-        get: operations["getAgentSession"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent/sessions/{sessionId}/chat": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Send message to agent session
-         * @description Sends a message to an existing agent session.
-         */
-        post: operations["chatAgentSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent/sessions/{sessionId}/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Cancel agent session
-         * @description Cancels processing in an active agent session.
-         */
-        post: operations["cancelAgentSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/agent/sessions/{sessionId}/respond": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Respond to agent prompt
-         * @description Submits user's response to an agent prompt.
-         */
-        post: operations["respondAgentSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/license/activate": {
         parameters: {
             query?: never;
@@ -3054,118 +2609,6 @@ export interface paths {
          * @description Removes local activation data and returns to community mode. Admin only.
          */
         post: operations["deactivateLicense"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/docs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List documents
-         * @description Returns documents as a tree structure or flat list. All authenticated users can browse.
-         */
-        get: operations["listDocs"];
-        put?: never;
-        /**
-         * Create document
-         * @description Creates a new document. Requires DAG write permission.
-         */
-        post: operations["createDoc"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/docs/search": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Search documents
-         * @description Searches document content for the given query.
-         */
-        get: operations["searchDocs"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/docs/doc": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get document
-         * @description Returns a single document by path.
-         */
-        get: operations["getDoc"];
-        put?: never;
-        post?: never;
-        /**
-         * Delete document
-         * @description Deletes a document. Requires DAG write permission.
-         */
-        delete: operations["deleteDoc"];
-        options?: never;
-        head?: never;
-        /**
-         * Update document
-         * @description Updates an existing document's content. Requires DAG write permission.
-         */
-        patch: operations["updateDoc"];
-        trace?: never;
-    };
-    "/docs/doc/rename": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Rename document or directory
-         * @description Renames/moves a document or directory to a new path. When a directory path is given, all documents under it are moved atomically. Requires DAG write permission.
-         */
-        post: operations["renameDoc"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/docs/delete-batch": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Delete multiple documents or directories
-         * @description Deletes multiple documents and/or directories in a single operation. Supports recursive directory deletion. Not-found items are treated as successful deletes for idempotency. Requires DAG write permission.
-         */
-        post: operations["deleteDocBatch"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3495,6 +2938,49 @@ export interface paths {
         post?: never;
         /** Delete runtime profile entry */
         delete: operations["deleteRuntimeProfileEntry"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/views": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List saved views
+         * @description Lists all saved Overview view configurations, ordered by creation time.
+         */
+        get: operations["listViews"];
+        put?: never;
+        /**
+         * Create a view
+         * @description Creates a saved Overview view configuration. Views are global and shared across users.
+         */
+        post: operations["createView"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/views/{viewId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a view */
+        get: operations["getView"];
+        /** Update a view */
+        put: operations["updateView"];
+        post?: never;
+        /** Delete a view */
+        delete: operations["deleteView"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4666,6 +4152,8 @@ export interface components {
              * @description RFC 3339 timestamp with explicit offset for one-off schedules
              */
             at?: string;
+            /** @description Runtime profile name that activates this schedule entry */
+            profile?: components["schemas"]["RuntimeProfileName"];
         };
         /**
          * @description Numeric status code indicating current DAG-run state:
@@ -4849,6 +4337,20 @@ export interface components {
             runConfig?: components["schemas"]["RunConfig"];
             resources?: components["schemas"]["DAGResources"];
         };
+        /** @description A passive notice for a supported value reference left unresolved while loading a spec. */
+        ValueReferenceNotice: {
+            /** @description Human-readable explanation of the unresolved reference. */
+            message: string;
+            /** @description DAG field path associated with the unresolved reference. */
+            fieldPath?: string;
+            /** @description Original value-reference token that was preserved. */
+            token?: string;
+            /**
+             * @description Machine-readable reason why the reference was preserved.
+             * @enum {string}
+             */
+            reason?: ValueReferenceNoticeReason;
+        };
         /** @description Editor-only metadata used to synthesize per-document schema hints */
         DAGEditorHints: {
             /** @description Deprecated legacy execution definitions inherited from base config and available to the current DAG */
@@ -4957,6 +4459,25 @@ export interface components {
             abort?: components["schemas"]["Step"];
             exit?: components["schemas"]["Step"];
         };
+        /** @description Type-keyed current-state runtime condition for a DAG-run. Each condition is the latest observation for its type, not a historical event. */
+        DAGRunCondition: {
+            /** @description Condition type */
+            type: string;
+            /**
+             * @description Observed status of the condition
+             * @enum {string}
+             */
+            status: DAGRunConditionStatus;
+            /** @description Machine-readable reason for the condition status */
+            reason: string;
+            /** @description Human-readable detail for the condition status */
+            message: string;
+            /**
+             * Format: date-time
+             * @description RFC 3339 timestamp when the condition was observed
+             */
+            checkedAt: string;
+        };
         /** @description Current status of a DAG-run */
         DAGRunSummary: {
             dagRunId: components["schemas"]["DAGRunId"];
@@ -4986,6 +4507,8 @@ export interface components {
             /** @description ID of the worker that executed this DAG-run ('local' for local execution) */
             workerId?: string;
             triggerType?: components["schemas"]["TriggerType"];
+            /** @description Type-keyed current-state runtime conditions for the DAG-run. This list reports the latest condition for each type, not a history of queued reasons. */
+            conditions?: components["schemas"]["DAGRunCondition"][];
             /** @description List of labels for categorizing and filtering DAG runs */
             labels?: string[];
             /**
@@ -5064,7 +4587,7 @@ export interface components {
             tooLarge: boolean;
             /** @description Whether inline text content was truncated for preview */
             truncated: boolean;
-            /** @description Inline preview content for markdown or text artifacts */
+            /** @description Inline preview content for markdown, HTML, or text artifacts */
             content?: string;
         };
         /** @description Collected outputs from step executions in a DAG-run, including execution metadata. Outputs are populated from string-form output, stdout.outputs, and outputs.write. If the DAG-run completed but no outputs were captured, the outputs object will be empty and metadata fields may be empty strings. */
@@ -5181,6 +4704,16 @@ export interface components {
             /** @description RFC 3339 timestamp when the sub DAG-run finished */
             finishedAt?: string;
         };
+        /** @description One file-based step output declaration published through DAGU_OUTPUT_FILE */
+        StepOutputDeclaration: {
+            /** @description Published output name scoped to the declaring step */
+            name: string;
+            /**
+             * @description Output value type. JSON outputs must contain valid JSON text.
+             * @enum {string}
+             */
+            type?: StepOutputDeclarationType;
+        };
         /** @description Individual task definition that performs a specific operation in a DAG-run */
         Step: {
             /** @description Unique identifier for the step within the DAG-run */
@@ -5201,6 +4734,8 @@ export interface components {
             stderr?: string;
             /** @description Variable name to store the step's output */
             output?: string;
+            /** @description Declared file-based step outputs published through DAGU_OUTPUT_FILE for ${steps.<id>.outputs.<name>} references. Steps that declare outputs must also define id. */
+            outputs?: components["schemas"]["StepOutputDeclaration"][];
             /** @description The name of the DAG to execute as a sub DAG-run */
             call?: string;
             /** @description Parameters to pass to the sub DAG-run in JSON format */
@@ -5269,27 +4804,6 @@ export interface components {
         /** @description Cursor-based DAG search results */
         DAGSearchFeedResponse: {
             results: components["schemas"]["DAGSearchPageItem"][];
-            hasMore: boolean;
-            nextCursor?: string;
-        };
-        /** @description Lightweight cursor-based search result item for a document */
-        DocSearchPageItem: {
-            id: string;
-            title: string;
-            /** @description Short document description from YAML frontmatter */
-            description: string;
-            /** @description Workspace that owns this document. Omitted for default documents. */
-            workspace?: string;
-            /** @description Whether additional snippets are available beyond the preview */
-            hasMoreMatches: boolean;
-            /** @description Opaque cursor for loading more snippets for this document result */
-            nextMatchesCursor?: string;
-            /** @description Preview snippets for the result */
-            matches: components["schemas"]["SearchMatchItem"][];
-        };
-        /** @description Cursor-based document search results */
-        DocSearchFeedResponse: {
-            results: components["schemas"]["DocSearchPageItem"][];
             hasMore: boolean;
             nextCursor?: string;
         };
@@ -5928,567 +5442,6 @@ export interface components {
             pushEnabled?: boolean;
             commit?: components["schemas"]["SyncCommitConfig"];
         };
-        /** @description AI Agent configuration */
-        AgentConfigResponse: {
-            /** @description Whether the AI agent is enabled */
-            enabled?: boolean;
-            /** @description ID of the default model */
-            defaultModelId?: string;
-            toolPolicy?: components["schemas"]["AgentToolPolicy"];
-            /** @description ID of the currently selected soul */
-            selectedSoulId?: string | null;
-            webSearch?: components["schemas"]["AgentWebSearchConfig"];
-            webTools?: components["schemas"]["AgentWebToolsConfig"];
-        };
-        /** @description Request to update AI agent configuration */
-        UpdateAgentConfigRequest: {
-            /** @description Whether the AI agent is enabled */
-            enabled?: boolean;
-            /** @description ID of the default model */
-            defaultModelId?: string;
-            toolPolicy?: components["schemas"]["AgentToolPolicy"];
-            /** @description ID of the soul to select */
-            selectedSoulId?: string | null;
-            webSearch?: components["schemas"]["AgentWebSearchConfig"];
-            webTools?: components["schemas"]["AgentWebToolsConfig"];
-        };
-        /** @description Global tool permission policy for AI agent sessions */
-        AgentToolPolicy: {
-            /** @description Per-tool enable/disable map */
-            tools?: {
-                [key: string]: boolean;
-            };
-            bash?: components["schemas"]["AgentBashPolicy"];
-        };
-        /** @description Granular command policy for the bash tool */
-        AgentBashPolicy: {
-            rules?: components["schemas"]["AgentBashRule"][];
-            /**
-             * @description Behavior when no rule matches a command segment
-             * @enum {string}
-             */
-            defaultBehavior?: AgentBashPolicyDefaultBehavior;
-            /**
-             * @description Behavior when a command segment is denied
-             * @enum {string}
-             */
-            denyBehavior?: AgentBashPolicyDenyBehavior;
-        };
-        AgentBashRule: {
-            name?: string;
-            /** @description Regex pattern matched against each shell command segment */
-            pattern: string;
-            /** @enum {string} */
-            action: AgentBashRuleAction;
-            /** @description Rule enabled state (default: true when omitted) */
-            enabled?: boolean;
-        };
-        /** @description Provider-native web search configuration for agent sessions */
-        AgentWebSearchConfig: {
-            /** @description Whether provider-native web search is enabled */
-            enabled?: boolean;
-            /** @description Maximum number of search invocations per request */
-            maxUses?: number;
-        };
-        /**
-         * @description Backend provider for agent web tools
-         * @enum {string}
-         */
-        AgentWebToolsBackend: AgentWebToolsBackend;
-        /** @description First-class web_search and web_extract tool configuration */
-        AgentWebToolsConfig: {
-            /** @description Whether provider-backed web tools are enabled */
-            enabled?: boolean;
-            backend?: components["schemas"]["AgentWebToolsBackend"];
-            tavily?: components["schemas"]["AgentTavilyWebToolsConfig"];
-            firecrawl?: components["schemas"]["AgentFirecrawlWebToolsConfig"];
-        };
-        /** @description Tavily web tool settings */
-        AgentTavilyWebToolsConfig: {
-            /** @description Tavily API key. Write-only; omitted from responses. */
-            apiKey?: string;
-            /** @description Clear the stored Tavily API key when true */
-            clearApiKey?: boolean;
-            /** @description Whether a Tavily API key is stored */
-            readonly apiKeyConfigured?: boolean;
-            /**
-             * Format: uri
-             * @description Optional Tavily-compatible base URL
-             */
-            baseUrl?: string;
-            /** @description Maximum search results allowed per web_search call */
-            maxResults?: number;
-            /**
-             * @description Tavily search depth
-             * @enum {string}
-             */
-            searchDepth?: AgentTavilyWebToolsConfigSearchDepth;
-        };
-        /** @description Firecrawl web tool settings */
-        AgentFirecrawlWebToolsConfig: {
-            /** @description Firecrawl API key. Write-only; omitted from responses. */
-            apiKey?: string;
-            /** @description Clear the stored Firecrawl API key when true */
-            clearApiKey?: boolean;
-            /** @description Whether a Firecrawl API key is stored */
-            readonly apiKeyConfigured?: boolean;
-            /**
-             * Format: uri
-             * @description Optional Firecrawl-compatible base URL
-             */
-            baseUrl?: string;
-            /** @description Maximum search results allowed per web_search call */
-            maxResults?: number;
-        };
-        /** @description Model configuration */
-        ModelConfigResponse: {
-            id: string;
-            name: string;
-            /** @enum {string} */
-            provider: ModelConfigResponseProvider;
-            model: string;
-            apiKeyConfigured?: boolean;
-            baseUrl?: string;
-            contextWindow?: number;
-            maxOutputTokens?: number;
-            /** Format: double */
-            inputCostPer1M?: number;
-            /** Format: double */
-            outputCostPer1M?: number;
-            supportsThinking?: boolean;
-            /** @enum {string} */
-            thinkingEffort?: ModelConfigResponseThinkingEffort;
-            description?: string;
-        };
-        /** @description Request to create a new model configuration */
-        CreateModelConfigRequest: {
-            /** @description Optional custom ID (auto-generated from name if omitted) */
-            id?: string;
-            name: string;
-            /** @enum {string} */
-            provider: CreateModelConfigRequestProvider;
-            model: string;
-            apiKey?: string;
-            baseUrl?: string;
-            contextWindow?: number;
-            maxOutputTokens?: number;
-            /** Format: double */
-            inputCostPer1M?: number;
-            /** Format: double */
-            outputCostPer1M?: number;
-            supportsThinking?: boolean;
-            /** @enum {string} */
-            thinkingEffort?: CreateModelConfigRequestThinkingEffort;
-            description?: string;
-        };
-        /** @description Request to update a model configuration */
-        UpdateModelConfigRequest: {
-            name?: string;
-            /** @enum {string} */
-            provider?: UpdateModelConfigRequestProvider;
-            model?: string;
-            apiKey?: string;
-            baseUrl?: string;
-            contextWindow?: number;
-            maxOutputTokens?: number;
-            /** Format: double */
-            inputCostPer1M?: number;
-            /** Format: double */
-            outputCostPer1M?: number;
-            supportsThinking?: boolean;
-            /** @enum {string} */
-            thinkingEffort?: UpdateModelConfigRequestThinkingEffort;
-            description?: string;
-        };
-        /** @description Request to set the default model */
-        SetDefaultModelRequest: {
-            /** @description Model ID to set as default */
-            modelId: string;
-        };
-        /** @description Response after setting the default model */
-        SetDefaultModelResponse: {
-            defaultModelId?: string;
-        };
-        /** @description List of model configurations */
-        ListModelsResponse: {
-            models: components["schemas"]["ModelConfigResponse"][];
-            defaultModelId?: string;
-        };
-        /** @description Connection status for one subscription-backed agent auth provider */
-        AgentAuthProviderStatus: {
-            id: string;
-            name: string;
-            connected: boolean;
-            /** Format: date-time */
-            expiresAt?: string;
-            canRefresh?: boolean;
-            accountId?: string;
-        };
-        /** @description List of subscription-backed auth providers */
-        ListAgentAuthProvidersResponse: {
-            providers: components["schemas"]["AgentAuthProviderStatus"][];
-        };
-        /** @description Manual OAuth login flow information */
-        StartAgentAuthProviderLoginResponse: {
-            flowId: string;
-            authUrl: string;
-            instructions?: string;
-        };
-        /** @description Complete a manual OAuth login flow */
-        CompleteAgentAuthProviderLoginRequest: {
-            flowId: string;
-            /** Format: uri */
-            redirectUrl?: string;
-            code?: string;
-        } | unknown | unknown;
-        /** @description Updated provider status after login completion */
-        CompleteAgentAuthProviderLoginResponse: {
-            provider: components["schemas"]["AgentAuthProviderStatus"];
-        };
-        /** @description Soul (agent personality) configuration */
-        SoulResponse: {
-            id: string;
-            name: string;
-            description?: string;
-            /** @description Markdown body content (identity definition) */
-            content?: string;
-        };
-        /** @description List of souls */
-        ListSoulsResponse: {
-            souls: components["schemas"]["SoulResponse"][];
-            pagination: components["schemas"]["Pagination"];
-        };
-        /** @description Request to create a new soul */
-        CreateSoulRequest: {
-            /** @description Optional custom ID (auto-generated from name if omitted) */
-            id?: string;
-            name: string;
-            description?: string;
-            /** @description Markdown body content (identity definition) */
-            content: string;
-        };
-        /** @description Request to update a soul (partial update) */
-        UpdateSoulRequest: {
-            name?: string;
-            description?: string;
-            /** @description Markdown body content (identity definition) */
-            content?: string;
-        };
-        /** @description Full document with content */
-        DocResponse: {
-            id: string;
-            title: string;
-            /** @description Short document description from YAML frontmatter */
-            description: string;
-            /** @description Workspace that owns this document. Omitted for default documents. */
-            workspace?: string;
-            /** @description Full file content including YAML frontmatter */
-            content: string;
-            /** @description Absolute file path of the document on disk */
-            filePath?: string;
-            /**
-             * Format: date-time
-             * @description RFC3339 timestamp when the document was created
-             */
-            createdAt?: string;
-            /**
-             * Format: date-time
-             * @description RFC3339 timestamp when the document was last updated
-             */
-            updatedAt?: string;
-        };
-        /** @description Lightweight document metadata */
-        DocMetadataResponse: {
-            id: string;
-            title: string;
-            /** @description Short document description from YAML frontmatter */
-            description: string;
-            /** @description Workspace that owns this document. Omitted for default documents. */
-            workspace?: string;
-            /**
-             * Format: date-time
-             * @description Last modification time of the document file
-             */
-            modifiedAt?: string;
-        };
-        /** @description A file or directory node in the doc tree */
-        DocTreeNodeResponse: {
-            id: string;
-            name: string;
-            title?: string;
-            /** @description Workspace that owns this node. Omitted for default nodes. */
-            workspace?: string;
-            /** @enum {string} */
-            type: DocTreeNodeResponseType;
-            children?: components["schemas"]["DocTreeNodeResponse"][];
-            /**
-             * Format: date-time
-             * @description Last modification time. For files: file mtime. For directories: most recent descendant mtime.
-             */
-            modifiedAt?: string;
-        };
-        /** @description Paginated document list (tree or flat) */
-        DocListResponse: {
-            tree?: components["schemas"]["DocTreeNodeResponse"][];
-            items?: components["schemas"]["DocMetadataResponse"][];
-            pagination: components["schemas"]["Pagination"];
-        };
-        /** @description A search result for a single document */
-        DocSearchResultItem: {
-            id: string;
-            title: string;
-            /** @description Short document description from YAML frontmatter */
-            description: string;
-            /** @description Workspace that owns this document. Omitted for default documents. */
-            workspace?: string;
-            matches?: components["schemas"]["SearchMatchItem"][];
-        };
-        /** @description Search results */
-        DocSearchResponse: {
-            results: components["schemas"]["DocSearchResultItem"][];
-        };
-        /** @description Relative document path (without extension), e.g. runbooks/deploy-guide. Must not start with / or contain .. */
-        DocPath: string;
-        /** @description Request to create a new document */
-        CreateDocRequest: {
-            id: components["schemas"]["DocPath"];
-            /** @description Full file content including optional YAML frontmatter */
-            content: string;
-        };
-        /** @description Request to update document content */
-        UpdateDocRequest: {
-            /** @description Full file content including optional YAML frontmatter */
-            content: string;
-        };
-        /** @description Request to rename/move a document or directory */
-        RenameDocRequest: {
-            newPath: components["schemas"]["DocPath"];
-        };
-        /** @description Request to delete multiple documents or directories */
-        DocDeleteBatchRequest: {
-            /** @description Document or directory paths to delete (max 100) */
-            paths: components["schemas"]["DocPath"][];
-        };
-        DocDeleteBatchResponse: {
-            /** @description Successfully deleted paths */
-            deleted: string[];
-            /** @description Paths that failed to delete with error details */
-            failed: components["schemas"]["DocDeleteBatchFailedItem"][];
-            /** @description Human-readable summary */
-            message: string;
-        };
-        DocDeleteBatchFailedItem: {
-            path: string;
-            error: string;
-        };
-        /** @description Hardcoded model preset with metadata */
-        ModelPreset: {
-            name: string;
-            /** @enum {string} */
-            provider: ModelPresetProvider;
-            model: string;
-            contextWindow?: number;
-            maxOutputTokens?: number;
-            /** Format: double */
-            inputCostPer1M?: number;
-            /** Format: double */
-            outputCostPer1M?: number;
-            supportsThinking?: boolean;
-            /** @enum {string} */
-            thinkingEffort?: ModelPresetThinkingEffort;
-            description?: string;
-        };
-        /** @description List of model presets */
-        ListModelPresetsResponse: {
-            presets: components["schemas"]["ModelPreset"][];
-        };
-        /** @description Agent memory overview */
-        AgentMemoryResponse: {
-            /** @description Content of global MEMORY.md */
-            globalMemory?: string;
-            /** @description List of DAG names that have memory files */
-            dagMemories?: components["schemas"]["DAGName"][];
-            /** @description Root memory directory path */
-            memoryDir?: string;
-        };
-        /** @description DAG-specific memory content */
-        AgentDAGMemoryResponse: {
-            dagName: components["schemas"]["DAGName"];
-            content: string;
-        };
-        /** @description Request to update memory content */
-        UpdateAgentMemoryRequest: {
-            /** @description New memory content (markdown) */
-            content: string;
-        };
-        /** @description Metadata for a registered agent tool */
-        AgentToolInfo: {
-            name: string;
-            label: string;
-            description: string;
-        };
-        /** @description List of agent tool metadata */
-        ListAgentToolsResponse: {
-            tools: components["schemas"]["AgentToolInfo"][];
-        };
-        /** @description DAG reference for context-aware agent responses */
-        AgentDAGContext: {
-            /** @description DAG file path or name */
-            dagFile: string;
-            /** @description Specific run ID of the DAG */
-            dagRunId?: string;
-        };
-        /** @description Request to send a chat message to the agent */
-        AgentChatRequest: {
-            /** @description User's input text */
-            message: string;
-            /** @description LLM model ID to use */
-            model?: string;
-            /** @description DAG references for context */
-            dagContexts?: components["schemas"]["AgentDAGContext"][];
-            /** @description Enable approval prompts for dangerous commands */
-            safeMode?: boolean;
-            /** @description Soul ID to use for this session (overrides default) */
-            soulId?: string;
-            /** @description Optional client-provided session ID (UUID v4) for idempotent creation. Only used by the create-session endpoint; ignored by the chat endpoint. */
-            sessionId?: string;
-        };
-        /** @description Response after creating a new agent session */
-        CreateAgentSessionResponse: {
-            sessionId: string;
-            status: string;
-        };
-        /** @description Agent chat session metadata */
-        AgentSession: {
-            id: string;
-            userId?: string;
-            dagName?: string;
-            title?: string;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-            parentSessionId?: string;
-            delegateTask?: string;
-        };
-        /** @description Current processing state of an agent session */
-        AgentSessionState: {
-            sessionId: string;
-            working: boolean;
-            /** @description Whether the agent is waiting for user input */
-            hasPendingPrompt?: boolean;
-            model?: string;
-            /**
-             * Format: double
-             * @description Total accumulated cost in USD
-             */
-            totalCost: number;
-        };
-        /** @description Agent session with its current state */
-        AgentSessionWithState: components["schemas"]["AgentSessionState"] & {
-            session: components["schemas"]["AgentSession"];
-        };
-        /** @description Paginated list of agent sessions */
-        ListAgentSessionsResponse: {
-            sessions: components["schemas"]["AgentSessionWithState"][];
-            pagination: components["schemas"]["Pagination"];
-            /** @description Opaque cursor for loading the next page of older sessions */
-            nextCursor?: string;
-        };
-        /** @description Function call details in a tool call */
-        AgentToolCallFunction: {
-            name: string;
-            arguments: string;
-        };
-        /** @description Tool call requested by the LLM */
-        AgentToolCall: {
-            id: string;
-            type: string;
-            function: components["schemas"]["AgentToolCallFunction"];
-        };
-        /** @description Result from a tool execution */
-        AgentToolResult: {
-            toolCallId: string;
-            content: string;
-            isError?: boolean;
-        };
-        /** @description Token usage statistics from LLM */
-        AgentTokenUsage: {
-            promptTokens?: number;
-            completionTokens?: number;
-            totalTokens?: number;
-        };
-        /** @description UI action to be performed */
-        AgentUIAction: {
-            type: string;
-            path?: string;
-        };
-        /** @description Single option in a user prompt */
-        AgentUserPromptOption: {
-            id: string;
-            label: string;
-            description?: string;
-        };
-        /** @description Question from the agent requiring user response */
-        AgentUserPrompt: {
-            promptId: string;
-            question: string;
-            options?: components["schemas"]["AgentUserPromptOption"][];
-            allowFreeText: boolean;
-            freeTextPlaceholder?: string;
-            multiSelect: boolean;
-            /** @enum {string} */
-            promptType?: AgentUserPromptPromptType;
-            command?: string;
-            workingDir?: string;
-        };
-        /** @description A message in an agent session */
-        AgentMessage: {
-            id: string;
-            sessionId: string;
-            /** @enum {string} */
-            type: AgentMessageType;
-            /** Format: int64 */
-            sequenceId: number;
-            content?: string;
-            toolCalls?: components["schemas"]["AgentToolCall"][];
-            toolResults?: components["schemas"]["AgentToolResult"][];
-            usage?: components["schemas"]["AgentTokenUsage"];
-            /** Format: double */
-            cost?: number;
-            /** Format: date-time */
-            createdAt: string;
-            uiAction?: components["schemas"]["AgentUIAction"];
-            userPrompt?: components["schemas"]["AgentUserPrompt"];
-            delegateIds?: string[];
-        };
-        /** @description Session details including messages and current state */
-        AgentSessionDetailResponse: {
-            messages: components["schemas"]["AgentMessage"][];
-            session: components["schemas"]["AgentSession"];
-            sessionState: components["schemas"]["AgentSessionState"];
-            delegates?: components["schemas"]["AgentDelegateSnapshot"][];
-        };
-        /** @description Snapshot of a delegate sub-agent's lifecycle state */
-        AgentDelegateSnapshot: {
-            id: string;
-            task: string;
-            /** @enum {string} */
-            status: AgentDelegateSnapshotStatus;
-            /** Format: double */
-            cost?: number;
-        };
-        /** @description User's response to an agent prompt */
-        AgentUserPromptResponse: {
-            promptId: string;
-            selectedOptionIds?: string[];
-            freeTextResponse?: string;
-            cancelled?: boolean;
-        };
-        /** @description Simple status response */
-        AgentStatusResponse: {
-            status: string;
-        };
         CreateRemoteNodeRequest: {
             /** @description Display name for the remote node */
             name: string;
@@ -6576,6 +5529,8 @@ export interface components {
         };
         UpdateInheritedRuntimeProfileRequest: {
             description?: string;
+            /** @description Workspace default runtime profile. Only valid for workspace defaults. Empty string clears the setting; omit to leave it unchanged. */
+            defaultProfile?: components["schemas"]["RuntimeProfileOverride"];
         };
         SetRuntimeProfileVariableRequest: {
             value: string;
@@ -6617,6 +5572,8 @@ export interface components {
             name: components["schemas"]["InheritedRuntimeProfileName"];
             scope: components["schemas"]["InheritedRuntimeProfileScope"];
             workspace?: components["schemas"]["WorkspaceName"];
+            /** @description Workspace default runtime profile used when a run and DAG do not select a profile. */
+            defaultProfile?: components["schemas"]["RuntimeProfileName"];
             description?: string;
             status: components["schemas"]["RuntimeProfileStatus"];
             protected: boolean;
@@ -6681,6 +5638,57 @@ export interface components {
             secrets: components["schemas"]["SecretResponse"][];
             total: number;
         };
+        /**
+         * @description A status column available in a Kanban view.
+         * @enum {string}
+         */
+        ViewColumn: ViewColumn;
+        ViewSpec: {
+            /** @description Display name for the view. */
+            name: string;
+            /**
+             * @description Render type. Currently only kanban is supported.
+             * @default kanban
+             * @enum {string}
+             */
+            type: ViewSpecType;
+            /** @description Workspace filter. Empty string means all workspaces; otherwise use a workspace name. */
+            workspace?: string;
+            /** @description Label filter (AND logic), each item key or key=value. */
+            labels?: string[];
+            /** @description DAG name substring filter. Empty matches any. */
+            dagName?: string;
+            /** @description Required number of days each row (bucket) groups. Rows scroll back in time by this unit. */
+            intervalDays: number;
+            /** @description Status columns to display, in left-to-right order. Omitted values use the default order with all columns visible. */
+            columns?: components["schemas"]["ViewColumn"][];
+            /**
+             * @description Whether the view is pinned to the left sidebar.
+             * @default false
+             */
+            pinned: boolean;
+        };
+        View: {
+            id: string;
+            name: string;
+            type: string;
+            workspace?: string;
+            labels?: string[];
+            dagName?: string;
+            intervalDays: number;
+            /** @description Visible status columns in left-to-right display order. */
+            columns?: components["schemas"]["ViewColumn"][];
+            pinned?: boolean;
+            /** @description Username of the creator, for display only. */
+            createdBy?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        ViewListResponse: {
+            views: components["schemas"]["View"][];
+        };
         CreateWorkspaceRequest: {
             name: components["schemas"]["WorkspaceName"];
             description?: string;
@@ -6712,11 +5720,7 @@ export interface components {
         APIKeyId: string;
         /** @description number of items per page (default is 30, max is 100) */
         PerPage: number;
-        /** @description Opaque cursor for loading the next page of older agent sessions */
-        AgentSessionCursor: string;
-        /** @description Pagination mode. Use `cursor` for the agent session sidebar infinite-loading flow; omit or use `offset` for compatibility pagination. */
-        AgentSessionPaginationMode: ComponentsParametersAgentSessionPaginationMode;
-        /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
+        /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
         Workspace: string;
         /** @description Opaque cursor returned by the previous search response */
         SearchCursor: string;
@@ -6782,10 +5786,6 @@ export interface components {
         Limit: number;
         /** @description Whether to return stdout or stderr logs */
         Stream: components["schemas"]["Stream"];
-        /** @description Unique identifier of the agent session */
-        AgentSessionId: string;
-        /** @description The soul ID */
-        SoulId: string;
         /** @description The unique identifier of the remote node */
         RemoteNodeId: string;
     };
@@ -7806,7 +6806,7 @@ export interface operations {
                 perPage?: components["parameters"]["PerPage"];
                 /** @description name of the remote node */
                 remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
                 workspace?: components["parameters"]["Workspace"];
                 /** @description Filter DAGs by name */
                 name?: string;
@@ -8394,6 +7394,8 @@ export interface operations {
                         spec: string;
                         /** @description List of errors in the spec */
                         errors: string[];
+                        /** @description Passive value-reference notices produced while loading this spec. These notices are not persisted. */
+                        valueReferenceNotices: components["schemas"]["ValueReferenceNotice"][];
                     };
                 };
             };
@@ -8651,7 +7653,7 @@ export interface operations {
             query: {
                 /** @description name of the remote node */
                 remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
                 workspace?: components["parameters"]["Workspace"];
                 /** @description A search query string */
                 q: string;
@@ -8697,55 +7699,6 @@ export interface operations {
             };
         };
     };
-    searchDocFeed: {
-        parameters: {
-            query: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
-                workspace?: components["parameters"]["Workspace"];
-                /** @description A search query string */
-                q: string;
-                /** @description Opaque cursor returned by the previous search response */
-                cursor?: components["parameters"]["SearchCursor"];
-                /** @description Number of search results to return (default 20, max 50) */
-                limit?: components["parameters"]["SearchLimit"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Cursor-based document search results */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocSearchFeedResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Generic error response */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
     searchDagMatches: {
         parameters: {
             query: {
@@ -8755,7 +7708,7 @@ export interface operations {
                 q: string;
                 /** @description Filter DAG matches by labels (comma-separated). Returns matches only when the DAG has ALL specified labels. */
                 labels?: string;
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
                 workspace?: components["parameters"]["Workspace"];
                 /** @description Opaque cursor returned by the previous search response */
                 cursor?: components["parameters"]["SearchCursor"];
@@ -8809,72 +7762,12 @@ export interface operations {
             };
         };
     };
-    searchDocMatches: {
-        parameters: {
-            query: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
-                workspace?: components["parameters"]["Workspace"];
-                /** @description Document path (may include slashes for nested docs) */
-                path: components["schemas"]["DocPath"];
-                /** @description A search query string */
-                q: string;
-                /** @description Opaque cursor returned by the previous search response */
-                cursor?: components["parameters"]["SearchCursor"];
-                /** @description Number of search match snippets to return (default 5, max 50) */
-                limit?: components["parameters"]["SearchMatchLimit"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Cursor-based document match snippets */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SearchMatchesResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Document not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Generic error response */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
     getAllDAGLabels: {
         parameters: {
             query?: {
                 /** @description name of the remote node */
                 remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
                 workspace?: components["parameters"]["Workspace"];
             };
             header?: never;
@@ -8908,7 +7801,7 @@ export interface operations {
             query?: {
                 /** @description name of the remote node */
                 remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
                 workspace?: components["parameters"]["Workspace"];
             };
             header?: never;
@@ -8954,7 +7847,7 @@ export interface operations {
                 cursor?: components["parameters"]["DAGRunListCursor"];
                 /** @description name of the remote node */
                 remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
                 workspace?: components["parameters"]["Workspace"];
                 /** @description Filter DAG-runs by name */
                 name?: string;
@@ -9170,7 +8063,7 @@ export interface operations {
                 cursor?: components["parameters"]["DAGRunListCursor"];
                 /** @description name of the remote node */
                 remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
                 workspace?: components["parameters"]["Workspace"];
             };
             header?: never;
@@ -14934,1806 +13827,6 @@ export interface operations {
             };
         };
     };
-    getAgentConfig: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Agent configuration */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentConfigResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    updateAgentConfig: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateAgentConfigRequest"];
-            };
-        };
-        responses: {
-            /** @description Updated agent configuration */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentConfigResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    listAgentModels: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description List of models */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListModelsResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    createAgentModel: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateModelConfigRequest"];
-            };
-        };
-        responses: {
-            /** @description Model created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelConfigResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Model already exists */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    listAgentAuthProviders: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description List of auth providers */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListAgentAuthProvidersResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    startAgentAuthProviderLogin: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Auth provider ID */
-                providerId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Login flow started */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StartAgentAuthProviderLoginResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    disconnectAgentAuthProviderLogin: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Auth provider ID */
-                providerId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Provider disconnected */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    completeAgentAuthProviderLogin: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Auth provider ID */
-                providerId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CompleteAgentAuthProviderLoginRequest"];
-            };
-        };
-        responses: {
-            /** @description Login completed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CompleteAgentAuthProviderLoginResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    deleteAgentModel: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Model ID */
-                modelId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Model deleted */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Model not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    updateAgentModel: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Model ID */
-                modelId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateModelConfigRequest"];
-            };
-        };
-        responses: {
-            /** @description Model updated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelConfigResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Model not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    setDefaultAgentModel: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SetDefaultModelRequest"];
-            };
-        };
-        responses: {
-            /** @description Default model set */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SetDefaultModelResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Model not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    getAgentMemory: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Agent memory overview */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentMemoryResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    updateAgentMemory: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateAgentMemoryRequest"];
-            };
-        };
-        responses: {
-            /** @description Memory updated successfully */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    deleteAgentMemory: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Memory cleared successfully */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    getAgentDAGMemory: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Name of the DAG */
-                dagName: components["schemas"]["DAGName"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description DAG memory content */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentDAGMemoryResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    updateAgentDAGMemory: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Name of the DAG */
-                dagName: components["schemas"]["DAGName"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateAgentMemoryRequest"];
-            };
-        };
-        responses: {
-            /** @description DAG memory updated successfully */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    deleteAgentDAGMemory: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Name of the DAG */
-                dagName: components["schemas"]["DAGName"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description DAG memory cleared successfully */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    listModelPresets: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description List of model presets */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListModelPresetsResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    listAgentTools: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description List of tools */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListAgentToolsResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    listAgentSouls: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description page number of items to fetch (default is 1) */
-                page?: components["parameters"]["Page"];
-                /** @description number of items per page (default is 30, max is 100) */
-                perPage?: components["parameters"]["PerPage"];
-                /** @description Search query (matches name, description) */
-                q?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description List of souls */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListSoulsResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    createAgentSoul: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateSoulRequest"];
-            };
-        };
-        responses: {
-            /** @description Soul created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SoulResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Soul already exists */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    getAgentSoul: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description The soul ID */
-                soulId: components["parameters"]["SoulId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Soul details */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SoulResponse"];
-                };
-            };
-            /** @description Invalid soul ID */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Soul not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    deleteAgentSoul: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description The soul ID */
-                soulId: components["parameters"]["SoulId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Soul deleted */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invalid soul ID */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Soul not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    updateAgentSoul: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description The soul ID */
-                soulId: components["parameters"]["SoulId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateSoulRequest"];
-            };
-        };
-        responses: {
-            /** @description Soul updated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SoulResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Requires admin role */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Soul not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    listAgentSessions: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Pagination mode. Use `cursor` for the agent session sidebar infinite-loading flow; omit or use `offset` for compatibility pagination. */
-                paginationMode?: components["parameters"]["AgentSessionPaginationMode"];
-                /** @description Opaque cursor for loading the next page of older agent sessions */
-                cursor?: components["parameters"]["AgentSessionCursor"];
-                /** @description page number of items to fetch (default is 1) */
-                page?: components["parameters"]["Page"];
-                /** @description number of items per page (default is 30, max is 100) */
-                perPage?: components["parameters"]["PerPage"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated list of sessions */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListAgentSessionsResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    createAgentSession: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AgentChatRequest"];
-            };
-        };
-        responses: {
-            /** @description Session created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CreateAgentSessionResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Agent not configured */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    getAgentSession: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Unique identifier of the agent session */
-                sessionId: components["parameters"]["AgentSessionId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Session details */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentSessionDetailResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Session not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    chatAgentSession: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Unique identifier of the agent session */
-                sessionId: components["parameters"]["AgentSessionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AgentChatRequest"];
-            };
-        };
-        responses: {
-            /** @description Message accepted */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentStatusResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Session not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Agent not configured */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    cancelAgentSession: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Unique identifier of the agent session */
-                sessionId: components["parameters"]["AgentSessionId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Session cancelled */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentStatusResponse"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Session not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    respondAgentSession: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-            };
-            header?: never;
-            path: {
-                /** @description Unique identifier of the agent session */
-                sessionId: components["parameters"]["AgentSessionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AgentUserPromptResponse"];
-            };
-        };
-        responses: {
-            /** @description Response accepted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentStatusResponse"];
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Not authenticated */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Session not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Prompt expired or already answered */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
     activateLicense: {
         parameters: {
             query?: {
@@ -16834,394 +13927,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    listDocs: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
-                workspace?: components["parameters"]["Workspace"];
-                /** @description page number of items to fetch (default is 1) */
-                page?: components["parameters"]["Page"];
-                /** @description number of items per page (default is 30, max is 100) */
-                perPage?: components["parameters"]["PerPage"];
-                /** @description If true, returns flat list instead of tree */
-                flat?: boolean;
-                /** @description Field to sort by:
-                 *     - `name`: Alphabetically by display name (case-insensitive)
-                 *     - `type`: By node type (dirs vs files), then alphabetically within each group
-                 *     - `mtime`: By last modification time
-                 *      */
-                sort?: PathsDocsGetParametersQuerySort;
-                /** @description Sort order. For type: asc=folders first. For mtime: desc=newest first. */
-                order?: PathsDocsGetParametersQueryOrder;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description List of documents */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocListResponse"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    createDoc: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
-                workspace?: components["parameters"]["Workspace"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateDocRequest"];
-            };
-        };
-        responses: {
-            /** @description Document created */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        message?: string;
-                    };
-                };
-            };
-            /** @description Invalid request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Document already exists */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    searchDocs: {
-        parameters: {
-            query: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
-                workspace?: components["parameters"]["Workspace"];
-                /** @description Search query */
-                q: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Search results */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocSearchResponse"];
-                };
-            };
-            /** @description Missing query parameter */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    getDoc: {
-        parameters: {
-            query: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
-                workspace?: components["parameters"]["Workspace"];
-                /** @description Document path (may include slashes for nested docs) */
-                path: components["schemas"]["DocPath"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Document details */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocResponse"];
-                };
-            };
-            /** @description Document not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    deleteDoc: {
-        parameters: {
-            query: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
-                workspace?: components["parameters"]["Workspace"];
-                /** @description Document path (may include slashes for nested docs) */
-                path: components["schemas"]["DocPath"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Document deleted */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Document not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    updateDoc: {
-        parameters: {
-            query: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
-                workspace?: components["parameters"]["Workspace"];
-                /** @description Document path (may include slashes for nested docs) */
-                path: components["schemas"]["DocPath"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateDocRequest"];
-            };
-        };
-        responses: {
-            /** @description Document updated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        message?: string;
-                    };
-                };
-            };
-            /** @description Document not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    renameDoc: {
-        parameters: {
-            query: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
-                workspace?: components["parameters"]["Workspace"];
-                /** @description Current document or directory path (may include slashes for nested docs) */
-                path: components["schemas"]["DocPath"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RenameDocRequest"];
-            };
-        };
-        responses: {
-            /** @description Document or directory renamed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        message?: string;
-                    };
-                };
-            };
-            /** @description Document or directory not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Target path already exists */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description Unexpected error */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    deleteDocBatch: {
-        parameters: {
-            query?: {
-                /** @description name of the remote node */
-                remoteNode?: components["parameters"]["RemoteNode"];
-                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. For document target APIs, use default or a workspace name; omitted means default. */
-                workspace?: components["parameters"]["Workspace"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DocDeleteBatchRequest"];
-            };
-        };
-        responses: {
-            /** @description Batch delete completed (may include partial failures) */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocDeleteBatchResponse"];
                 };
             };
             /** @description Unexpected error */
@@ -18663,6 +15368,295 @@ export interface operations {
             };
         };
     };
+    listViews: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List of views */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewListResponse"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createView: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ViewSpec"];
+            };
+        };
+        responses: {
+            /** @description View created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["View"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getView: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                viewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description View */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["View"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateView: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                viewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ViewSpec"];
+            };
+        };
+        responses: {
+            /** @description View updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["View"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteView: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                viewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description View deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     listSecrets: {
         parameters: {
             query?: {
@@ -19378,15 +16372,6 @@ export enum PathsDagsGetParametersQueryOrder {
     asc = "asc",
     desc = "desc"
 }
-export enum PathsDocsGetParametersQuerySort {
-    name = "name",
-    type = "type",
-    mtime = "mtime"
-}
-export enum PathsDocsGetParametersQueryOrder {
-    asc = "asc",
-    desc = "desc"
-}
 export enum ChatMessageRole {
     system = "system",
     user = "user",
@@ -19553,11 +16538,24 @@ export enum WorkerHealthStatus {
     warning = "warning",
     unhealthy = "unhealthy"
 }
+export enum ValueReferenceNoticeReason {
+    unknown_step_id = "unknown_step_id",
+    unknown_output_name = "unknown_output_name",
+    missing_dependency = "missing_dependency",
+    self_reference = "self_reference",
+    namespace_unavailable = "namespace_unavailable",
+    unknown_context_field = "unknown_context_field"
+}
 export enum ParamDefType {
     string = "string",
     integer = "integer",
     number = "number",
     boolean = "boolean"
+}
+export enum DAGRunConditionStatus {
+    True = "True",
+    False = "False",
+    Unknown = "Unknown"
 }
 export enum ArtifactNodeType {
     directory = "directory",
@@ -19565,9 +16563,14 @@ export enum ArtifactNodeType {
 }
 export enum ArtifactPreviewKind {
     markdown = "markdown",
+    html = "html",
     text = "text",
     image = "image",
     binary = "binary"
+}
+export enum StepOutputDeclarationType {
+    string = "string",
+    json = "json"
 }
 export enum RepeatMode {
     While = "while",
@@ -19631,117 +16634,11 @@ export enum SyncItemKind {
     config = "config",
     memory = "memory",
     skill = "skill",
-    soul = "soul",
-    doc = "doc"
+    soul = "soul"
 }
 export enum SyncAuthConfigType {
     token = "token",
     ssh = "ssh"
-}
-export enum AgentBashPolicyDefaultBehavior {
-    allow = "allow",
-    deny = "deny"
-}
-export enum AgentBashPolicyDenyBehavior {
-    ask_user = "ask_user",
-    block = "block"
-}
-export enum AgentBashRuleAction {
-    allow = "allow",
-    deny = "deny"
-}
-export enum AgentWebToolsBackend {
-    tavily = "tavily",
-    firecrawl = "firecrawl"
-}
-export enum AgentTavilyWebToolsConfigSearchDepth {
-    basic = "basic",
-    advanced = "advanced",
-    fast = "fast",
-    ultra_fast = "ultra-fast"
-}
-export enum ModelConfigResponseProvider {
-    anthropic = "anthropic",
-    openai = "openai",
-    openai_codex = "openai-codex",
-    gemini = "gemini",
-    openrouter = "openrouter",
-    local = "local",
-    zai = "zai",
-    opencode = "opencode"
-}
-export enum ModelConfigResponseThinkingEffort {
-    low = "low",
-    medium = "medium",
-    high = "high",
-    xhigh = "xhigh"
-}
-export enum CreateModelConfigRequestProvider {
-    anthropic = "anthropic",
-    openai = "openai",
-    openai_codex = "openai-codex",
-    gemini = "gemini",
-    openrouter = "openrouter",
-    local = "local",
-    zai = "zai",
-    opencode = "opencode"
-}
-export enum CreateModelConfigRequestThinkingEffort {
-    low = "low",
-    medium = "medium",
-    high = "high",
-    xhigh = "xhigh"
-}
-export enum UpdateModelConfigRequestProvider {
-    anthropic = "anthropic",
-    openai = "openai",
-    openai_codex = "openai-codex",
-    gemini = "gemini",
-    openrouter = "openrouter",
-    local = "local",
-    zai = "zai",
-    opencode = "opencode"
-}
-export enum UpdateModelConfigRequestThinkingEffort {
-    low = "low",
-    medium = "medium",
-    high = "high",
-    xhigh = "xhigh"
-}
-export enum DocTreeNodeResponseType {
-    file = "file",
-    directory = "directory"
-}
-export enum ModelPresetProvider {
-    anthropic = "anthropic",
-    openai = "openai",
-    openai_codex = "openai-codex",
-    gemini = "gemini",
-    openrouter = "openrouter",
-    local = "local",
-    zai = "zai",
-    opencode = "opencode"
-}
-export enum ModelPresetThinkingEffort {
-    low = "low",
-    medium = "medium",
-    high = "high",
-    xhigh = "xhigh"
-}
-export enum AgentUserPromptPromptType {
-    general = "general",
-    command_approval = "command_approval"
-}
-export enum AgentMessageType {
-    user = "user",
-    assistant = "assistant",
-    error = "error",
-    ui_action = "ui_action",
-    user_prompt = "user_prompt"
-}
-export enum AgentDelegateSnapshotStatus {
-    running = "running",
-    completed = "completed"
 }
 export enum CreateRemoteNodeRequestAuthType {
     none = "none",
@@ -19789,9 +16686,15 @@ export enum SecretStatus {
 export enum CreateSecretRequestProviderType {
     dagu_managed = "dagu-managed"
 }
-export enum ComponentsParametersAgentSessionPaginationMode {
-    offset = "offset",
-    cursor = "cursor"
+export enum ViewColumn {
+    queued = "queued",
+    running = "running",
+    review = "review",
+    done = "done",
+    failed = "failed"
+}
+export enum ViewSpecType {
+    kanban = "kanban"
 }
 export enum ComponentsParametersEventLogPaginationMode {
     offset = "offset",

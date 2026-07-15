@@ -71,6 +71,26 @@ func newHourlyCatchupDAG(t *testing.T, name string) *core.DAG {
 	}
 }
 
+type testProfileResolver struct {
+	profile       string
+	err           error
+	dagName       string
+	workspaceName string
+}
+
+func (r *testProfileResolver) ResolveProfile(_ context.Context, dagName string, workspaceName string) (string, error) {
+	r.dagName = dagName
+	r.workspaceName = workspaceName
+	return r.profile, r.err
+}
+
+func mustParseProfileSchedule(t *testing.T, expr, profile string) core.Schedule {
+	t.Helper()
+	schedule := mustParseSchedule(t, expr)
+	schedule.Profile = profile
+	return schedule
+}
+
 func newTestTickPlanner(store WatermarkStore) (*TickPlanner, chan DAGChangeEvent) {
 	eventCh := make(chan DAGChangeEvent, 256)
 	tp := NewTickPlanner(TickPlannerConfig{
@@ -153,7 +173,6 @@ func TestTickPlanner_Advance(t *testing.T) {
 	tp.mu.RLock()
 	require.Equal(t, tickTime, tp.watermarkState.LastTick)
 	tp.mu.RUnlock()
-	require.True(t, tp.watermarkDirty.Load())
 }
 
 func TestTickPlanner_AdvanceBeforeInit(t *testing.T) {
@@ -180,10 +199,9 @@ func TestTickPlanner_FlushWritesSnapshot(t *testing.T) {
 	saved := store.lastSaved()
 	require.NotNil(t, saved)
 	require.Equal(t, tickTime, saved.LastTick)
-	require.False(t, tp.watermarkDirty.Load())
 }
 
-func TestTickPlanner_FlushRemarksDirtyOnError(t *testing.T) {
+func TestTickPlanner_FlushHandlesSaveError(t *testing.T) {
 	t.Parallel()
 
 	store := &mockWatermarkStore{saveErr: errors.New("write error")}
@@ -193,10 +211,10 @@ func TestTickPlanner_FlushRemarksDirtyOnError(t *testing.T) {
 	tp.Advance(time.Now())
 	tp.Flush(context.Background())
 
-	assert.True(t, tp.watermarkDirty.Load())
+	assert.Nil(t, store.lastSaved())
 }
 
-func TestTickPlanner_FlushSkipsWhenClean(t *testing.T) {
+func TestTickPlanner_FlushWritesCurrentSnapshot(t *testing.T) {
 	t.Parallel()
 
 	store := &mockWatermarkStore{}
@@ -204,7 +222,7 @@ func TestTickPlanner_FlushSkipsWhenClean(t *testing.T) {
 	require.NoError(t, tp.Init(context.Background(), nil))
 
 	tp.Flush(context.Background())
-	assert.Nil(t, store.lastSaved())
+	assert.NotNil(t, store.lastSaved())
 }
 
 func TestTickPlanner_PlanCatchupDispatches(t *testing.T) {
@@ -1498,6 +1516,218 @@ func TestLatestScheduledSlotMarksRemovedScheduleSlotStale(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 2, 7, 12, 34, 0, 0, time.UTC), scheduledAt)
 }
 
+func TestTickPlanner_ProfileScopedStartSchedules(t *testing.T) {
+	t.Parallel()
+
+	resolver := &testProfileResolver{profile: "prod"}
+	tp := NewTickPlanner(TickPlannerConfig{
+		ProfileResolver: resolver,
+		GetLatestStatus: func(_ context.Context, _ *core.DAG) (exec.DAGRunStatus, error) {
+			return exec.DAGRunStatus{}, nil
+		},
+		IsRunning: func(_ context.Context, _ *core.DAG) (bool, error) { return false, nil },
+		GenRunID:  func(_ context.Context) (string, error) { return "run-1", nil },
+		Clock:     func() time.Time { return time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC) },
+		Events:    make(chan DAGChangeEvent, 1),
+	})
+	dag := &core.DAG{
+		Name:     "profile-scoped-start-dag",
+		Location: "/tmp/profile-scoped-start-dag.yaml",
+		Labels:   core.NewLabels([]string{"workspace=ops"}),
+		Schedule: []core.Schedule{
+			mustParseProfileSchedule(t, "0 * * * *", "prod"),
+			mustParseProfileSchedule(t, "0 * * * *", "dev"),
+		},
+	}
+	require.NoError(t, tp.Init(context.Background(), []*core.DAG{dag}))
+
+	runs := tp.Plan(context.Background(), time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC))
+	require.Len(t, runs, 1)
+	assert.Equal(t, "prod", runs[0].Schedule.Profile)
+	assert.Equal(t, "profile-scoped-start-dag", resolver.dagName)
+	assert.Equal(t, "ops", resolver.workspaceName)
+}
+
+func TestTickPlanner_ProfileScopedStartSchedulesWithoutDefaultProfile(t *testing.T) {
+	t.Parallel()
+
+	tp := NewTickPlanner(TickPlannerConfig{
+		GetLatestStatus: func(_ context.Context, _ *core.DAG) (exec.DAGRunStatus, error) {
+			return exec.DAGRunStatus{}, nil
+		},
+		IsRunning: func(_ context.Context, _ *core.DAG) (bool, error) { return false, nil },
+		GenRunID:  func(_ context.Context) (string, error) { return "run-1", nil },
+		Clock:     func() time.Time { return time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC) },
+		Events:    make(chan DAGChangeEvent, 1),
+	})
+	dag := &core.DAG{
+		Name: "profile-scoped-empty-default-dag",
+		Schedule: []core.Schedule{
+			mustParseProfileSchedule(t, "0 * * * *", "prod"),
+			mustParseSchedule(t, "0 * * * *"),
+		},
+	}
+	require.NoError(t, tp.Init(context.Background(), []*core.DAG{dag}))
+
+	runs := tp.Plan(context.Background(), time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC))
+	require.Len(t, runs, 1)
+	assert.Empty(t, runs[0].Schedule.Profile)
+}
+
+func TestTickPlanner_ProfileScopedSchedulesResolveErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tp := NewTickPlanner(TickPlannerConfig{
+		ProfileResolver: &testProfileResolver{err: errors.New("profile store unavailable")},
+		GetLatestStatus: func(_ context.Context, _ *core.DAG) (exec.DAGRunStatus, error) {
+			return exec.DAGRunStatus{}, nil
+		},
+		IsRunning: func(_ context.Context, _ *core.DAG) (bool, error) { return false, nil },
+		GenRunID:  func(_ context.Context) (string, error) { return "run-1", nil },
+		Clock:     func() time.Time { return time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC) },
+		Events:    make(chan DAGChangeEvent, 1),
+	})
+	dag := &core.DAG{
+		Name:     "profile-resolve-error-dag",
+		Location: "/tmp/profile-resolve-error-dag.yaml",
+		Schedule: []core.Schedule{mustParseProfileSchedule(t, "0 * * * *", "prod")},
+	}
+	require.NoError(t, tp.Init(context.Background(), []*core.DAG{dag}))
+
+	runs := tp.Plan(context.Background(), time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC))
+	assert.Empty(t, runs)
+}
+
+func TestTickPlanner_ProfileScopedStopRestartSchedules(t *testing.T) {
+	t.Parallel()
+
+	tp := NewTickPlanner(TickPlannerConfig{
+		ProfileResolver: &testProfileResolver{profile: "dev"},
+		GetLatestStatus: func(_ context.Context, _ *core.DAG) (exec.DAGRunStatus, error) {
+			return exec.DAGRunStatus{Status: core.Running}, nil
+		},
+		IsRunning: func(_ context.Context, _ *core.DAG) (bool, error) { return false, nil },
+		GenRunID:  func(_ context.Context) (string, error) { return "run-1", nil },
+		Clock:     func() time.Time { return time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC) },
+		Events:    make(chan DAGChangeEvent, 1),
+	})
+	dag := &core.DAG{
+		Name:     "profile-scoped-control-dag",
+		Location: "/tmp/profile-scoped-control-dag.yaml",
+		StopSchedule: []core.Schedule{
+			mustParseProfileSchedule(t, "0 * * * *", "prod"),
+			mustParseProfileSchedule(t, "0 * * * *", "dev"),
+		},
+		RestartSchedule: []core.Schedule{
+			mustParseProfileSchedule(t, "0 * * * *", "prod"),
+			mustParseProfileSchedule(t, "0 * * * *", "dev"),
+		},
+	}
+	require.NoError(t, tp.Init(context.Background(), []*core.DAG{dag}))
+
+	runs := tp.Plan(context.Background(), time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC))
+	require.Len(t, runs, 2)
+	var stopCount, restartCount int
+	for _, run := range runs {
+		switch run.ScheduleType {
+		case ScheduleTypeStart:
+			t.Fatalf("unexpected start schedule run: %+v", run)
+		case ScheduleTypeStop:
+			stopCount++
+		case ScheduleTypeRestart:
+			restartCount++
+		}
+	}
+	assert.Equal(t, 1, stopCount)
+	assert.Equal(t, 1, restartCount)
+}
+
+func TestTickPlanner_ProfileScopedCatchupSchedules(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWatermarkStore{
+		state: newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
+	}
+	tp := NewTickPlanner(TickPlannerConfig{
+		WatermarkStore:  store,
+		QueuesEnabled:   true,
+		ProfileResolver: &testProfileResolver{profile: "dev"},
+		GetLatestStatus: func(_ context.Context, _ *core.DAG) (exec.DAGRunStatus, error) {
+			return exec.DAGRunStatus{}, nil
+		},
+		IsRunning: func(_ context.Context, _ *core.DAG) (bool, error) { return false, nil },
+		GenRunID:  func(_ context.Context) (string, error) { return "run-1", nil },
+		Clock:     func() time.Time { return time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC) },
+		Events:    make(chan DAGChangeEvent, 1),
+	})
+	dag := &core.DAG{
+		Name:          "profile-scoped-catchup-dag",
+		Location:      "/tmp/profile-scoped-catchup-dag.yaml",
+		CatchupWindow: 6 * time.Hour,
+		Schedule: []core.Schedule{
+			mustParseProfileSchedule(t, "0 * * * *", "prod"),
+			mustParseProfileSchedule(t, "30 * * * *", "dev"),
+		},
+	}
+	require.NoError(t, tp.Init(context.Background(), []*core.DAG{dag}))
+
+	buf, ok := tp.buffers[dag.Name]
+	require.True(t, ok)
+	require.Equal(t, 3, buf.Len())
+	for buf.Len() > 0 {
+		item, ok := buf.Pop()
+		require.True(t, ok)
+		assert.Equal(t, "dev", item.Schedule.Profile)
+	}
+}
+
+func TestTickPlanner_ProfileChangeDropsInactiveCatchupSchedules(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	store := &mockWatermarkStore{
+		state: newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
+	}
+	resolver := &testProfileResolver{profile: "dev"}
+	tp := NewTickPlanner(TickPlannerConfig{
+		WatermarkStore:  store,
+		QueuesEnabled:   true,
+		ProfileResolver: resolver,
+		GetLatestStatus: func(_ context.Context, _ *core.DAG) (exec.DAGRunStatus, error) {
+			return exec.DAGRunStatus{}, nil
+		},
+		IsRunning: func(_ context.Context, _ *core.DAG) (bool, error) { return false, nil },
+		GenRunID:  func(_ context.Context) (string, error) { return "run-1", nil },
+		Clock:     func() time.Time { return now },
+		Events:    make(chan DAGChangeEvent, 1),
+	})
+	dag := &core.DAG{
+		Name:          "profile-change-catchup-dag",
+		Location:      "/tmp/profile-change-catchup-dag.yaml",
+		CatchupWindow: 6 * time.Hour,
+		Schedule: []core.Schedule{
+			mustParseProfileSchedule(t, "30 * * * *", "dev"),
+		},
+	}
+	require.NoError(t, tp.Init(context.Background(), []*core.DAG{dag}))
+
+	buf, ok := tp.buffers[dag.Name]
+	require.True(t, ok)
+	require.Equal(t, 3, buf.Len())
+
+	resolver.profile = "prod"
+	runs := tp.Plan(context.Background(), now)
+	assert.Empty(t, runs)
+	_, ok = tp.buffers[dag.Name]
+	assert.False(t, ok)
+
+	tp.mu.RLock()
+	wm, ok := tp.watermarkState.DAGs[dag.Name]
+	tp.mu.RUnlock()
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 2, 7, 11, 30, 0, 0, time.UTC), wm.LastScheduledTime)
+}
+
 func TestTickPlanner_ShouldRunAlreadyFinished(t *testing.T) {
 	t.Parallel()
 
@@ -1641,6 +1871,42 @@ func TestTickPlanner_DispatchRunSuspendedCatchupAdvancesWatermark(t *testing.T) 
 	})
 
 	assert.False(t, enqueued, "suspended catchup run should not enqueue")
+	tp.mu.RLock()
+	wm, ok := tp.watermarkState.DAGs[dag.Name]
+	tp.mu.RUnlock()
+	require.True(t, ok)
+	assert.Equal(t, scheduledTime, wm.LastScheduledTime)
+}
+
+func TestTickPlanner_DispatchRunLegacyCatchupAttemptAdvancesWatermark(t *testing.T) {
+	t.Parallel()
+
+	store := &mockWatermarkStore{}
+	scheduledTime := time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)
+	dag := newHourlyCatchupDAG(t, "legacy.catchup-dag")
+	legacyRunID := generateLegacyCatchupRunID(dag.Name, scheduledTime)
+	var checkedRunIDs []string
+
+	tp := NewTickPlanner(TickPlannerConfig{
+		WatermarkStore: store,
+		QueuesEnabled:  true,
+		Enqueue: func(_ context.Context, _ *core.DAG, _ string, _ core.TriggerType, _ time.Time) error {
+			t.Fatal("enqueue should not be called when the legacy run already exists")
+			return nil
+		},
+		RunExists: func(_ context.Context, _ *core.DAG, runID string) (bool, error) {
+			checkedRunIDs = append(checkedRunIDs, runID)
+			return runID == legacyRunID, nil
+		},
+		Events: make(chan DAGChangeEvent, 1),
+	})
+	require.NoError(t, tp.Init(context.Background(), nil))
+
+	run, ok := tp.createPlannedRun(context.Background(), dag, core.Schedule{}, scheduledTime, core.TriggerTypeCatchUp)
+	require.True(t, ok)
+	tp.DispatchRun(context.Background(), run)
+
+	assert.Equal(t, []string{legacyRunID}, checkedRunIDs)
 	tp.mu.RLock()
 	wm, ok := tp.watermarkState.DAGs[dag.Name]
 	tp.mu.RUnlock()

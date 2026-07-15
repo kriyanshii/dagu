@@ -137,7 +137,7 @@ func runUpgrade(ctx *Context, _ []string) error {
 	}
 
 	if !skipConfirm {
-		fmt.Printf("Current version: %s\n", result.CurrentVersion)
+		fmt.Printf("Current version: %s\n", upgrade.NormalizeVersionTag(result.CurrentVersion))
 		fmt.Printf("Target version: %s\n\n", result.TargetVersion)
 		fmt.Println("The following changes will be made:")
 		fmt.Printf("  - Download: %s (%s)\n", result.AssetName, upgrade.FormatBytes(result.AssetSize))

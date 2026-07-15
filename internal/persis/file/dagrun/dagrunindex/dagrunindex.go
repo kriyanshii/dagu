@@ -29,14 +29,15 @@ const (
 	// MinRunsForIndex is the minimum number of runs needed to create an index.
 	MinRunsForIndex = 10
 
-	dagRunDirPrefix  = "dag-run_"
-	attemptDirPrefix = "attempt_"
-	statusFile       = "status.jsonl"
+	dagRunDirPrefix        = "dag-run_"
+	attemptDirPrefix       = "a_"
+	legacyAttemptDirPrefix = "attempt_"
+	statusFile             = "status.jsonl"
 )
 
 var (
 	reDAGRunDir  = regexp.MustCompile(`^` + dagRunDirPrefix + `(\d{8}_\d{6}Z)_(.*)$`)
-	reAttemptDir = regexp.MustCompile(`^` + attemptDirPrefix + `(\d{8}_\d{6}_\d{3}Z)_(.*)$`)
+	reAttemptDir = regexp.MustCompile(`^(?:` + regexp.QuoteMeta(attemptDirPrefix) + `|` + regexp.QuoteMeta(legacyAttemptDirPrefix) + `)(\d{8}_\d{6}_\d{3}Z)_(.*)$`)
 )
 
 // Entry holds a cached summary for a single DAG run.
@@ -355,7 +356,7 @@ func findLatestAttempt(runDir string) (string, error) {
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		if e.IsDir() && reAttemptDir.MatchString(name) {
+		if e.IsDir() && isAttemptDirName(name) {
 			attemptDirs = append(attemptDirs, name)
 		}
 	}
@@ -364,9 +365,24 @@ func findLatestAttempt(runDir string) (string, error) {
 		return "", nil
 	}
 
-	// Sort descending (newest first).
-	sort.Sort(sort.Reverse(sort.StringSlice(attemptDirs)))
+	// Sort current-format attempts before legacy attempts.
+	sort.Slice(attemptDirs, func(i, j int) bool {
+		return attemptDirNewer(attemptDirs[i], attemptDirs[j])
+	})
 	return attemptDirs[0], nil
+}
+
+func isAttemptDirName(name string) bool {
+	return reAttemptDir.MatchString(strings.TrimPrefix(name, "."))
+}
+
+func attemptDirNewer(a, b string) bool {
+	a = strings.TrimPrefix(a, ".")
+	b = strings.TrimPrefix(b, ".")
+	if aCurrent, bCurrent := strings.HasPrefix(a, attemptDirPrefix), strings.HasPrefix(b, attemptDirPrefix); aCurrent != bCurrent {
+		return aCurrent
+	}
+	return a > b
 }
 
 func parseDagRunID(dirName string) string {

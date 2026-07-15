@@ -292,21 +292,21 @@ func TestSyncFilesToDAGsDir_PromotesMatchingUntrackedItemToSynced(t *testing.T) 
 	svc, dagsDir := newTestService(t, testCfgReadOnly)
 
 	repoPath := filepath.Join(svc.dataDir, "gitsync", "repo")
-	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, "docs", "youtube_translate"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, "memory", "dags", "youtube_translate"), 0755))
 	repo, err := git.PlainInit(repoPath, false)
 	require.NoError(t, err)
 	svc.gitClient.repo = repo
 
-	itemID := "docs/youtube_translate/example"
-	repoFile := filepath.Join(repoPath, "docs", "youtube_translate", "example.md")
-	localFile := filepath.Join(dagsDir, "docs", "youtube_translate", "example.md")
-	content := []byte("# translated doc\n")
+	itemID := "memory/dags/youtube_translate/MEMORY"
+	repoFile := filepath.Join(repoPath, "memory", "dags", "youtube_translate", "MEMORY.md")
+	localFile := filepath.Join(dagsDir, "memory", "dags", "youtube_translate", "MEMORY.md")
+	content := []byte("# translation memory\n")
 
 	require.NoError(t, os.MkdirAll(filepath.Dir(localFile), 0755))
 	require.NoError(t, os.WriteFile(repoFile, content, 0600))
 	require.NoError(t, os.WriteFile(localFile, content, 0600))
 
-	commitHash, err := svc.gitClient.AddAndCommit(filepath.Join("docs", "youtube_translate", "example.md"), "add doc")
+	commitHash, err := svc.gitClient.AddAndCommit(filepath.Join("memory", "dags", "youtube_translate", "MEMORY.md"), "add memory")
 	require.NoError(t, err)
 
 	now := time.Now()
@@ -315,7 +315,7 @@ func TestSyncFilesToDAGsDir_PromotesMatchingUntrackedItemToSynced(t *testing.T) 
 		DAGs: map[string]*DAGState{
 			itemID: {
 				Status:     StatusUntracked,
-				Kind:       DAGKindDoc,
+				Kind:       DAGKindMemory,
 				ModifiedAt: &now,
 				LocalHash:  ComputeContentHash(content),
 			},
@@ -416,6 +416,12 @@ func TestSafeDAGIDPathValidation(t *testing.T) {
 		assert.Equal(t, "subdir/memory/MEMORY.md", path)
 	})
 
+	t.Run("valid repo file path", func(t *testing.T) {
+		path, err := s.safeRepoPathToFilePath("subdir/my-dag.yaml")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join("/repo", "subdir", "my-dag.yaml"), path)
+	})
+
 	t.Run("normalizes backslash separators", func(t *testing.T) {
 		path, err := s.safeDAGIDToRepoPath(`memory\MEMORY`)
 		require.NoError(t, err)
@@ -430,6 +436,12 @@ func TestSafeDAGIDPathValidation(t *testing.T) {
 
 	t.Run("rejects absolute DAG ID", func(t *testing.T) {
 		_, err := s.safeDAGIDToRepoPath("/tmp/file")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidDAGID)
+	})
+
+	t.Run("rejects traversal repo file path", func(t *testing.T) {
+		_, err := s.safeRepoPathToFilePath("../outside.yaml")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInvalidDAGID)
 	})

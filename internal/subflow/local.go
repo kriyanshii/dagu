@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sync"
 
-	agentctx "github.com/dagucloud/dagu/internal/agent"
 	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/cmn/logpath"
 	"github.com/dagucloud/dagu/internal/core"
@@ -179,15 +178,26 @@ func (r *Local) Run(ctx context.Context, req executor.SubWorkflowRequest) (*exec
 		return nil, err
 	}
 
+	retryTarget, err := r.existingChildRetryTarget(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
 	dag, cleanup, err := loadInProcessDAG(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
 
-	child, err := r.newAgent(ctx, req, dag, rtagent.Options{
+	opts := rtagent.Options{
 		TriggerType: core.TriggerTypeSubDAG,
-	})
+	}
+	if retryTarget != nil {
+		opts.RetryTarget = retryTarget
+		opts.TriggerType = inProcessRetryTriggerType(retryTarget)
+	}
+
+	child, err := r.newAgent(ctx, req, dag, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -203,17 +213,9 @@ func (r *Local) Retry(ctx context.Context, req executor.SubWorkflowRetryRequest)
 		return nil, errStepNameNotSet
 	}
 
-	runStateStore := r.runStateStoreFromContext(ctx)
-	if runStateStore == nil {
-		return nil, errNoRunDatabase
-	}
-	attempt, err := runStateStore.OpenChildAttempt(ctx, req.RootDAGRun, req.RunID)
+	retryTarget, err := r.existingChildStatus(ctx, req.SubWorkflowRequest)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find child workflow attempt: %w", err)
-	}
-	retryTarget, err := attempt.ReadStatus(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read child workflow status: %w", err)
+		return nil, err
 	}
 
 	dag, cleanup, err := loadInProcessDAG(ctx, req.SubWorkflowRequest)
@@ -231,6 +233,55 @@ func (r *Local) Retry(ctx context.Context, req executor.SubWorkflowRetryRequest)
 		return nil, err
 	}
 	return r.runAgent(ctx, req.RunID, child)
+}
+
+func (r *Local) existingChildRetryTarget(
+	ctx context.Context,
+	req executor.SubWorkflowRequest,
+) (*exec.DAGRunStatus, error) {
+	retryTarget, err := r.existingChildStatus(ctx, req)
+	if err != nil {
+		if errors.Is(err, exec.ErrDAGRunIDNotFound) || errors.Is(err, errNoRunDatabase) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return retryTarget, nil
+}
+
+func (r *Local) existingChildStatus(
+	ctx context.Context,
+	req executor.SubWorkflowRequest,
+) (*exec.DAGRunStatus, error) {
+	if req.RootDAGRun.ID != "" && req.RunID != "" {
+		status, err := r.dagRunMgr.FindSubDAGRunStatus(ctx, req.RootDAGRun, req.RunID)
+		if err == nil {
+			if status == nil {
+				return nil, fmt.Errorf("failed to read child workflow status: status data is nil")
+			}
+			return status, nil
+		}
+		if !errors.Is(err, exec.ErrNoStatusData) && !errors.Is(err, exec.ErrDAGRunIDNotFound) {
+			return nil, fmt.Errorf("failed to find child workflow attempt: %w", err)
+		}
+	}
+
+	runStateStore := r.runStateStoreFromContext(ctx)
+	if runStateStore == nil {
+		return nil, errNoRunDatabase
+	}
+	attempt, err := runStateStore.OpenChildAttempt(ctx, req.RootDAGRun, req.RunID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find child workflow attempt: %w", err)
+	}
+	retryTarget, err := attempt.ReadStatus(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read child workflow status: %w", err)
+	}
+	if retryTarget == nil {
+		return nil, fmt.Errorf("failed to read child workflow status: status data is nil")
+	}
+	return retryTarget, nil
 }
 
 // Cancel requests cancellation for a running in-process child workflow.
@@ -303,12 +354,6 @@ func (r *Local) newAgent(
 	opts.ProfileName = req.ProfileName
 	opts.ServiceRegistry = r.serviceRegistry
 	opts.DefaultExecMode = rCtx.DefaultExecMode
-	opts.AgentConfigStore = agentctx.GetConfigStore(ctx)
-	opts.AgentModelStore = agentctx.GetModelStore(ctx)
-	opts.AgentMemoryStore = agentctx.GetMemoryStore(ctx)
-	opts.AgentSoulStore = agentctx.GetSoulStore(ctx)
-	opts.AgentOAuthManager = agentctx.GetOAuthManager(ctx)
-	opts.AgentRemoteContextResolver = agentctx.GetRemoteContextResolver(ctx)
 	opts.ArtifactDir = artifactDir
 	opts.DAGRunLogDir = logDir
 	opts.DAGRunArtifactDir = artifactBaseDir
@@ -349,10 +394,7 @@ func (r *Local) runAgent(ctx context.Context, runID string, child *rtagent.Agent
 	return result, nil
 }
 
-func (r *Local) dagStoreFromContext(ctx context.Context) exec.DAGStore {
-	if store := agentctx.GetDAGStore(ctx); store != nil {
-		return store
-	}
+func (r *Local) dagStoreFromContext(_ context.Context) exec.DAGStore {
 	return r.dagStore
 }
 
@@ -364,7 +406,7 @@ func (r *Local) dagRunStoreFromContext(ctx context.Context) exec.DAGRunStore {
 	if rCtx.DAGRunStore != nil {
 		return rCtx.DAGRunStore
 	}
-	return agentctx.GetDAGRunStore(ctx)
+	return nil
 }
 
 func (r *Local) runStateStoreFromContext(ctx context.Context) runstate.Store {
@@ -458,7 +500,7 @@ func inProcessLoadOptions(
 	if req.Params != "" {
 		loadOpts = append(loadOpts, spec.WithParams(req.Params))
 	}
-	if workDir != "" {
+	if req.Workspace != nil && workDir != "" {
 		loadOpts = append(loadOpts, spec.WithDefaultWorkingDir(workDir))
 	}
 

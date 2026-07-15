@@ -23,19 +23,21 @@ const (
 	// EnvKeyDAGRunStepStderrFile holds the path to the stderr log file for the current step.
 	EnvKeyDAGRunStepStderrFile = "DAG_RUN_STEP_STDERR_FILE"
 
+	// EnvKeyDAGUOutputFile holds the file path used for declared step outputs.
+	EnvKeyDAGUOutputFile = "DAGU_OUTPUT_FILE"
+
 	// EnvKeyDAGRunStatus holds the current status of the DAG run (e.g., "running", "success", "failed").
 	EnvKeyDAGRunStatus = "DAG_RUN_STATUS"
 
+	// EnvKeyDAGWaitingSteps holds comma-separated step names that are waiting for approval.
+	EnvKeyDAGWaitingSteps = "DAG_WAITING_STEPS"
+
 	// EnvKeyDAGParamsJSON exposes the resolved parameters encoded as JSON.
 	// When params were provided as JSON, the original payload is preserved.
-	EnvKeyDAGParamsJSON = "DAGU_PARAMS_JSON"
+	EnvKeyDAGParamsJSON = "DAG_PARAMS_JSON"
 
-	// EnvKeyDAGDocsDir holds the per-DAG docs directory path.
-	EnvKeyDAGDocsDir = "DAG_DOCS_DIR"
-
-	// EnvKeyDAGParamsJSONCompat is the DAG_-prefixed key for resolved parameters JSON.
-	// Both DAG_PARAMS_JSON and DAGU_PARAMS_JSON are set for backward compatibility.
-	EnvKeyDAGParamsJSONCompat = "DAG_PARAMS_JSON"
+	// EnvKeyDAGParamsJSONCompat exposes the resolved parameters encoded as JSON.
+	EnvKeyDAGParamsJSONCompat = "DAGU_PARAMS_JSON"
 
 	// EnvKeyDAGRunWorkDir holds the path to the per-DAG-run working directory.
 	EnvKeyDAGRunWorkDir = "DAG_RUN_WORK_DIR"

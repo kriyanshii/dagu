@@ -90,22 +90,27 @@ func (s *ScheduleValue) UnmarshalYAML(data []byte) error {
 
 func (s *ScheduleValue) parseScheduleMap(m map[string]any) error {
 	for key, v := range m {
-		opts := core.ScheduleParseOptions{AllowAt: key == "start"}
+		var (
+			target *[]core.Schedule
+			opts   core.ScheduleParseOptions
+		)
+		switch key {
+		case "start":
+			target = &s.starts
+			opts.AllowAt = true
+		case "stop":
+			target = &s.stops
+		case "restart":
+			target = &s.restarts
+		default:
+			return fmt.Errorf("schedule: unknown key %q (expected start, stop, or restart)", key)
+		}
+
 		values, err := parseScheduleEntry(v, opts)
 		if err != nil {
 			return fmt.Errorf("schedule.%s: %w", key, err)
 		}
-
-		switch key {
-		case "start":
-			s.starts = values
-		case "stop":
-			s.stops = values
-		case "restart":
-			s.restarts = values
-		default:
-			return fmt.Errorf("schedule: unknown key %q (expected start, stop, or restart)", key)
-		}
+		*target = values
 	}
 	return nil
 }

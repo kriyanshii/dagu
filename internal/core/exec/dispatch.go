@@ -58,7 +58,6 @@ type DispatchTask struct {
 	SourceFile   string
 
 	WorkerSelector map[string]string
-	AgentSnapshot  []byte
 
 	ExternalStepRetry bool
 
@@ -78,9 +77,15 @@ type DAGRunStatusResult struct {
 	Status *DAGRunStatus
 }
 
+// DispatchRequest describes a distributed dispatch call.
+type DispatchRequest struct {
+	Task                      *DispatchTask
+	AdmissionReservationToken string
+}
+
 // Dispatcher defines distributed DAG run operations.
 type Dispatcher interface {
-	Dispatch(ctx context.Context, task *DispatchTask) error
+	Dispatch(ctx context.Context, req DispatchRequest) error
 	Cleanup(ctx context.Context) error
 	GetDAGRunStatus(ctx context.Context, dagName, dagRunID string, rootRef *DAGRunRef) (*DAGRunStatusResult, error)
 	RequestCancel(ctx context.Context, dagName, dagRunID string, rootRef *DAGRunRef) error

@@ -1,14 +1,16 @@
 // Copyright (C) 2026 Yota Hamada
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import React, { useCallback, useContext, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Maximize2, X } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { components } from '../../../../api/v1/schema';
-import { AppBarContext } from '../../../../contexts/AppBarContext';
-import { usePageContext } from '../../../../contexts/PageContext';
+import {
+  RemoteNodeProvider,
+  useRemoteNode,
+} from '../../../../contexts/RemoteNodeContext';
 import { UnsavedChangesProvider } from '../../../../contexts/UnsavedChangesContext';
 import { useQuery } from '../../../../hooks/api';
 import { useDAGRunSSE } from '../../../../hooks/useDAGRunSSE';
@@ -58,8 +60,7 @@ function DAGDetailsPanel({
   onNavigate,
 }: Props): React.ReactElement | null {
   const navigate = useNavigate();
-  const appBarContext = useContext(AppBarContext);
-  const { setContext } = usePageContext();
+  const remoteNode = useRemoteNode();
 
   const [currentDAGRun, setCurrentDAGRun] = useState<
     DAGRunDetails | undefined
@@ -68,21 +69,7 @@ function DAGDetailsPanel({
   const [activeTab, setActiveTab] = useState('status');
   const [notFound, setNotFound] = useState(false);
 
-  // Set page context for agent chat
-  useEffect(() => {
-    if (fileName) {
-      setContext({
-        dagFile: fileName,
-        source: 'dag-details-panel',
-      });
-    }
-    return () => {
-      setContext(null);
-    };
-  }, [fileName, setContext]);
-
-  const dagSSE = useDAGSSE(fileName, !!fileName);
-  const remoteNode = appBarContext.selectedRemoteNode || 'local';
+  const dagSSE = useDAGSSE(fileName, !!fileName, remoteNode);
   // Fetch DAG details — SWR is the single source of truth, refreshed by live invalidations
   const sseOpts = sseFallbackOptions(dagSSE);
   const { data, error, mutate } = useQuery(
@@ -162,9 +149,7 @@ function DAGDetailsPanel({
         searchParams.set('dagRunName', data.dag.name);
       }
     }
-    if (remoteNode && remoteNode !== 'local') {
-      searchParams.set('remoteNode', remoteNode);
-    }
+    searchParams.set('remoteNode', remoteNode);
     const query = searchParams.toString();
     const url = `/dags/${fileName}${tabPath}${query ? `?${query}` : ''}`;
 
@@ -246,69 +231,77 @@ function DAGDetailsPanel({
     );
   }
 
+  const contentClassName =
+    activeTab === 'status'
+      ? 'min-h-0 flex-1 overflow-hidden pr-4'
+      : 'min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-4';
+
   return (
     <UnsavedChangesProvider>
-      <DAGContext.Provider
-        value={{
-          refresh: refreshFn,
-          fileName: fileName || '',
-          name: data.dag.name || '',
-        }}
-      >
-        <RootDAGRunContext.Provider
+      <RemoteNodeProvider remoteNode={remoteNode}>
+        <DAGContext.Provider
           value={{
-            data: displayDAGRun,
-            setData: setCurrentDAGRun,
+            refresh: refreshFn,
+            fileName: fileName || '',
+            name: data.dag.name || '',
           }}
         >
-          <div className="px-2 pt-2 w-full flex flex-col h-full overflow-hidden">
-            <div className="flex justify-between items-center mb-2 flex-shrink-0 pr-4">
-              <p className="text-xs text-muted-foreground">
-                Use{' '}
-                <kbd className="px-1 py-0.5 bg-muted rounded text-xs font-mono">
-                  ↑
-                </kbd>{' '}
-                <kbd className="px-1 py-0.5 bg-muted rounded text-xs font-mono">
-                  ↓
-                </kbd>{' '}
-                to navigate DAGs
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  size="icon"
-                  onClick={handleFullscreenClick}
-                  title="Open in fullscreen (F) - Cmd/Ctrl+Click to open in new tab"
-                >
-                  <Maximize2 className="h-4 w-4" />
-                </Button>
-                <Button size="icon" onClick={onClose} title="Close (Esc)">
-                  <X className="h-4 w-4" />
-                </Button>
+          <RootDAGRunContext.Provider
+            value={{
+              data: displayDAGRun,
+              setData: setCurrentDAGRun,
+            }}
+          >
+            <div className="px-2 pt-2 w-full flex flex-col h-full overflow-hidden">
+              <div className="flex justify-between items-center mb-2 flex-shrink-0 pr-4">
+                <p className="text-xs text-muted-foreground">
+                  Use{' '}
+                  <kbd className="px-1 py-0.5 bg-muted rounded text-xs font-mono">
+                    ↑
+                  </kbd>{' '}
+                  <kbd className="px-1 py-0.5 bg-muted rounded text-xs font-mono">
+                    ↓
+                  </kbd>{' '}
+                  to navigate DAGs
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    size="icon"
+                    onClick={handleFullscreenClick}
+                    title="Open in fullscreen (F) - Cmd/Ctrl+Click to open in new tab"
+                  >
+                    <Maximize2 className="h-4 w-4" />
+                  </Button>
+                  <Button size="icon" onClick={onClose} title="Close (Esc)">
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className={contentClassName}>
+                <DAGDetailsContent
+                  fileName={fileName}
+                  filePath={data.filePath}
+                  dag={data.dag}
+                  currentDAGRun={displayDAGRun}
+                  refreshFn={refreshFn}
+                  formatDuration={formatDuration}
+                  activeTab={activeTab}
+                  onTabChange={setActiveTab}
+                  dagRunId={trackedDagRunId ?? 'latest'}
+                  stepName={null}
+                  isModal={true}
+                  navigateToStatusTab={() => setActiveTab('status')}
+                  localDags={data.localDags}
+                  editorHints={data.editorHints}
+                  onRunStarted={handleRunStarted}
+                  fillHeight
+                />
               </div>
             </div>
-
-            <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 pr-4">
-              <DAGDetailsContent
-                fileName={fileName}
-                filePath={data.filePath}
-                dag={data.dag}
-                currentDAGRun={displayDAGRun}
-                refreshFn={refreshFn}
-                formatDuration={formatDuration}
-                activeTab={activeTab}
-                onTabChange={setActiveTab}
-                dagRunId={trackedDagRunId ?? 'latest'}
-                stepName={null}
-                isModal={true}
-                navigateToStatusTab={() => setActiveTab('status')}
-                localDags={data.localDags}
-                editorHints={data.editorHints}
-                onRunStarted={handleRunStarted}
-              />
-            </div>
-          </div>
-        </RootDAGRunContext.Provider>
-      </DAGContext.Provider>
+          </RootDAGRunContext.Provider>
+        </DAGContext.Provider>
+      </RemoteNodeProvider>
     </UnsavedChangesProvider>
   );
 }

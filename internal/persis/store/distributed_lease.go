@@ -10,6 +10,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/dagucloud/dagu/internal/cmn/logger"
+	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/persis"
 )
@@ -20,12 +22,17 @@ var _ exec.DAGRunLeaseStore = (*DAGRunLeaseStore)(nil)
 // [persis.Collection]. Record IDs use the file-backed distributed store
 // SHA-256 key.
 type DAGRunLeaseStore struct {
-	col persis.Collection
+	col                      persis.Collection
+	corruptRecordGracePeriod time.Duration
 }
 
 // NewDAGRunLeaseStore creates a DAGRunLeaseStore backed by col.
-func NewDAGRunLeaseStore(col persis.Collection) *DAGRunLeaseStore {
-	return &DAGRunLeaseStore{col: col}
+func NewDAGRunLeaseStore(col persis.Collection, opts ...DistributedStoreOption) *DAGRunLeaseStore {
+	resolved := resolveDistributedStoreOptions(opts)
+	return &DAGRunLeaseStore{
+		col:                      col,
+		corruptRecordGracePeriod: resolved.corruptRecordGracePeriod,
+	}
 }
 
 // Upsert writes lease for attemptKey. Get → Create if absent /
@@ -49,23 +56,31 @@ func (s *DAGRunLeaseStore) Upsert(ctx context.Context, lease exec.DAGRunLease) e
 			current.LastHeartbeatAt = now.UnixMilli()
 		}
 
-		existing, getErr := s.col.Get(ctx, id)
-		if getErr != nil && !errors.Is(getErr, persis.ErrNotFound) {
-			return getErr
-		}
-
 		data, err := persis.Encode(current)
 		if err != nil {
 			return err
 		}
+		stored := &persis.Record{
+			ID:        id,
+			Data:      data,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+
+		existing, getErr := s.col.Get(ctx, id)
+		if errors.Is(getErr, persis.ErrCorrupt) {
+			removed, retryErr := removeCorruptRecordForRetry(ctx, s.col, id, getErr)
+			if removed {
+				logger.Warn(ctx, "Removed corrupt distributed lease entry before replacement", tag.Name(id))
+			}
+			return retryErr
+		}
+		if getErr != nil && !errors.Is(getErr, persis.ErrNotFound) {
+			return getErr
+		}
 
 		if existing == nil {
-			return s.col.Create(ctx, &persis.Record{
-				ID:        id,
-				Data:      data,
-				CreatedAt: now,
-				UpdatedAt: now,
-			})
+			return s.col.Create(ctx, stored)
 		}
 		casErr := s.col.CompareAndSwap(ctx, id, existing.Data, data)
 		if errors.Is(casErr, persis.ErrNotFound) {
@@ -143,7 +158,31 @@ func (s *DAGRunLeaseStore) ListByQueue(ctx context.Context, queueName string) ([
 }
 
 func (s *DAGRunLeaseStore) ListAll(ctx context.Context) ([]exec.DAGRunLease, error) {
-	recs, err := listAllStrict(ctx, s.col, persis.ListQuery{})
+	recs, err := listAllStrictWithReadError(ctx, s.col, persis.ListQuery{}, func(id string, readErr error) (bool, error) {
+		if !errors.Is(readErr, persis.ErrCorrupt) {
+			return false, nil
+		}
+		removed, removeErr := removeStaleCorruptRecord(
+			ctx,
+			s.col,
+			id,
+			s.corruptRecordGracePeriod,
+		)
+		if errors.Is(removeErr, persis.ErrNotFound) {
+			return true, nil
+		}
+		if removeErr != nil {
+			return false, removeErr
+		}
+		if !removed {
+			return false, nil
+		}
+		logger.Warn(ctx, "Removed stale corrupt distributed lease entry",
+			tag.Name(id),
+			tag.Error(readErr),
+		)
+		return true, nil
+	})
 	if err != nil {
 		return nil, err
 	}

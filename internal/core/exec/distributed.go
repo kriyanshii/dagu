@@ -13,10 +13,13 @@ import (
 )
 
 var (
-	ErrDispatchTaskNotFound    = errors.New("dispatch task claim not found")
-	ErrDAGRunLeaseNotFound     = errors.New("dag-run lease not found")
-	ErrActiveRunNotFound       = errors.New("active distributed run not found")
-	ErrWorkerHeartbeatNotFound = errors.New("worker heartbeat not found")
+	ErrDispatchTaskNotFound                   = errors.New("dispatch task claim not found")
+	ErrDispatchAdmissionNotFound              = errors.New("dispatch admission not found")
+	ErrDispatchAdmissionConflict              = errors.New("dispatch admission conflict")
+	ErrDispatchAdmissionLivenessNotConfigured = errors.New("dispatch admission liveness not configured")
+	ErrDAGRunLeaseNotFound                    = errors.New("dag-run lease not found")
+	ErrActiveRunNotFound                      = errors.New("active distributed run not found")
+	ErrWorkerHeartbeatNotFound                = errors.New("worker heartbeat not found")
 )
 
 // CoordinatorEndpoint identifies a coordinator instance that owns a
@@ -64,6 +67,47 @@ type ClaimedDispatchTask struct {
 	WorkerID   string
 	PollerID   string
 	Owner      CoordinatorEndpoint
+}
+
+// DispatchAdmissionRequest describes a queue admission reservation request.
+type DispatchAdmissionRequest struct {
+	QueueName             string
+	MaxConcurrency        int
+	NonAdmissionOccupancy int
+	AttemptKey            string
+	AttemptID             string
+	DAGRun                DAGRunRef
+	StaleThreshold        time.Duration
+}
+
+// DispatchAdmissionRejectReason identifies why a reservation was not granted.
+type DispatchAdmissionRejectReason string
+
+const (
+	DispatchAdmissionRejectedDuplicate  DispatchAdmissionRejectReason = "duplicate"
+	DispatchAdmissionRejectedNoCapacity DispatchAdmissionRejectReason = "no_capacity"
+)
+
+// DispatchAdmissionDecision is the durable queue admission result.
+type DispatchAdmissionDecision struct {
+	Reserved         bool
+	Reason           DispatchAdmissionRejectReason
+	ReservationToken string
+}
+
+// DispatchAdmissionBindRequest describes a coordinator bind for a reservation.
+type DispatchAdmissionBindRequest struct {
+	ReservationToken string
+	Task             *DispatchTask
+}
+
+// DispatchAdmissionStore reserves queue capacity and binds reservations to tasks.
+type DispatchAdmissionStore interface {
+	ReserveAdmission(ctx context.Context, req DispatchAdmissionRequest) (*DispatchAdmissionDecision, error)
+	BindAdmission(ctx context.Context, req DispatchAdmissionBindRequest) error
+	ReleaseAdmissionToken(ctx context.Context, reservationToken string) error
+	FinalizeAdmissionAttempt(ctx context.Context, attemptKey string) error
+	CleanupAdmissions(ctx context.Context, staleThreshold time.Duration) error
 }
 
 // DispatchTaskStore manages the shared distributed dispatch queue.
@@ -120,7 +164,7 @@ type WorkerHeartbeatStore interface {
 	DeleteStale(ctx context.Context, before time.Time) (int, error)
 }
 
-// DAGRunLease is the shared liveness record for an active distributed attempt.
+// DAGRunLease is the shared liveness record for an accepted worker claim.
 type DAGRunLease struct {
 	AttemptKey      string              `json:"attemptKey"`
 	DAGRun          DAGRunRef           `json:"dagRun"`
@@ -131,6 +175,16 @@ type DAGRunLease struct {
 	Owner           CoordinatorEndpoint `json:"owner"`
 	ClaimedAt       int64               `json:"claimedAt"`
 	LastHeartbeatAt int64               `json:"lastHeartbeatAt"`
+}
+
+// MatchesClaim reports whether the lease identifies claimKey without
+// conflicting with workerID. An empty worker ID on either side is treated as
+// unspecified.
+func (l *DAGRunLease) MatchesClaim(claimKey, workerID string) bool {
+	if l == nil || claimKey == "" || l.AttemptKey != claimKey {
+		return false
+	}
+	return l.WorkerID == "" || workerID == "" || l.WorkerID == workerID
 }
 
 // LastHeartbeatTime returns the last run heartbeat time.
@@ -157,7 +211,7 @@ func (l DAGRunLease) IsFresh(now time.Time, staleThreshold time.Duration) bool {
 	return now.Sub(l.LastHeartbeatTime()) < staleThreshold
 }
 
-// DAGRunLeaseStore persists active distributed attempt leases.
+// DAGRunLeaseStore persists live worker-claim leases.
 type DAGRunLeaseStore interface {
 	Upsert(ctx context.Context, lease DAGRunLease) error
 	Touch(ctx context.Context, attemptKey string, observedAt time.Time) error
@@ -167,8 +221,7 @@ type DAGRunLeaseStore interface {
 	ListAll(ctx context.Context) ([]DAGRunLease, error)
 }
 
-// ActiveDistributedRun is the durable active-set record for a remote attempt
-// that is still expected to own execution authority.
+// ActiveDistributedRun is the durable active-set record for a remote attempt.
 type ActiveDistributedRun struct {
 	AttemptKey string      `json:"attemptKey"`
 	DAGRun     DAGRunRef   `json:"dagRun"`

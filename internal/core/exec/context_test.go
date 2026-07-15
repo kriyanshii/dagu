@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -90,102 +91,6 @@ func TestDAGContext_UserEnvsMap(t *testing.T) {
 	}
 }
 
-func TestNewContext_DAGDocsDir(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		docsDir   string
-		dagName   string
-		labels    core.Labels
-		expected  string
-		expectSet bool
-	}{
-		{
-			name:      "ConfigHasDocsDir",
-			docsDir:   "/var/dagu/docs",
-			dagName:   "my-workflow",
-			expected:  filepath.Join("/var/dagu/docs", "my-workflow"),
-			expectSet: true,
-		},
-		{
-			name:    "WorkspaceLabelUsesWorkspaceScopedDocsDir",
-			docsDir: "/var/dagu/docs",
-			dagName: "my-workflow",
-			labels: core.Labels{
-				{Key: "workspace", Value: "ops"},
-			},
-			expected:  filepath.Join("/var/dagu/docs", "ops", "my-workflow"),
-			expectSet: true,
-		},
-		{
-			name:    "ConflictingWorkspaceLabelsUseLegacyDocsDir",
-			docsDir: "/var/dagu/docs",
-			dagName: "my-workflow",
-			labels: core.Labels{
-				{Key: "workspace", Value: "ops"},
-				{Key: "workspace", Value: "prod"},
-			},
-			expected:  filepath.Join("/var/dagu/docs", "my-workflow"),
-			expectSet: true,
-		},
-		{
-			name:    "InvalidWorkspaceLabelUsesLegacyDocsDir",
-			docsDir: "/var/dagu/docs",
-			dagName: "my-workflow",
-			labels: core.Labels{
-				{Key: "workspace", Value: "../shared"},
-			},
-			expected:  filepath.Join("/var/dagu/docs", "my-workflow"),
-			expectSet: true,
-		},
-		{
-			name:      "DocsDirEmpty",
-			docsDir:   "",
-			dagName:   "my-workflow",
-			expectSet: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctx := context.Background()
-			if tt.docsDir != "" {
-				cfg := &config.Config{}
-				cfg.Paths.DocsDir = tt.docsDir
-				ctx = config.WithConfig(ctx, cfg)
-			}
-
-			dag := &core.DAG{Name: tt.dagName, Labels: tt.labels}
-			ctx = exec.NewContext(ctx, dag, "run-1", "test.log")
-			rCtx := exec.GetContext(ctx)
-			result := rCtx.UserEnvsMap()
-
-			if tt.expectSet {
-				assert.Equal(t, tt.expected, result[exec.EnvKeyDAGDocsDir])
-			} else {
-				_, ok := result[exec.EnvKeyDAGDocsDir]
-				assert.False(t, ok, "DAG_DOCS_DIR should not be set")
-			}
-		})
-	}
-
-	t.Run("NoConfigInContext", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := context.Background()
-		dag := &core.DAG{Name: "my-workflow"}
-		ctx = exec.NewContext(ctx, dag, "run-1", "test.log")
-		rCtx := exec.GetContext(ctx)
-		result := rCtx.UserEnvsMap()
-
-		_, ok := result[exec.EnvKeyDAGDocsDir]
-		assert.False(t, ok, "DAG_DOCS_DIR should not be set when no config in context")
-	})
-}
-
 func TestNewContext_DAGParamsJSON(t *testing.T) {
 	t.Parallel()
 
@@ -217,13 +122,13 @@ func TestNewContext_DAGParamsJSON(t *testing.T) {
 			result := rCtx.UserEnvsMap()
 
 			if tt.expectSet {
-				assert.Equal(t, tt.paramsJSON, result[exec.EnvKeyDAGParamsJSONCompat])
 				assert.Equal(t, tt.paramsJSON, result[exec.EnvKeyDAGParamsJSON])
+				assert.Equal(t, tt.paramsJSON, result[exec.EnvKeyDAGParamsJSONCompat])
 			} else {
-				_, ok1 := result[exec.EnvKeyDAGParamsJSONCompat]
-				_, ok2 := result[exec.EnvKeyDAGParamsJSON]
-				assert.False(t, ok1, "DAG_PARAMS_JSON should not be set")
-				assert.False(t, ok2, "DAGU_PARAMS_JSON should not be set")
+				_, ok := result[exec.EnvKeyDAGParamsJSON]
+				assert.False(t, ok, "DAG_PARAMS_JSON should not be set")
+				_, ok = result[exec.EnvKeyDAGParamsJSONCompat]
+				assert.False(t, ok, "DAGU_PARAMS_JSON should not be set")
 			}
 		})
 	}
@@ -300,32 +205,154 @@ func TestNewContext_DAGEnvCanReferenceRuntimeManagedDirs(t *testing.T) {
 	t.Parallel()
 
 	artifactDir := filepath.Join(t.TempDir(), "artifacts", "run-1")
-	docsDir := filepath.Join(t.TempDir(), "docs")
-	cfg := &config.Config{}
-	cfg.Paths.DocsDir = docsDir
 
 	dag := &core.DAG{
 		Name: "test-dag",
 		Env: []string{
-			"OUTPUT_FILE=current-plan.md",
-			"DAG_DOCS_DIR=/tmp/wrong-docs",
-			"PLAN_PATH=${DAG_DOCS_DIR}/${OUTPUT_FILE}",
 			"DAG_RUN_ARTIFACTS_DIR=/tmp/wrong-artifacts",
 			"WORK_DIR=${DAG_RUN_ARTIFACTS_DIR}",
 			"CURRENT_IDEA_PATH=${WORK_DIR}/current_idea.md",
 		},
 	}
 
-	ctx := config.WithConfig(context.Background(), cfg)
+	ctx := context.Background()
 	ctx = exec.NewContext(ctx, dag, "run-1", "test.log",
 		exec.WithArtifactDir(artifactDir),
 	)
 
 	result := exec.GetContext(ctx).UserEnvsMap()
-	assert.Equal(t, filepath.Join(docsDir, dag.Name, "current-plan.md"), filepath.Clean(result["PLAN_PATH"]))
 	assert.Equal(t, artifactDir, result["WORK_DIR"])
 	assert.Equal(t, filepath.Join(artifactDir, "current_idea.md"), filepath.Clean(result["CURRENT_IDEA_PATH"]))
 	assert.Equal(t, artifactDir, result[exec.EnvKeyDAGRunArtifactsDir])
+}
+
+func TestNewContext_DAGEnvCanReferenceBuiltInRunContext(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	logFile := filepath.Join(tmpDir, "run.log")
+	workDir := filepath.Join(tmpDir, "work")
+	artifactDir := filepath.Join(tmpDir, "artifacts")
+	startedAt := "2026-03-13T10:00:01Z"
+	scheduledAt := "2026-03-13T10:00:00Z"
+	profileResolvedAt := "2026-03-13T09:59:00Z"
+
+	dag := &core.DAG{
+		Name: "daily",
+		Env: []string{
+			"DAG_REF=${context.dag.name}",
+			"RUN_REF=${context.run.id}",
+			"ATTEMPT_REF=${context.attempt.id}",
+			"TRIGGER_REF=${context.trigger.type}",
+			"TRIGGER_ACTOR_REF=${context.trigger.actor}",
+			"STARTED_REF=${context.attempt.started_at}",
+			"SCHEDULED_REF=${context.run.scheduled_at}",
+			"ROOT_NAME_REF=${context.run.root_name}",
+			"ROOT_ID_REF=${context.run.root_id}",
+			"LOG_REF=${context.paths.log_file}",
+			"WORK_REF=${context.paths.work_dir}",
+			"ARTIFACT_REF=${context.paths.artifacts_dir}",
+			"PROFILE_REF=${context.profile.name}",
+			"PROFILE_AT_REF=${context.profile.resolved_at}",
+		},
+	}
+
+	ctx := exec.NewContext(context.Background(), dag, "run-1", logFile,
+		exec.WithAttemptID("attempt-1"),
+		exec.WithRootDAGRun(exec.NewDAGRunRef("root", "root-run-1")),
+		exec.WithTriggerType(core.TriggerTypeScheduler),
+		exec.WithTriggerActor("alice"),
+		exec.WithRunStartedAt(startedAt),
+		exec.WithScheduleTime(scheduledAt),
+		exec.WithWorkDir(workDir),
+		exec.WithArtifactDir(artifactDir),
+		exec.WithRuntimeProfile("prod", profileResolvedAt, nil),
+	)
+
+	envs := exec.GetContext(ctx).UserEnvsMap()
+	assert.Equal(t, "daily", envs["DAG_REF"])
+	assert.Equal(t, "run-1", envs["RUN_REF"])
+	assert.Equal(t, "attempt-1", envs["ATTEMPT_REF"])
+	assert.Equal(t, "scheduler", envs["TRIGGER_REF"])
+	assert.Equal(t, "alice", envs["TRIGGER_ACTOR_REF"])
+	assert.Equal(t, startedAt, envs["STARTED_REF"])
+	assert.Equal(t, scheduledAt, envs["SCHEDULED_REF"])
+	assert.Equal(t, "root", envs["ROOT_NAME_REF"])
+	assert.Equal(t, "root-run-1", envs["ROOT_ID_REF"])
+	assert.Equal(t, logFile, envs["LOG_REF"])
+	assert.Equal(t, workDir, envs["WORK_REF"])
+	assert.Equal(t, artifactDir, envs["ARTIFACT_REF"])
+	assert.Equal(t, "prod", envs["PROFILE_REF"])
+	assert.Equal(t, profileResolvedAt, envs["PROFILE_AT_REF"])
+}
+
+func TestNewContext_DAGEnvDoesNotExposeRootFieldsForRootRun(t *testing.T) {
+	t.Parallel()
+
+	dag := &core.DAG{
+		Name: "root",
+		Env: []string{
+			"ROOT_NAME_REF=${context.run.root_name}",
+			"ROOT_ID_REF=${context.run.root_id}",
+		},
+	}
+
+	ctx := exec.NewContext(context.Background(), dag, "run-1", "dag.log",
+		exec.WithRootDAGRun(exec.NewDAGRunRef("root", "run-1")),
+	)
+
+	envs := exec.GetContext(ctx).UserEnvsMap()
+	assert.Equal(t, "${context.run.root_name}", envs["ROOT_NAME_REF"])
+	assert.Equal(t, "${context.run.root_id}", envs["ROOT_ID_REF"])
+}
+
+func TestNewContext_DAGEnvUsesRuntimeParamsOption(t *testing.T) {
+	t.Parallel()
+
+	dag := &core.DAG{
+		Name:   "test-dag",
+		Params: []string{"target=stored"},
+		ParamDefs: []core.ParamDef{{
+			Name: "target",
+			Type: core.ParamDefTypeString,
+		}},
+		Env: []string{
+			"TARGET=${params.target}",
+		},
+	}
+
+	ctx := exec.NewContext(context.Background(), dag, "run-1", "test.log",
+		exec.WithParams([]string{"target=runtime"}),
+	)
+
+	result := exec.GetContext(ctx).UserEnvsMap()
+	assert.Equal(t, "runtime", result["TARGET"])
+}
+
+func TestNewContext_DAGEnvOverridesParamsCaseInsensitiveOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows environment variables are case-insensitive")
+	}
+
+	dag := &core.DAG{
+		Name:   "test-dag",
+		Params: []string{"target=stored"},
+		ParamDefs: []core.ParamDef{{
+			Name: "target",
+			Type: core.ParamDefTypeString,
+		}},
+		Env: []string{
+			"TARGET=${params.target}",
+		},
+	}
+
+	ctx := exec.NewContext(context.Background(), dag, "run-1", "test.log",
+		exec.WithParams([]string{"target=runtime"}),
+	)
+
+	result := exec.GetContext(ctx).UserEnvsMap()
+	assert.Equal(t, "runtime", result["TARGET"])
+	assert.NotContains(t, result, "target")
 }
 
 func TestNewContext_DefaultProfileEnvsHaveLowestUserPrecedence(t *testing.T) {

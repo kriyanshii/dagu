@@ -26,7 +26,6 @@ service CoordinatorService {
   rpc RunHeartbeat (RunHeartbeatRequest) returns (RunHeartbeatResponse);
 
   // ReportStatus is called by workers to push DAG run status updates.
-  // Used in shared-nothing architecture where workers don't have filesystem access.
   rpc ReportStatus (ReportStatusRequest) returns (ReportStatusResponse);
 
   // StreamLogs is called by workers to stream step logs to the coordinator.
@@ -47,12 +46,12 @@ service CoordinatorService {
   rpc GetWorkspaceBundle (GetWorkspaceBundleRequest) returns (stream WorkspaceBundleChunk);
 
   // GetDAGRunStatus retrieves the status of a DAG run from the coordinator.
-  // Used by parent DAGs to poll status of remote sub-DAGs in shared-nothing mode.
+  // Used by parent DAGs to poll status of remote sub-DAGs.
   rpc GetDAGRunStatus (GetDAGRunStatusRequest) returns (GetDAGRunStatusResponse);
 
   // RequestCancel is called to request cancellation of a DAG run.
-  // Used in shared-nothing mode for sub-DAG cancellation where the parent
-  // cannot directly access the sub-DAG's attempt.
+  // Used for sub-DAG cancellation where the parent cannot directly access the
+  // sub-DAG's attempt.
   rpc RequestCancel (RequestCancelRequest) returns (RequestCancelResponse);
 
   // GetState retrieves persistent DAG state from the coordinator-owned store.
@@ -66,6 +65,15 @@ service CoordinatorService {
 
   // ListState lists persistent DAG state entries by scope, namespace, and key prefix.
   rpc ListState (ListStateRequest) returns (ListStateResponse);
+
+  // GetDAG retrieves a DAG definition (raw YAML spec) from the coordinator's DAG store.
+  // Used as a fallback when a worker's local DAG store misses a definition during
+  // sub-DAG execution.
+  rpc GetDAG (GetDAGRequest) returns (GetDAGResponse);
+
+  // ResolveSecretReference resolves or checks a Dagu-managed secret registry ref.
+  // Used by workers that cannot read the coordinator's secret store.
+  rpc ResolveSecretReference (ResolveSecretReferenceRequest) returns (ResolveSecretReferenceResponse);
 }
 
 // Request message for polling a task.
@@ -83,6 +91,7 @@ message PollResponse {
 // Request message for dispatching a task.
 message DispatchRequest {
   Task task = 1;
+  string admission_reservation_token = 2;
 }
 
 // Response message for dispatching a task.
@@ -104,7 +113,7 @@ message Task {
   map<string, string> worker_selector = 10; // Required worker labels for execution
   string definition = 11; // Optional: DAG definition (YAML) for local DAGs
   string worker_id = 12; // ID of the worker that will execute this task
-  // Previous status for OPERATION_RETRY in shared-nothing mode.
+  // Previous status for OPERATION_RETRY.
   // When set, workers can retry without needing local DAGRunStore access.
   DAGRunStatusProto previous_status = 13;
   // Attempt ID created by coordinator. Workers use this to create attempts with the same ID.
@@ -129,8 +138,6 @@ message Task {
   string claim_token = 24;
   // Original DAG file path for provenance-aware reschedule-from-file behavior.
   string source_file = 25;
-  // Opaque execution-scoped agent settings snapshot for distributed workers.
-  bytes agent_snapshot = 26;
   // Content-addressed workspace bundle for action sub-DAGs.
   string workspace_bundle_digest = 27;
   int64 workspace_bundle_size = 28;
@@ -450,4 +457,32 @@ message ListStateRequest {
 
 message ListStateResponse {
   repeated StateEntry entries = 1;
+}
+
+// GetDAG retrieves a DAG definition (raw YAML spec) from the coordinator's DAG store.
+// Used as a fallback when a worker's local DAG store misses a definition during
+// sub-DAG execution. This eliminates race conditions in git-synced setups where
+// a new DAG YAML may not yet be present on the worker.
+message GetDAGRequest {
+  string name = 1;  // DAG name to look up
+}
+
+message GetDAGResponse {
+  string spec = 1;  // Raw YAML content of the DAG definition (empty if not found)
+  string error = 2; // Error description when the DAG cannot be retrieved
+}
+
+// ResolveSecretReference resolves or checks one Dagu-managed registry ref.
+message ResolveSecretReferenceRequest {
+  string name = 1;      // Environment variable name requested by the DAG
+  string ref = 2;       // Registry ref, for example "prod/db-password"
+  string workspace = 3; // Workspace scope; empty means global
+  bool check_only = 4;  // When true, verify access without returning plaintext
+  string worker_id = 5;   // Worker currently owning the dispatched attempt
+  string attempt_key = 6; // Active distributed attempt lease key
+  string attempt_id = 7;  // Attempt ID created by the coordinator
+}
+
+message ResolveSecretReferenceResponse {
+  string value = 1; // Plaintext secret value; empty for check_only
 }

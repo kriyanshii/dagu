@@ -10,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { useConfig } from '@/contexts/ConfigContext';
 import { components, NodeStatus } from '../../../../api/v1/schema';
 import NodeStatusTableRow from './NodeStatusTableRow';
 
@@ -43,10 +44,20 @@ function NodeStatusTable({
   onViewLog,
   onNodeStatusUpdated,
 }: Props) {
+  const config = useConfig();
+  const showActionsColumn = Boolean(
+    status?.dagRunId && config.permissions.runDags
+  );
+
   // Don't render if there are no nodes
   if (!nodes || !nodes.length) {
     return null;
   }
+
+  // Surface the first failed step's log without an extra click
+  const firstFailedStepName = nodes.find(
+    (n) => n.status === NodeStatus.Failed && (n.stdout || n.stderr)
+  )?.step.name;
 
   return (
     <div>
@@ -56,28 +67,16 @@ function NodeStatusTable({
           <Table className="w-full">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[5%] text-center">
-                  No
-                </TableHead>
-                <TableHead className="w-[20%]">
-                  Step Name
-                </TableHead>
-                <TableHead className="w-[15%]">
-                  Execution
-                </TableHead>
-                <TableHead className="w-[15%]">
-                  Last Run
-                </TableHead>
-                <TableHead className="w-[10%] text-center">
-                  Status
-                </TableHead>
+                <TableHead className="w-[5%] text-center">No</TableHead>
+                <TableHead className="w-[20%]">Step Name</TableHead>
+                <TableHead className="w-[15%]">Execution</TableHead>
+                <TableHead className="w-[15%]">Last Run</TableHead>
+                <TableHead className="w-[10%] text-center">Status</TableHead>
                 <TableHead className="w-[35%] min-w-[150px]">
                   Error / Logs
                 </TableHead>
-                {status?.dagRunId && (
-                  <TableHead className="w-[8%] text-center">
-                    Actions
-                  </TableHead>
+                {showActionsColumn && (
+                  <TableHead className="w-[8%] text-center">Actions</TableHead>
                 )}
               </TableRow>
             </TableHeader>
@@ -92,6 +91,7 @@ function NodeStatusTable({
                   onNodeStatusUpdated={onNodeStatusUpdated}
                   dagRun={status}
                   view="desktop"
+                  defaultLogExpanded={n.step.name === firstFailedStepName}
                 />
               ))}
             </TableBody>
@@ -111,6 +111,7 @@ function NodeStatusTable({
             onNodeStatusUpdated={onNodeStatusUpdated}
             dagRun={status}
             view="mobile"
+            defaultLogExpanded={n.step.name === firstFailedStepName}
           />
         ))}
       </div>

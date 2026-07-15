@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	osexec "os/exec"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -292,15 +293,26 @@ func TestIsPreStartExecutionFailure(t *testing.T) {
 // mockDispatcher implements exec.Dispatcher for testing dispatch behavior.
 type mockDispatcher struct {
 	callCount atomic.Int32
+	mu        sync.Mutex
+	lastReq   exec.DispatchRequest
 	errFunc   func(callNum int32) error
 }
 
-func (m *mockDispatcher) Dispatch(_ context.Context, _ *exec.DispatchTask) error {
+func (m *mockDispatcher) Dispatch(_ context.Context, req exec.DispatchRequest) error {
+	m.mu.Lock()
+	m.lastReq = req
+	m.mu.Unlock()
 	n := m.callCount.Add(1)
 	if m.errFunc != nil {
 		return m.errFunc(n)
 	}
 	return nil
+}
+
+func (m *mockDispatcher) LastRequest() exec.DispatchRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastReq
 }
 
 func (m *mockDispatcher) Cleanup(_ context.Context) error { return nil }
@@ -328,7 +340,7 @@ func TestQueueDispatcher_DispatchAndWaitForStartup_TransientRetryThenSuccess(t *
 		},
 	}
 
-	dagExec := NewDAGExecutor(disp, nil, config.ExecutionModeDistributed, "", nil)
+	dagExec := NewDAGExecutor(disp, nil, config.ExecutionModeDistributed, "")
 	dag := &core.DAG{Name: "test-dag"}
 	status := &exec.DAGRunStatus{Status: core.Queued, TriggerType: core.TriggerTypeScheduler}
 
@@ -347,7 +359,7 @@ func TestQueueDispatcher_DispatchAndWaitForStartup_TransientRetryThenSuccess(t *
 		},
 	})
 
-	started := dispatcher.dispatchAndWaitForStartup(context.Background(), "test-queue", runRef, dag, "run-1", status)
+	started := dispatcher.dispatchAndWaitForStartup(context.Background(), "test-queue", runRef, dag, "run-1", status, "")
 	require.True(t, started)
 	require.GreaterOrEqual(t, disp.callCount.Load(), int32(3))
 	procStore.AssertExpectations(t)
@@ -365,7 +377,7 @@ func TestQueueDispatcher_DispatchAndWaitForStartup_StaleQueueDispatchIsDiscarded
 		},
 	}
 
-	dagExec := NewDAGExecutor(disp, nil, config.ExecutionModeDistributed, "", nil)
+	dagExec := NewDAGExecutor(disp, nil, config.ExecutionModeDistributed, "")
 	dag := &core.DAG{Name: "test-dag"}
 	status := &exec.DAGRunStatus{Status: core.Queued, TriggerType: core.TriggerTypeScheduler}
 	runRef := exec.NewDAGRunRef("test-dag", "run-1")
@@ -382,7 +394,7 @@ func TestQueueDispatcher_DispatchAndWaitForStartup_StaleQueueDispatchIsDiscarded
 		},
 	})
 
-	started := dispatcher.dispatchAndWaitForStartup(context.Background(), "test-queue", runRef, dag, "run-1", status)
+	started := dispatcher.dispatchAndWaitForStartup(context.Background(), "test-queue", runRef, dag, "run-1", status, "")
 	require.True(t, started)
 	require.Equal(t, int32(1), disp.callCount.Load())
 	procStore.AssertNotCalled(t, "IsRunAlive", mock.Anything, mock.Anything, mock.Anything)
@@ -398,7 +410,7 @@ func TestQueueDispatcher_DispatchAndWaitForStartup_RawStaleQueueDispatchStopsRet
 		},
 	}
 
-	dagExec := NewDAGExecutor(disp, nil, config.ExecutionModeDistributed, "", nil)
+	dagExec := NewDAGExecutor(disp, nil, config.ExecutionModeDistributed, "")
 	dag := &core.DAG{Name: "test-dag"}
 	status := &exec.DAGRunStatus{Status: core.Queued, TriggerType: core.TriggerTypeScheduler}
 	runRef := exec.NewDAGRunRef("test-dag", "run-1")
@@ -415,7 +427,7 @@ func TestQueueDispatcher_DispatchAndWaitForStartup_RawStaleQueueDispatchStopsRet
 		},
 	})
 
-	started := dispatcher.dispatchAndWaitForStartup(context.Background(), "test-queue", runRef, dag, "run-1", status)
+	started := dispatcher.dispatchAndWaitForStartup(context.Background(), "test-queue", runRef, dag, "run-1", status, "")
 	require.True(t, started)
 	require.Equal(t, int32(1), disp.callCount.Load())
 	procStore.AssertNotCalled(t, "IsRunAlive", mock.Anything, mock.Anything, mock.Anything)
@@ -424,6 +436,7 @@ func TestQueueDispatcher_DispatchAndWaitForStartup_RawStaleQueueDispatchStopsRet
 func TestQueueDispatcher_DispatchAndWaitForStartup_PermanentErrorStopsRetry(t *testing.T) {
 	dagRunStore := &mockDAGRunStore{}
 	procStore := &mockProcStore{}
+	attempt := &exec.MockDAGRunAttempt{}
 
 	// Dispatcher always returns a permanent error (selector mismatch).
 	disp := &mockDispatcher{
@@ -432,10 +445,27 @@ func TestQueueDispatcher_DispatchAndWaitForStartup_PermanentErrorStopsRetry(t *t
 		},
 	}
 
-	dagExec := NewDAGExecutor(disp, nil, config.ExecutionModeDistributed, "", nil)
+	dagExec := NewDAGExecutor(disp, nil, config.ExecutionModeDistributed, "")
 	dag := &core.DAG{Name: "test-dag"}
-	status := &exec.DAGRunStatus{Status: core.Queued, TriggerType: core.TriggerTypeScheduler}
+	status := &exec.DAGRunStatus{
+		Name:        "test-dag",
+		DAGRunID:    "run-1",
+		AttemptID:   "attempt-1",
+		Status:      core.Queued,
+		TriggerType: core.TriggerTypeScheduler,
+	}
 	runRef := exec.NewDAGRunRef("test-dag", "run-1")
+	dagRunStore.On("FindAttempt", mock.Anything, runRef).Return(attempt, nil).Once()
+	attempt.On("Hidden").Return(false).Once()
+	attempt.On("ReadStatus", mock.Anything).Return(status, nil).Once()
+	dagRunStore.On(
+		"CompareAndSwapLatestAttemptStatus",
+		mock.Anything,
+		runRef,
+		"attempt-1",
+		core.Queued,
+		mock.Anything,
+	).Return(status, true, nil).Once()
 
 	dispatcher := newQueueDispatcher(queueDispatchDeps{
 		dagRunStore: dagRunStore,
@@ -449,9 +479,11 @@ func TestQueueDispatcher_DispatchAndWaitForStartup_PermanentErrorStopsRetry(t *t
 		},
 	})
 
-	started := dispatcher.dispatchAndWaitForStartup(context.Background(), "test-queue", runRef, dag, "run-1", status)
+	started := dispatcher.dispatchAndWaitForStartup(context.Background(), "test-queue", runRef, dag, "run-1", status, "")
 	require.False(t, started)
 	// Should have been called exactly once (permanent error stops retries).
 	require.Equal(t, int32(1), disp.callCount.Load())
 	procStore.AssertNotCalled(t, "IsRunAlive", mock.Anything, mock.Anything, mock.Anything)
+	dagRunStore.AssertExpectations(t)
+	attempt.AssertExpectations(t)
 }

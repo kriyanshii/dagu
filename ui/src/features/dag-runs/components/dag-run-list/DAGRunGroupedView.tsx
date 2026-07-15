@@ -7,6 +7,7 @@ import { useMemo, useState } from 'react';
 import { components, Status } from '../../../../api/v1/schema';
 import dayjs from '../../../../lib/dayjs';
 import { getDAGRunScheduleSortValue } from '../../../../lib/dagRunTiming';
+import RelativeTime from '@/components/ui/relative-time';
 import StatusChip from '@/components/ui/status-chip';
 import AutoRetryBadge from '../common/AutoRetryBadge';
 import {
@@ -14,12 +15,14 @@ import {
   getDAGRunSelectionKey,
 } from '../../hooks/useBulkDAGRunSelection';
 import { StepDetailsTooltip } from './StepDetailsTooltip';
+import { DAGRunArtifactsButton } from './DAGRunArtifactsButton';
 
 interface DAGRunGroupedViewProps {
   dagRuns: components['schemas']['DAGRunSummary'][];
   selectedRunKeys?: Set<string>;
   selectedDAGRun?: { name: string; dagRunId: string } | null;
   onSelectDAGRun?: (dagRun: { name: string; dagRunId: string } | null) => void;
+  onViewArtifacts?: (dagRun: DAGRunSelectionItem) => void;
   onToggleBulkSelect?: (dagRun: DAGRunSelectionItem) => void;
 }
 
@@ -32,6 +35,7 @@ function DAGRunGroupedView({
   selectedRunKeys,
   selectedDAGRun = null,
   onSelectDAGRun,
+  onViewArtifacts,
   onToggleBulkSelect,
 }: DAGRunGroupedViewProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -323,13 +327,19 @@ function DAGRunGroupedView({
                                   <span className="text-muted-foreground">
                                     Queued:{' '}
                                   </span>
-                                  {dagRun.queuedAt || '-'}
+                                  <RelativeTime
+                                    timestamp={dagRun.queuedAt}
+                                    absolute={dagRun.queuedAt}
+                                  />
                                 </div>
                                 <div className="whitespace-nowrap">
                                   <span className="text-muted-foreground">
                                     Started:{' '}
                                   </span>
-                                  {dagRun.startedAt || '-'}
+                                  <RelativeTime
+                                    timestamp={dagRun.startedAt}
+                                    absolute={dagRun.startedAt}
+                                  />
                                 </div>
                                 <div className="flex items-center gap-1 whitespace-nowrap">
                                   <span className="text-muted-foreground">
@@ -348,7 +358,13 @@ function DAGRunGroupedView({
                               </div>
                             </div>
                           </div>
-                          <div className="flex-shrink-0 mt-0.5">
+                          <div className="mt-0.5 flex flex-shrink-0 items-start gap-2">
+                            {onViewArtifacts && (
+                              <DAGRunArtifactsButton
+                                dagRun={dagRun}
+                                onClick={() => onViewArtifacts(dagRun)}
+                              />
+                            )}
                             <StepDetailsTooltip dagRun={dagRun}>
                               <div className="flex flex-col items-end gap-1">
                                 <StatusChip status={dagRun.status} size="xs">

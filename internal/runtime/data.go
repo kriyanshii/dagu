@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/internal/cmn/collections"
-	"github.com/dagucloud/dagu/internal/cmn/eval"
 	"github.com/dagucloud/dagu/internal/cmn/stringutil"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 )
@@ -42,6 +42,8 @@ type NodeState struct {
 	Stderr string
 	// WorkingDir is the effective working directory used for this node execution.
 	WorkingDir string
+	// StepOutputFile is the DAGU_OUTPUT_FILE path for the current step attempt.
+	StepOutputFile string
 	// StartedAt is the time when the node started.
 	StartedAt time.Time
 	// FinishedAt is the time when the node finished.
@@ -78,8 +80,10 @@ type NodeState struct {
 	// OutputValue stores the step-scoped output payload for ${step.output} references.
 	// String-form output stores captured stdout; object-form output stores compact JSON.
 	OutputValue *string
-	// OutputsValue stores the DAG/action outputs payload for ${step.outputs} references.
+	// OutputsValue stores the legacy DAG/action outputs payload.
 	OutputsValue *string
+	// StepOutputsValue stores declared file-based outputs for ${steps.<id>.outputs.<name>} references.
+	StepOutputsValue *string
 	// ChatMessages stores the chat session messages for message passing between steps.
 	ChatMessages []exec.LLMMessage
 	// ToolDefinitions stores the tool definitions that were available to the LLM during execution.
@@ -270,7 +274,7 @@ func (d *Data) Setup(ctx context.Context, logFile string, startedAt time.Time) e
 	d.inner.State.StartedAt = startedAt
 
 	if d.inner.Step.StdoutArtifact != "" {
-		stdout, err := EvalStepString(ctx, d.inner.Step.StdoutArtifact, eval.WithoutDollarEscape())
+		stdout, err := resolveRuntimeString(ctx, d.inner.Step.StdoutArtifact, cmnvalue.StepArtifactOutputField("stdout.artifact"))
 		if err != nil {
 			return fmt.Errorf("failed to evaluate stdout artifact field: %w", err)
 		}
@@ -280,7 +284,7 @@ func (d *Data) Setup(ctx context.Context, logFile string, startedAt time.Time) e
 		}
 		d.inner.Step.Stdout = stdout
 	} else {
-		stdout, err := EvalStepString(ctx, d.inner.Step.Stdout, eval.WithoutDollarEscape())
+		stdout, err := resolveRuntimeString(ctx, d.inner.Step.Stdout, cmnvalue.StepArtifactOutputField("stdout"))
 		if err != nil {
 			return fmt.Errorf("failed to evaluate stdout field: %w", err)
 		}
@@ -288,7 +292,7 @@ func (d *Data) Setup(ctx context.Context, logFile string, startedAt time.Time) e
 	}
 
 	if d.inner.Step.StderrArtifact != "" {
-		stderr, err := EvalStepString(ctx, d.inner.Step.StderrArtifact, eval.WithoutDollarEscape())
+		stderr, err := resolveRuntimeString(ctx, d.inner.Step.StderrArtifact, cmnvalue.StepArtifactOutputField("stderr.artifact"))
 		if err != nil {
 			return fmt.Errorf("failed to evaluate stderr artifact field: %w", err)
 		}
@@ -298,7 +302,7 @@ func (d *Data) Setup(ctx context.Context, logFile string, startedAt time.Time) e
 		}
 		d.inner.Step.Stderr = stderr
 	} else {
-		stderr, err := EvalStepString(ctx, d.inner.Step.Stderr, eval.WithoutDollarEscape())
+		stderr, err := resolveRuntimeString(ctx, d.inner.Step.Stderr, cmnvalue.StepArtifactOutputField("stderr"))
 		if err != nil {
 			return fmt.Errorf("failed to evaluate stderr field: %w", err)
 		}
@@ -329,11 +333,11 @@ func (d *Data) SetStatus(s core.NodeStatus) {
 	d.inner.State.Status = s
 }
 
-func (d *Data) StepInfo() eval.StepInfo {
+func (d *Data) StepInfo() cmnvalue.StepInfo {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	info := eval.StepInfo{
+	info := cmnvalue.StepInfo{
 		Stdout:   d.inner.State.Stdout,
 		Stderr:   d.inner.State.Stderr,
 		ExitCode: strconv.Itoa(d.inner.State.ExitCode),
@@ -351,7 +355,12 @@ func (d *Data) StepInfo() eval.StepInfo {
 			info.Output = &value
 		}
 	}
-	if d.inner.State.OutputsValue != nil {
+	if d.inner.State.StepOutputsValue != nil {
+		value := *d.inner.State.StepOutputsValue
+		info.Outputs = &value
+		info.DeclaredOutputs = &value
+	}
+	if info.Outputs == nil && d.inner.State.OutputsValue != nil {
 		value := *d.inner.State.OutputsValue
 		info.Outputs = &value
 	}
@@ -380,6 +389,17 @@ func (d NodeData) OutputsValueStringMap() map[string]string {
 		result[key] = outputValueToString(value)
 	}
 	return result
+}
+
+func (d NodeData) StepOutputsValueMap() map[string]string {
+	if d.State.StepOutputsValue == nil {
+		return nil
+	}
+	var values map[string]string
+	if err := json.Unmarshal([]byte(*d.State.StepOutputsValue), &values); err != nil {
+		return nil
+	}
+	return values
 }
 
 func outputValueToString(value any) string {
@@ -564,6 +584,35 @@ func (d *Data) clearOutputsValue() {
 	defer d.mu.Unlock()
 
 	d.inner.State.OutputsValue = nil
+}
+
+func (d *Data) setStepOutputsValue(value string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	v := value
+	d.inner.State.StepOutputsValue = &v
+}
+
+func (d *Data) clearStepOutputsValue() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.inner.State.StepOutputsValue = nil
+}
+
+func (d *Data) setStepOutputFile(path string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.inner.State.StepOutputFile = path
+}
+
+func (d *Data) stepOutputFile() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.inner.State.StepOutputFile
 }
 
 func (d *Data) Finish() {

@@ -32,10 +32,9 @@ steps:
   - name: echo
     run: echo hello
 `).Enqueue(3).StartScheduler(30 * time.Second)
+	defer f.Stop()
 
-	f.WaitDrain(35 * time.Second)
-	f.WaitForAllStatuses(core.Succeeded, 20*time.Second)
-	f.Stop()
+	f.WaitForAllStatusesAndDrain(core.Succeeded, 20*time.Second, 35*time.Second)
 
 	items, err := f.th.QueueStore.List(f.th.Context, f.queue)
 	require.NoError(t, err)
@@ -166,10 +165,9 @@ steps:
 		EnqueueWithPriority(exec.QueuePriorityHigh).
 		EnqueueWithPriority(exec.QueuePriorityHigh).
 		StartScheduler(30 * time.Second)
+	defer f.Stop()
 
-	f.WaitDrain(35 * time.Second)
-	f.WaitForAllStatuses(core.Succeeded, 20*time.Second)
-	f.Stop()
+	f.WaitForAllStatusesAndDrain(core.Succeeded, 20*time.Second, 35*time.Second)
 
 	times := f.collectStartTimes()
 	require.Len(t, times, 4)
@@ -528,17 +526,16 @@ steps:
 }
 
 func TestSchedulerCatchupFromPersistedWatermark(t *testing.T) {
-	scheduledTime := stableCurrentMinute(t)
-
 	f := newFixture(t, `
 name: catchup-watermark-test
 schedule: "* * * * *"
-catchup_window: "2m"
+catchup_window: "10m"
 steps:
   - name: echo-step
     run: echo catchup-from-watermark
 `)
 
+	scheduledTime := time.Now().UTC().Truncate(time.Minute)
 	f.seedWatermark(scheduledTime.Add(-time.Minute), scheduledTime.Add(-time.Minute))
 	f.StartScheduler(45 * time.Second)
 	defer f.Stop()
@@ -579,15 +576,4 @@ func retryScanReferenceMidnight(now time.Time) time.Time {
 		return midnight.Add(-24 * time.Hour)
 	}
 	return midnight
-}
-
-func stableCurrentMinute(t *testing.T) time.Time {
-	t.Helper()
-
-	now := time.Now().UTC()
-	if now.Second() >= 50 {
-		return now.Truncate(time.Minute).Add(-time.Minute)
-	}
-
-	return now.Truncate(time.Minute)
 }

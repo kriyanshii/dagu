@@ -22,8 +22,7 @@ steps:
 `)
 
 		th.RunCommand(t, cmd.Validate(), test.CmdTest{
-			Args:        []string{"validate", dag.Location},
-			ExpectedOut: []string{"DAG spec is valid"},
+			Args: []string{"validate", dag.Location},
 		})
 	})
 
@@ -54,8 +53,7 @@ steps:
 `)
 
 		th.RunCommand(t, cmd.Validate(), test.CmdTest{
-			Args:        []string{"validate", dagFile},
-			ExpectedOut: []string{"DAG spec is valid"},
+			Args: []string{"validate", dagFile},
 		})
 	})
 
@@ -68,7 +66,40 @@ steps:
 
 		th.RunCommand(t, cmd.Validate(), test.CmdTest{
 			Args:        []string{"validate", dagFile},
-			ExpectedOut: []string{"DAG spec is valid", "deprecated", "steps[0].command", "use run"},
+			ExpectedOut: []string{"deprecated", "steps[0].command", "use run"},
+		})
+	})
+
+	t.Run("ValueReferenceNotices", func(t *testing.T) {
+		th.LoggingOutput.Reset()
+		dagFile := th.CreateDAGFile(t, "value_resolution_notice.yaml", `
+consts:
+  - image: ${consts.missing}
+steps:
+  - run: echo ok
+`)
+
+		th.RunCommand(t, cmd.Validate(), test.CmdTest{
+			Args:        []string{"validate", dagFile},
+			ExpectedOut: []string{"${consts.missing}", "was left unchanged", "consts.image"},
+		})
+	})
+
+	t.Run("StepOutputValueReferenceNoticeReason", func(t *testing.T) {
+		th.LoggingOutput.Reset()
+		dagFile := th.CreateDAGFile(t, "step_value_resolution_notice.yaml", `
+steps:
+  - id: build
+    run: printf 'image=v1\n' >> "$DAGU_OUTPUT_FILE"
+    outputs:
+      - name: image
+  - id: deploy
+    run: echo ${steps.build.outputs.image}
+`)
+
+		th.RunCommand(t, cmd.Validate(), test.CmdTest{
+			Args:        []string{"validate", dagFile},
+			ExpectedOut: []string{"${steps.build.outputs.image}", "was left unchanged", "reason=missing_dependency"},
 		})
 	})
 
@@ -80,8 +111,7 @@ steps:
 `)
 
 		th.RunCommand(t, cmd.Validate(), test.CmdTest{
-			Args:        []string{"validate", dagFile},
-			ExpectedOut: []string{"DAG spec is valid"},
+			Args: []string{"validate", dagFile},
 		})
 		require.NotContains(t, th.LoggingOutput.String(), "deprecated")
 	})
@@ -133,6 +163,21 @@ steps:
 		})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "Validation failed")
+	})
+
+	t.Run("ResolvedPathValidationErrorUsesResolvedLocation", func(t *testing.T) {
+		dagFile := th.CreateDAGFile(t, "resolved_path.yaml", `
+name: invalid-entrypoint-name
+steps:
+  - run: echo ok
+`)
+
+		err := th.RunCommandWithError(t, cmd.Validate(), test.CmdTest{
+			Args: []string{"validate", "resolved_path.yaml"},
+		})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "Validation failed for "+dagFile)
+		require.NotContains(t, err.Error(), "Validation failed for resolved_path.yaml")
 	})
 
 	t.Run("MissingFile", func(t *testing.T) {

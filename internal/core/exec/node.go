@@ -18,24 +18,25 @@ type PushBackEntry struct {
 
 // Node represents a DAG step with its execution state for persistence
 type Node struct {
-	Step            core.Step            `json:"step,omitzero"`
-	Stdout          string               `json:"stdout"` // standard output log file path
-	Stderr          string               `json:"stderr"` // standard error log file path
-	WorkingDir      string               `json:"workingDir,omitempty"`
-	StartedAt       string               `json:"startedAt"`
-	FinishedAt      string               `json:"finishedAt"`
-	Status          core.NodeStatus      `json:"status"`
-	RetriedAt       string               `json:"retriedAt,omitempty"`
-	RetryCount      int                  `json:"retryCount,omitempty"`
-	DoneCount       int                  `json:"doneCount,omitempty"`
-	Repeated        bool                 `json:"repeated,omitempty"` // indicates if the node has been repeated
-	SkippedByRetry  bool                 `json:"skippedByRetry,omitempty"`
-	Error           string               `json:"error,omitempty"`
-	SubRuns         []SubDAGRun          `json:"children,omitempty"`
-	SubRunsRepeated []SubDAGRun          `json:"childrenRepeated,omitempty"` // repeated sub DAG runs
-	OutputVariables *collections.SyncMap `json:"outputVariables,omitempty"`
-	OutputValue     *string              `json:"outputValue,omitempty"`
-	OutputsValue    *string              `json:"outputsValue,omitempty"`
+	Step             core.Step            `json:"step,omitzero"`
+	Stdout           string               `json:"stdout"` // standard output log file path
+	Stderr           string               `json:"stderr"` // standard error log file path
+	WorkingDir       string               `json:"workingDir,omitempty"`
+	StartedAt        string               `json:"startedAt"`
+	FinishedAt       string               `json:"finishedAt"`
+	Status           core.NodeStatus      `json:"status"`
+	RetriedAt        string               `json:"retriedAt,omitempty"`
+	RetryCount       int                  `json:"retryCount,omitempty"`
+	DoneCount        int                  `json:"doneCount,omitempty"`
+	Repeated         bool                 `json:"repeated,omitempty"` // indicates if the node has been repeated
+	SkippedByRetry   bool                 `json:"skippedByRetry,omitempty"`
+	Error            string               `json:"error,omitempty"`
+	SubRuns          []SubDAGRun          `json:"children,omitempty"`
+	SubRunsRepeated  []SubDAGRun          `json:"childrenRepeated,omitempty"` // repeated sub DAG runs
+	OutputVariables  *collections.SyncMap `json:"outputVariables,omitempty"`
+	OutputValue      *string              `json:"outputValue,omitempty"`
+	OutputsValue     *string              `json:"outputsValue,omitempty"`
+	StepOutputsValue *string              `json:"stepOutputsValue,omitempty"`
 	// ApprovedAt records when this wait step was approved
 	ApprovedAt string `json:"approvedAt,omitempty"`
 	// ApprovalInputs stores key-value parameters provided during approval
@@ -60,7 +61,7 @@ type Node struct {
 	PushBackPreviousStdout string `json:"pushBackPreviousStdout,omitempty"`
 	// ChatMessages stores the session messages for chat/LLM steps.
 	// This field is populated during execution and synced via status updates
-	// in shared-nothing mode where workers don't have filesystem access.
+	// from workers.
 	ChatMessages []LLMMessage `json:"chatMessages,omitempty"`
 	// ToolDefinitions stores the tool definitions that were available to the LLM.
 	// This enables debugging visibility into what tools and schemas were sent.

@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
-	"github.com/dagucloud/dagu/internal/cmn/eval"
 	"github.com/dagucloud/dagu/internal/cmn/logger"
 	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"go.opentelemetry.io/otel"
@@ -65,6 +65,7 @@ type Runner struct {
 	dagRunIsRoot         bool
 
 	canceled  int32
+	failed    int32
 	mu        sync.RWMutex
 	pause     time.Duration
 	lastError error
@@ -133,6 +134,7 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 	if err := r.setup(ctx); err != nil {
 		return err
 	}
+	r.resetRunState(plan)
 
 	// Create a cancellable context for the entire execution
 	var cancel context.CancelFunc
@@ -150,11 +152,21 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 
 	// If one of the conditions does not met, cancel the execution.
 	rCtx := GetDAGContext(ctx)
-	// Get evaluated shell for DAG-level preconditions (no step context needed)
-	shell := DAGShell(ctx)
-	if err := EvalConditions(ctx, shell, rCtx.DAG.Preconditions); err != nil {
-		logger.Info(ctx, "Preconditions are not met", tag.Error(err))
-		r.Cancel(plan)
+	if len(rCtx.DAG.Preconditions) > 0 {
+		shell, err := ResolveDAGShell(ctx)
+		if err != nil {
+			logger.Info(ctx, "Preconditions are not met", tag.Error(err))
+			r.setLastError(err)
+			r.setFailed()
+			r.Cancel(plan)
+		} else if err := EvalConditions(ctx, shell, rCtx.DAG.Preconditions); err != nil {
+			logger.Info(ctx, "Preconditions are not met", tag.Error(err))
+			if !errors.Is(err, ErrConditionNotMet) {
+				r.setLastError(err)
+				r.setFailed()
+			}
+			r.Cancel(plan)
+		}
 	}
 
 	// Execute init handler after preconditions pass, before steps
@@ -244,8 +256,6 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 			go func(n *Node) {
 				// Set step context for all logs in this goroutine
 				ctx := logger.WithValues(ctx, tag.Step(n.Name()))
-				// Anything evaluated during Prepare must see the node's real pre-execution env.
-				ctx = r.setupVariables(ctx, plan, n)
 
 				// Ensure node is finished and wg is decremented
 				defer r.finishNode(n, &wg)
@@ -255,6 +265,16 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 				defer func() {
 					doneCh <- n
 				}()
+
+				// Anything evaluated during Prepare must see the node's real pre-execution env.
+				var err error
+				ctx, err = r.setupVariables(ctx, plan, n)
+				if err != nil {
+					r.setLastError(err)
+					n.MarkError(err)
+					n.SetStatus(core.NodeFailed)
+					return
+				}
 
 				if err := r.prepareNode(ctx, n); err != nil {
 					r.setLastError(err)
@@ -338,7 +358,7 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 			)
 
 			if err := r.runEventHandler(ctx, plan, handlerNode, map[string]string{
-				"DAG_WAITING_STEPS": waitingSteps,
+				exec.EnvKeyDAGWaitingSteps: waitingSteps,
 			}); err != nil {
 				// Log error but don't fail - notification failure shouldn't block Wait status
 				logger.Error(ctx, "onWait handler failed", tag.Error(err))
@@ -470,10 +490,31 @@ func (r *Runner) runNodeExecution(ctx context.Context, plan *Plan, node *Node, p
 
 	ctx = spanCtx
 	ctx = r.setupNodeExecutionEnv(ctx, node)
+	preparedNodeTornDown := false
+	teardownPreparedNode := func() {
+		if preparedNodeTornDown {
+			return
+		}
+		preparedNodeTornDown = true
+		r.teardownPreparedNode(node)
+	}
+	reportPreparedNode := func() {
+		teardownPreparedNode()
+		if progressCh != nil {
+			progressCh <- node
+		}
+	}
+	defer teardownPreparedNode()
 
 	// Check preconditions
 	logger.Debug(ctx, "Checking preconditions")
-	if !meetsPreconditions(ctx, node, progressCh) {
+	met, err := meetsPreconditions(ctx, node, progressCh)
+	if err != nil {
+		r.setLastError(err)
+		r.Cancel(plan)
+		return
+	}
+	if !met {
 		return
 	}
 
@@ -490,9 +531,7 @@ ExecRepeat: // repeat execution
 			continue ExecRepeat
 		}
 		if node.State().Status == core.NodeRetrying {
-			if progressCh != nil {
-				progressCh <- node
-			}
+			reportPreparedNode()
 			return
 		}
 
@@ -507,7 +546,7 @@ ExecRepeat: // repeat execution
 		}
 
 		if execErr != nil && progressCh != nil {
-			progressCh <- node
+			reportPreparedNode()
 			return
 		}
 
@@ -542,14 +581,7 @@ ExecRepeat: // repeat execution
 		r.saveChatMessages(ctx, node)
 	}
 
-	if err := r.teardownNode(node); err != nil {
-		r.setLastError(err)
-		node.SetStatus(core.NodeFailed)
-	}
-
-	if progressCh != nil {
-		progressCh <- node
-	}
+	reportPreparedNode()
 }
 
 // setupNodeExecutionEnv prepares the runtime-managed step env before
@@ -617,6 +649,13 @@ func (r *Runner) teardownNode(node *Node) error {
 		return nil
 	}
 	return node.Teardown()
+}
+
+func (r *Runner) teardownPreparedNode(node *Node) {
+	if err := r.teardownNode(node); err != nil {
+		r.setLastError(err)
+		node.SetStatus(core.NodeFailed)
+	}
 }
 
 // setupChatMessages loads and merges chat messages from dependent steps.
@@ -710,81 +749,18 @@ func (r *Runner) setupPushBackConversation(ctx context.Context, node *Node) {
 
 func stepSupportsChatMessages(step core.Step) bool {
 	executorType := step.ExecutorConfig.Type
-	if core.SupportsLLM(executorType) || core.SupportsAgent(executorType) {
-		return true
-	}
-	if executorType != "harness" {
-		return false
-	}
-	return harnessConfigHasBuiltinProvider(step.ExecutorConfig.Config)
+	return core.SupportsLLM(executorType)
 }
 
-func harnessConfigHasBuiltinProvider(cfg map[string]any) bool {
-	if cfg == nil {
-		return false
+func (r *Runner) setupVariables(ctx context.Context, plan *Plan, node *Node) (context.Context, error) {
+	env, err := NewPlanEnvForNodeWithError(ctx, node, plan)
+	if err != nil {
+		return ctx, err
 	}
-	provider, _ := cfg["provider"].(string)
-	if provider == core.HarnessProviderBuiltin {
-		return true
-	}
-	switch fallbacks := cfg["fallback"].(type) {
-	case []any:
-		for _, fallback := range fallbacks {
-			fallbackCfg, ok := fallback.(map[string]any)
-			if !ok {
-				continue
-			}
-			provider, _ := fallbackCfg["provider"].(string)
-			if provider == core.HarnessProviderBuiltin {
-				return true
-			}
-		}
-	case []map[string]any:
-		for _, fallbackCfg := range fallbacks {
-			provider, _ := fallbackCfg["provider"].(string)
-			if provider == core.HarnessProviderBuiltin {
-				return true
-			}
-		}
-	default:
-		return false
-	}
-	return false
-}
-
-func (r *Runner) setupVariables(ctx context.Context, plan *Plan, node *Node) context.Context {
-	env := NewPlanEnv(ctx, node.Step(), plan)
 	node.SetWorkingDir(env.WorkingDir)
 
-	// Load output variables and approval inputs from predecessor nodes (dependencies)
-	// This traverses backwards from the current node to find all nodes it depends on
-	curr := node.id
-	visited := make(map[int]struct{})
-	queue := []int{}
-
-	// Start with direct dependencies (nodes this node depends on)
-	queue = append(queue, plan.Dependencies(curr)...)
-
-	// Traverse all predecessor nodes
-	for len(queue) > 0 {
-		predID := queue[0]
-		queue = queue[1:]
-
-		if _, ok := visited[predID]; ok {
-			continue
-		}
-		visited[predID] = struct{}{}
-
-		// Add this node's dependencies to the queue
-		queue = append(queue, plan.Dependencies(predID)...)
-
-		// Load output variables from this predecessor node
-		// (includes approval inputs which are stored in OutputVariables)
-		predNode := plan.GetNode(predID)
-		if predNode == nil {
-			continue
-		}
-
+	// Load output variables and approval inputs from predecessor nodes.
+	for _, predNode := range planPredecessorNodes(plan, node) {
 		// Add predecessor outputs to scope
 		if outputs := predNode.OutputVariablesMap(); len(outputs) > 0 {
 			stepID := predNode.Step().ID
@@ -795,38 +771,42 @@ func (r *Runner) setupVariables(ctx context.Context, plan *Plan, node *Node) con
 		}
 	}
 
-	// Helper to evaluate and store environment variables
-	addEnvVars := func(envList []string) {
-		for _, v := range envList {
-			key, value, found := strings.Cut(v, "=")
-			if !found {
-				logger.Error(ctx, "Invalid environment variable format", slog.String("var", v))
-				continue
-			}
-			evaluatedValue, err := env.EvalString(ctx, value)
-			if err != nil {
-				logger.Error(ctx, "Failed to evaluate environment variable",
-					slog.String("var", v),
-					tag.Error(err),
-				)
-				continue
-			}
-			env.Scope = env.Scope.WithEntry(key, evaluatedValue, eval.EnvSourceStepEnv)
-		}
-	}
-
 	// Add step-level environment variables
-	addEnvVars(node.Step().Env)
+	if err := addResolvedEnvVars(ctx, &env, node.Step().Env, "env.", cmnvalue.StepEnvField); err != nil {
+		return ctx, err
+	}
 
 	// Add container environment variables (step-level takes precedence over DAG-level)
 	// This ensures container env vars are available when evaluating command arguments
 	if ct := node.Step().Container; ct != nil {
-		addEnvVars(ct.Env)
+		if err := addResolvedEnvVars(ctx, &env, ct.Env, "container.env.", cmnvalue.ContainerEnvField); err != nil {
+			return ctx, err
+		}
 	} else if dag := env.DAG; dag != nil && dag.Container != nil {
-		addEnvVars(dag.Container.Env)
+		if err := addResolvedEnvVars(ctx, &env, dag.Container.Env, "container.env.", cmnvalue.ContainerEnvField); err != nil {
+			return ctx, err
+		}
+	}
+	if _, err := env.ResolveShell(ctx); err != nil {
+		return ctx, err
 	}
 
-	return WithEnv(ctx, env)
+	return WithEnv(ctx, env), nil
+}
+
+func addResolvedEnvVars(ctx context.Context, env *Env, envList []string, fieldPrefix string, fieldForKey func(string) cmnvalue.Field) error {
+	for _, v := range envList {
+		key, value, found := strings.Cut(v, "=")
+		if !found {
+			return fmt.Errorf("invalid environment variable format %q", v)
+		}
+		evaluatedValue, err := resolverFromEnv(*env).String(ctx, value, fieldForKey(fieldPrefix+key))
+		if err != nil {
+			return fmt.Errorf("failed to evaluate environment variable %q: %w", v, err)
+		}
+		env.Scope = env.Scope.WithEntry(key, evaluatedValue, cmnvalue.EnvSourceStepEnv)
+	}
+	return nil
 }
 
 func (r *Runner) setupEnvironEventHandler(
@@ -834,31 +814,42 @@ func (r *Runner) setupEnvironEventHandler(
 	plan *Plan,
 	node *Node,
 	extraEnvs map[string]string,
-) context.Context {
+) (context.Context, error) {
 	// Preserve any extra env vars from the incoming context (e.g., DAG_WAITING_STEPS)
 	existingEnv := GetEnv(ctx)
 
-	env := NewPlanEnv(ctx, node.Step(), plan)
+	env, err := NewPlanEnvWithError(ctx, node.Step(), plan)
+	if err != nil {
+		return ctx, err
+	}
+	disableDeclaredStepOutputs(&env)
 	node.SetWorkingDir(env.WorkingDir)
 
 	// Add DAG_RUN_STATUS to scope
 	env.Scope = env.Scope.WithEntry(
 		exec.EnvKeyDAGRunStatus,
 		r.Status(ctx, plan).String(),
-		eval.EnvSourceStepEnv,
+		cmnvalue.EnvSourceStepEnv,
 	)
 
 	// Copy extra env vars from existing scope that aren't already set
 	if existingEnv.Scope != nil {
-		for k, v := range existingEnv.Scope.AllBySource(eval.EnvSourceStepEnv) {
+		for k, v := range existingEnv.Scope.AllBySource(cmnvalue.EnvSourceStepEnv) {
 			if _, exists := env.Scope.Get(k); !exists {
-				env.Scope = env.Scope.WithEntry(k, v, eval.EnvSourceStepEnv)
+				env.Scope = env.Scope.WithEntry(k, v, cmnvalue.EnvSourceStepEnv)
 			}
 		}
 	}
 
 	for k, v := range extraEnvs {
-		env.Scope = env.Scope.WithEntry(k, v, eval.EnvSourceStepEnv)
+		env.Scope = env.Scope.WithEntry(k, v, cmnvalue.EnvSourceStepEnv)
+	}
+
+	if err := addResolvedEnvVars(ctx, &env, node.Step().Env, "env.", cmnvalue.StepEnvField); err != nil {
+		return ctx, err
+	}
+	if _, err := env.ResolveShell(ctx); err != nil {
+		return ctx, err
 	}
 
 	// Load all output variables from all nodes
@@ -872,7 +863,17 @@ func (r *Runner) setupEnvironEventHandler(
 		}
 	}
 
-	return WithEnv(ctx, env)
+	return WithEnv(ctx, env), nil
+}
+
+func disableDeclaredStepOutputs(env *Env) {
+	if env == nil {
+		return
+	}
+	for id, info := range env.StepMap {
+		info.DeclaredOutputs = nil
+		env.StepMap[id] = info
+	}
 }
 
 func (r *Runner) execNode(ctx context.Context, node *Node, progressCh chan *Node) error {
@@ -902,12 +903,13 @@ func (r *Runner) Stop(
 ) {
 	isTermination := intent.IsTermination()
 
-	// Set canceled flag FIRST so execution loops see it immediately.
-	// This prevents a race where the execution loop checks isCanceled()
-	// before we've set the flag, causing it to mark nodes as Succeeded
-	// instead of Aborted.
-	if !r.isCanceled() && isTermination {
-		r.setCanceled()
+	// Record termination before inspecting nodes so execution that has not
+	// started yet observes the request.
+	if isTermination {
+		plan.requestCancel()
+		if !r.isCanceled() {
+			r.setCanceled()
+		}
 	}
 
 	for _, node := range plan.Nodes() {
@@ -934,6 +936,7 @@ func (r *Runner) Stop(
 
 // Cancel sends -1 signal to all nodes.
 func (r *Runner) Cancel(p *Plan) {
+	p.requestCancel()
 	r.setCanceled()
 	for _, node := range p.Nodes() {
 		node.Cancel()
@@ -942,6 +945,9 @@ func (r *Runner) Cancel(p *Plan) {
 
 // Status returns the status of the runner.
 func (r *Runner) Status(ctx context.Context, p *Plan) core.Status {
+	if r.isFailed() {
+		return core.Failed
+	}
 	if r.isCanceled() && !r.isSucceed(p) {
 		return core.Aborted
 	}
@@ -1006,6 +1012,12 @@ func (r *Runner) isCanceled() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.canceled == 1
+}
+
+func (r *Runner) isFailed() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.failed == 1
 }
 
 func isReady(ctx context.Context, plan *Plan, node *Node) bool {
@@ -1090,19 +1102,26 @@ func (r *Runner) runEventHandler(ctx context.Context, plan *Plan, node *Node, ex
 		return nil
 	}
 
-	// Handler stdout/stderr paths are also evaluated during Prepare, so attach the
-	// complete handler env before preparing the node.
-	ctx = r.setupEnvironEventHandler(ctx, plan, node, extraEnvs)
+	var err error
+	ctx, err = r.setupEnvironEventHandler(ctx, plan, node, extraEnvs)
+	if err != nil {
+		node.SetStatus(core.NodeFailed)
+		return err
+	}
 
 	if err := node.Prepare(ctx, r.logDir, r.dagRunID); err != nil {
 		node.SetStatus(core.NodeFailed)
-		return nil
+		return err
 	}
 	defer func() { _ = node.Teardown() }()
 
 	if err := node.evalPreconditions(ctx); err != nil {
-		node.SetStatus(core.NodeSkipped)
-		return nil
+		if errors.Is(err, ErrConditionNotMet) {
+			node.SetStatus(core.NodeSkipped)
+			return nil
+		}
+		node.SetStatus(core.NodeFailed)
+		return err
 	}
 
 	node.SetStatus(core.NodeRunning)
@@ -1158,6 +1177,23 @@ func (r *Runner) setCanceled() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.canceled = 1
+}
+
+func (r *Runner) setFailed() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failed = 1
+}
+
+func (r *Runner) resetRunState(plan *Plan) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.canceled = 0
+	if plan.isCancelRequested() {
+		r.canceled = 1
+	}
+	r.failed = 0
+	r.lastError = nil
 }
 
 func (r *Runner) isSucceed(p *Plan) bool {
@@ -1368,20 +1404,24 @@ func externalStepRetryEnabled(ctx context.Context) bool {
 }
 
 // checkPreconditions evaluates the preconditions for a node and updates its status accordingly.
-func meetsPreconditions(ctx context.Context, node *Node, progressCh chan *Node) bool {
+func meetsPreconditions(ctx context.Context, node *Node, progressCh chan *Node) (bool, error) {
 	err := node.evalPreconditions(ctx)
 	if err != nil {
-		// Precondition not met, skip the node
-		node.SetStatus(core.NodeSkipped)
-		if !errors.Is(err, ErrConditionNotMet) {
-			node.SetError(err)
+		if errors.Is(err, ErrConditionNotMet) {
+			node.SetStatus(core.NodeSkipped)
+			if progressCh != nil {
+				progressCh <- node
+			}
+			return false, nil
 		}
+		node.SetStatus(core.NodeFailed)
+		node.SetError(err)
 		if progressCh != nil {
 			progressCh <- node
 		}
-		return false
+		return false, err
 	}
-	return true
+	return true, nil
 }
 
 // handleNodeExecutionError handles the error from node execution and determines if it should be retried.
@@ -1431,7 +1471,7 @@ func (r *Runner) handleNodeExecutionError(ctx context.Context, plan *Plan, node 
 		r.setLastError(execErr)
 
 	case r.isCanceled():
-		r.setLastError(execErr)
+		node.SetStatus(core.NodeAborted)
 
 	case node.retryPolicy.Limit > node.GetRetryCount():
 		if r.shouldRetryNode(ctx, node, execErr) {
@@ -1546,10 +1586,92 @@ func (r *Runner) prepareNodeForRepeat(ctx context.Context, node *Node, progressC
 
 func NewPlanEnv(ctx context.Context, step core.Step, plan *Plan) Env {
 	env := NewEnv(ctx, step)
+	addInheritedStepMap(ctx, &env)
+	addPlanStepsToEnv(&env, plan)
+	return env
+}
+
+func NewPlanEnvWithError(ctx context.Context, step core.Step, plan *Plan) (Env, error) {
+	env, err := NewEnvWithError(ctx, step)
+	if err != nil {
+		return Env{}, err
+	}
+	addInheritedStepMap(ctx, &env)
+	addPlanStepsToEnv(&env, plan)
+	return env, nil
+}
+
+func NewPlanEnvForNode(ctx context.Context, node *Node, plan *Plan) Env {
+	env := NewEnv(ctx, node.Step())
+	addInheritedStepMap(ctx, &env)
+	addPlanPredecessorStepsToEnv(&env, plan, node)
+	return env
+}
+
+func NewPlanEnvForNodeWithError(ctx context.Context, node *Node, plan *Plan) (Env, error) {
+	env, err := NewEnvWithError(ctx, node.Step())
+	if err != nil {
+		return Env{}, err
+	}
+	addInheritedStepMap(ctx, &env)
+	addPlanPredecessorStepsToEnv(&env, plan, node)
+	return env, nil
+}
+
+func addInheritedStepMap(ctx context.Context, env *Env) {
+	if env == nil {
+		return
+	}
+	inherited, ok := LookupEnv(ctx)
+	if !ok || len(inherited.StepMap) == 0 {
+		return
+	}
+	if env.StepMap == nil {
+		env.StepMap = make(map[string]cmnvalue.StepInfo, len(inherited.StepMap))
+	}
+	for id, info := range inherited.StepMap {
+		if _, exists := env.StepMap[id]; !exists {
+			env.StepMap[id] = info
+		}
+	}
+}
+
+func addPlanStepsToEnv(env *Env, plan *Plan) {
 	for _, n := range plan.Nodes() {
 		if n.Step().ID != "" {
 			env.StepMap[n.Step().ID] = n.StepInfo()
 		}
 	}
-	return env
+}
+
+func addPlanPredecessorStepsToEnv(env *Env, plan *Plan, node *Node) {
+	for _, n := range planPredecessorNodes(plan, node) {
+		if n.Step().ID != "" {
+			env.StepMap[n.Step().ID] = n.StepInfo()
+		}
+	}
+}
+
+func planPredecessorNodes(plan *Plan, node *Node) []*Node {
+	if plan == nil || node == nil {
+		return nil
+	}
+
+	visited := make(map[int]struct{})
+	queue := append([]int(nil), plan.Dependencies(node.ID())...)
+	var nodes []*Node
+	for len(queue) > 0 {
+		predID := queue[0]
+		queue = queue[1:]
+		if _, ok := visited[predID]; ok {
+			continue
+		}
+		visited[predID] = struct{}{}
+		queue = append(queue, plan.Dependencies(predID)...)
+		predNode := plan.GetNode(predID)
+		if predNode != nil {
+			nodes = append(nodes, predNode)
+		}
+	}
+	return nodes
 }

@@ -5,10 +5,8 @@ package sse
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +14,6 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/remotenode"
 	"github.com/dagucloud/dagu/internal/service/scheduler/filenotify"
 	"github.com/fsnotify/fsnotify"
 )
@@ -29,12 +26,9 @@ const (
 type AppEventType string
 
 const (
-	AppEventTypeConnected  AppEventType = "connected"
 	AppEventTypeReset      AppEventType = "reset"
 	AppEventTypeDAGChanged AppEventType = "dag.changed"
-	AppEventTypeRunChanged AppEventType = "dagrun.changed"
 	AppEventTypeQueue      AppEventType = "queue.changed"
-	AppEventTypeDoc        AppEventType = "doc.changed"
 )
 
 // AppEvent carries low-volume invalidations that tell the UI what to revalidate.
@@ -174,9 +168,10 @@ func (c *appEventCoalescer) flush() {
 	}
 }
 
-type recursiveWatcher struct {
+type directoryWatcher struct {
 	root       string
 	createRoot bool
+	scope      watchScope
 	watcher    filenotify.FileWatcher
 	onEvent    func(root, relPath string, op fsnotify.Op)
 	onReset    func(reason string)
@@ -185,32 +180,62 @@ type recursiveWatcher struct {
 	wg         sync.WaitGroup
 }
 
-func newRecursiveWatcher(root string, createRoot bool, onEvent func(root, relPath string, op fsnotify.Op), onReset func(reason string)) *recursiveWatcher {
-	return &recursiveWatcher{
+type appWatcher interface {
+	Start(context.Context) error
+	Stop()
+}
+
+type watchScope int
+
+const (
+	watchScopeRootOnly watchScope = iota
+	watchScopeOneLevel
+)
+
+func newDirectoryWatcher(root string, createRoot bool, onEvent func(root, relPath string, op fsnotify.Op), onReset func(reason string)) *directoryWatcher {
+	return newWatcher(root, createRoot, watchScopeRootOnly, onEvent, onReset)
+}
+
+func newOneLevelDirectoryWatcher(root string, createRoot bool, onEvent func(root, relPath string, op fsnotify.Op), onReset func(reason string)) *directoryWatcher {
+	return newWatcher(root, createRoot, watchScopeOneLevel, onEvent, onReset)
+}
+
+func newWatcher(root string, createRoot bool, scope watchScope, onEvent func(root, relPath string, op fsnotify.Op), onReset func(reason string)) *directoryWatcher {
+	return &directoryWatcher{
 		root:       root,
 		createRoot: createRoot,
+		scope:      scope,
 		onEvent:    onEvent,
 		onReset:    onReset,
 		done:       make(chan struct{}),
 	}
 }
 
-func (w *recursiveWatcher) Start(ctx context.Context) error {
-	if w.root == "" {
-		return nil
-	}
-	if w.createRoot {
-		if err := os.MkdirAll(w.root, 0750); err != nil {
-			return err
-		}
-	} else if _, err := os.Stat(w.root); errors.Is(err, os.ErrNotExist) {
-		return nil
+func (w *directoryWatcher) Start(ctx context.Context) error {
+	ready, err := prepareWatchRoot(w.root, w.createRoot)
+	if err != nil || !ready {
+		return err
 	}
 
 	w.watcher = filenotify.New(time.Second)
-	if err := w.addDirRecursive(w.root); err != nil {
-		_ = w.watcher.Close()
+	if err := w.addWatch(w.root); err != nil {
 		return err
+	}
+
+	if w.scope == watchScopeOneLevel {
+		paths, err := oneLevelWatchPaths(w.root)
+		if err != nil {
+			_ = w.watcher.Close()
+			return err
+		}
+		for _, path := range paths {
+			if path == w.root {
+				continue
+			}
+			if err := w.addWatch(path); err != nil {
+				return err
+			}
+		}
 	}
 
 	w.wg.Go(func() {
@@ -219,7 +244,15 @@ func (w *recursiveWatcher) Start(ctx context.Context) error {
 	return nil
 }
 
-func (w *recursiveWatcher) Stop() {
+func (w *directoryWatcher) addWatch(path string) error {
+	if err := w.watcher.Add(path); err != nil {
+		_ = w.watcher.Close()
+		return err
+	}
+	return nil
+}
+
+func (w *directoryWatcher) Stop() {
 	w.stopOnce.Do(func() {
 		close(w.done)
 		if w.watcher != nil {
@@ -229,7 +262,7 @@ func (w *recursiveWatcher) Stop() {
 	w.wg.Wait()
 }
 
-func (w *recursiveWatcher) loop(ctx context.Context) {
+func (w *directoryWatcher) loop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -250,16 +283,14 @@ func (w *recursiveWatcher) loop(ctx context.Context) {
 	}
 }
 
-func (w *recursiveWatcher) handleEvent(event fsnotify.Event) {
+func (w *directoryWatcher) handleEvent(event fsnotify.Event) {
 	if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) == 0 {
 		return
 	}
 
-	if event.Op&fsnotify.Create != 0 {
-		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-			if err := w.addDirRecursive(event.Name); err != nil {
-				w.onReset(fmt.Sprintf("failed to register watcher for %s: %v", event.Name, err))
-			}
+	if event.Op&fsnotify.Create != 0 && w.scope == watchScopeOneLevel {
+		if err := w.addCreatedChildDir(event.Name); err != nil {
+			w.onReset(fmt.Sprintf("failed to register watcher for %s: %v", event.Name, err))
 		}
 	}
 
@@ -270,46 +301,68 @@ func (w *recursiveWatcher) handleEvent(event fsnotify.Event) {
 	w.onEvent(w.root, filepath.ToSlash(relPath), event.Op)
 }
 
-func (w *recursiveWatcher) addDirRecursive(root string) error {
-	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
+func (w *directoryWatcher) addCreatedChildDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+	parent := filepath.Clean(filepath.Dir(path))
+	if parent != filepath.Clean(w.root) {
+		return nil
+	}
+	return w.watcher.Add(path)
+}
+
+func oneLevelWatchPaths(root string) ([]string, error) {
+	paths := []string{root}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			paths = append(paths, filepath.Join(root, entry.Name()))
 		}
-		if !d.IsDir() {
-			return nil
+	}
+	return paths, nil
+}
+
+func prepareWatchRoot(root string, createRoot bool) (bool, error) {
+	if root == "" {
+		return false, nil
+	}
+	if createRoot {
+		if err := os.MkdirAll(root, 0750); err != nil {
+			return false, err
 		}
-		return w.watcher.Add(path)
-	})
+		return true, nil
+	}
+	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return true, nil
 }
 
 type AppStreamService struct {
 	hub       *AppHub
 	coalescer *appEventCoalescer
-	watchers  []*recursiveWatcher
-	nodeName  string
+	watchers  []appWatcher
 	ctx       context.Context
 	cancel    context.CancelFunc
 	stopOnce  sync.Once
-	heartbeat time.Duration
 }
 
 type AppStreamConfig struct {
-	Paths             config.PathsConfig
-	HeartbeatInterval time.Duration
+	Paths config.PathsConfig
 }
 
 func NewAppStreamService(cfg AppStreamConfig) (*AppStreamService, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := NewAppHub()
 	service := &AppStreamService{
-		hub:       hub,
-		nodeName:  "local",
-		ctx:       ctx,
-		cancel:    cancel,
-		heartbeat: cfg.HeartbeatInterval,
-	}
-	if service.heartbeat <= 0 {
-		service.heartbeat = heartbeatInterval
+		hub:    hub,
+		ctx:    ctx,
+		cancel: cancel,
 	}
 	service.coalescer = newAppEventCoalescer(appStreamDebounceInterval, hub.Publish)
 
@@ -323,7 +376,7 @@ func NewAppStreamService(cfg AppStreamConfig) (*AppStreamService, error) {
 		cfg.Paths.AltDAGsDir,
 	)
 	for _, dagRoot := range paths {
-		service.watchers = append(service.watchers, newRecursiveWatcher(
+		service.watchers = append(service.watchers, newDirectoryWatcher(
 			dagRoot,
 			dagRoot == primaryDAGRoot,
 			service.handleDAGFileEvent,
@@ -331,10 +384,8 @@ func NewAppStreamService(cfg AppStreamConfig) (*AppStreamService, error) {
 		))
 	}
 	service.watchers = append(service.watchers,
-		newRecursiveWatcher(cfg.Paths.SuspendFlagsDir, true, service.handleSuspendFlagEvent, service.publishReset),
-		newRecursiveWatcher(cfg.Paths.DAGRunsDir, true, service.handleDAGRunEvent, service.publishReset),
-		newRecursiveWatcher(cfg.Paths.QueueDir, true, service.handleQueueEvent, service.publishReset),
-		newRecursiveWatcher(cfg.Paths.DocsDir, true, service.handleDocEvent, service.publishReset),
+		newDirectoryWatcher(cfg.Paths.SuspendFlagsDir, true, service.handleSuspendFlagEvent, service.publishReset),
+		newOneLevelDirectoryWatcher(cfg.Paths.QueueDir, true, service.handleQueueEvent, service.publishReset),
 	)
 
 	for _, watcher := range service.watchers {
@@ -382,19 +433,6 @@ func (s *AppStreamService) Subscribe(ctx context.Context) (<-chan AppEvent, func
 	return s.hub.Subscribe(ctx)
 }
 
-func (s *AppStreamService) ConnectedEvent() AppEvent {
-	return AppEvent{
-		Type:       AppEventTypeConnected,
-		Node:       s.nodeName,
-		ServerTime: time.Now().UTC().Format(time.RFC3339),
-		Version:    1,
-	}
-}
-
-func (s *AppStreamService) HeartbeatInterval() time.Duration {
-	return s.heartbeat
-}
-
 func (s *AppStreamService) publishReset(reason string) {
 	s.coalescer.PublishReset(reason)
 }
@@ -421,16 +459,6 @@ func (s *AppStreamService) handleSuspendFlagEvent(_, relPath string, op fsnotify
 	})
 }
 
-func (s *AppStreamService) handleDAGRunEvent(_, relPath string, op fsnotify.Op) {
-	if filepath.Base(relPath) != "status.jsonl" {
-		return
-	}
-	s.coalescer.Enqueue(AppEvent{
-		Type:   AppEventTypeRunChanged,
-		Reason: fileEventReason(op),
-	})
-}
-
 func (s *AppStreamService) handleQueueEvent(_, relPath string, op fsnotify.Op) {
 	parts := strings.Split(filepath.ToSlash(relPath), "/")
 	if len(parts) == 0 {
@@ -447,18 +475,6 @@ func (s *AppStreamService) handleQueueEvent(_, relPath string, op fsnotify.Op) {
 	})
 }
 
-func (s *AppStreamService) handleDocEvent(_, relPath string, op fsnotify.Op) {
-	if filepath.Ext(relPath) != ".md" {
-		return
-	}
-	docPath := strings.TrimSuffix(filepath.ToSlash(relPath), ".md")
-	s.coalescer.Enqueue(AppEvent{
-		Type:   AppEventTypeDoc,
-		Path:   docPath,
-		Reason: fileEventReason(op),
-	})
-}
-
 func fileEventReason(op fsnotify.Op) string {
 	switch {
 	case op&fsnotify.Create != 0:
@@ -470,137 +486,4 @@ func fileEventReason(op fsnotify.Op) string {
 	default:
 		return "updated"
 	}
-}
-
-type AppHandler struct {
-	stream       *AppStreamService
-	nodeResolver *remotenode.Resolver
-}
-
-func NewAppHandler(stream *AppStreamService, nodeResolver *remotenode.Resolver) *AppHandler {
-	return &AppHandler{
-		stream:       stream,
-		nodeResolver: nodeResolver,
-	}
-}
-
-func (h *AppHandler) HandleStream(w http.ResponseWriter, r *http.Request) {
-	remoteNode := r.URL.Query().Get("remoteNode")
-	if remoteNode != "" && remoteNode != "local" {
-		h.proxyStreamToRemoteNode(w, r, remoteNode)
-		return
-	}
-
-	if h.stream == nil {
-		http.Error(w, "app stream unavailable", http.StatusServiceUnavailable)
-		return
-	}
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-
-	SetSSEHeaders(w)
-	rc := http.NewResponseController(w)
-	_ = rc.SetWriteDeadline(time.Time{})
-
-	events, unsubscribe := h.stream.Subscribe(r.Context())
-	defer unsubscribe()
-
-	if err := writeAppEventFrame(w, h.stream.ConnectedEvent()); err != nil {
-		return
-	}
-	flusher.Flush()
-
-	ticker := time.NewTicker(h.stream.HeartbeatInterval())
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ticker.C:
-			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
-				return
-			}
-			flusher.Flush()
-		case event, ok := <-events:
-			if !ok {
-				return
-			}
-			if err := writeAppEventFrame(w, event); err != nil {
-				return
-			}
-			flusher.Flush()
-		}
-	}
-}
-
-func writeAppEventFrame(w http.ResponseWriter, event AppEvent) error {
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "event: %s\n", event.Type); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (h *AppHandler) proxyStreamToRemoteNode(w http.ResponseWriter, r *http.Request, nodeName string) {
-	node, ok := h.resolveNode(w, r, nodeName)
-	if !ok {
-		return
-	}
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, buildRemoteEventURL(node.APIBaseURL, "/events/app", r.URL.Query()), nil)
-	if err != nil {
-		http.Error(w, "failed to create proxy request", http.StatusInternalServerError)
-		return
-	}
-	req.Header.Set("Accept", "text/event-stream")
-	node.ApplyAuth(req)
-
-	resp, err := newProxyHTTPClient(node.SkipTLSVerify).Do(req)
-	if err != nil {
-		if r.Context().Err() != nil {
-			return
-		}
-		http.Error(w, "failed to connect to remote node", http.StatusBadGateway)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		copyJSONResponse(w, resp)
-		return
-	}
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-	SetSSEHeaders(w)
-	rc := http.NewResponseController(w)
-	_ = rc.SetWriteDeadline(time.Time{})
-	streamResponse(w, flusher, resp.Body)
-}
-
-func (h *AppHandler) resolveNode(w http.ResponseWriter, r *http.Request, nodeName string) (*remotenode.RemoteNode, bool) {
-	if h.nodeResolver == nil {
-		http.Error(w, "remote node resolution not available", http.StatusServiceUnavailable)
-		return nil, false
-	}
-	node, err := h.nodeResolver.GetByName(r.Context(), nodeName)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("unknown remote node: %s", nodeName), http.StatusBadRequest)
-		return nil, false
-	}
-	return node, true
 }

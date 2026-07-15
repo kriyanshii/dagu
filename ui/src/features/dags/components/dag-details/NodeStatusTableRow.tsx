@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Yota Hamada
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /**
  * NodeStatusTableRow component renders a single row in the node status table.
  *
@@ -13,7 +16,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { AppBarContext } from '@/contexts/AppBarContext';
+import { useConfig } from '@/contexts/ConfigContext';
+import { useRemoteNode } from '@/contexts/RemoteNodeContext';
 import { useClient, useQuery } from '@/hooks/api';
 import { whenEnabled } from '@/hooks/queryUtils';
 import {
@@ -42,8 +46,9 @@ import {
   RefreshCw,
   X,
 } from 'lucide-react';
-import { useContext, useEffect, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { buildDAGPageURL } from '../../../dag-runs/lib/dagRunUrls';
 import {
   components,
   NodeStatus,
@@ -82,6 +87,8 @@ type Props = {
   dagRun: components['schemas']['DAGRunDetails'];
   /** View mode: desktop or mobile */
   view?: 'desktop' | 'mobile';
+  /** Whether the inline log starts expanded */
+  defaultLogExpanded?: boolean;
 };
 
 /**
@@ -144,13 +151,14 @@ function NodeStatusTableRow({
   onNodeStatusUpdated,
   dagRun,
   view = 'desktop',
+  defaultLogExpanded = false,
 }: Props) {
   const { dagRunId, name: dagName } = dagRun;
   const navigate = useNavigate();
   const client = useClient();
-  const appBarContext = useContext(AppBarContext);
+  const config = useConfig();
   const dagContext = useContext(DAGContext);
-  const remoteNode = appBarContext.selectedRemoteNode || 'local';
+  const remoteNode = useRemoteNode();
   const { showError } = useErrorModal();
   // State to store the current duration for running tasks
   const [currentDuration, setCurrentDuration] = useState<string>('-');
@@ -161,9 +169,9 @@ function NodeStatusTableRow({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   // State for inline log expansion
-  const [isLogExpanded, setIsLogExpanded] = useState(false);
+  const [isLogExpanded, setIsLogExpanded] = useState(defaultLogExpanded);
   const [activeLogTab, setActiveLogTab] = useState<'stdout' | 'stderr'>(
-    'stdout'
+    defaultLogExpanded && node.stderr ? 'stderr' : 'stdout'
   );
   // State for status update modal
   const [showStatusModal, setShowStatusModal] = useState(false);
@@ -186,6 +194,27 @@ function NodeStatusTableRow({
     dagRun.rootDAGRunId !== dagRun.dagRunId;
   const shouldFetchLogStepOutput =
     logMessage !== null && hasStdout && !!dagRunId;
+
+  // Expand the log when this row becomes the first failed step while already
+  // mounted (live polling). Applied once per false-to-true transition so a
+  // manual collapse afterwards is respected.
+  const autoExpandApplied = useRef(defaultLogExpanded);
+  useEffect(() => {
+    if (!defaultLogExpanded) {
+      autoExpandApplied.current = false;
+      return;
+    }
+    if (autoExpandApplied.current || !hasLogs) return;
+    autoExpandApplied.current = true;
+    setIsLogExpanded(true);
+    setActiveLogTab(hasStderr ? 'stderr' : 'stdout');
+  }, [defaultLogExpanded, hasLogs, hasStderr]);
+
+  const showStepActions = Boolean(dagRunId && config.permissions.runDags);
+  const canRetryStep =
+    showStepActions &&
+    node.status !== NodeStatus.Waiting &&
+    node.status !== NodeStatus.Rejected;
 
   const subDAGLogQuery = useQuery(
     '/dag-runs/{name}/{dagRunId}/sub-dag-runs/{subDAGRunId}/steps/{stepName}/log',
@@ -262,17 +291,15 @@ function NodeStatusTableRow({
     }
   }, [isActiveNode, node.startedAt, node.finishedAt]);
 
-  // Build URL for log viewing
-  const searchParams = new URLSearchParams();
-  searchParams.set('remoteNode', remoteNode);
-  if (node.step) {
-    searchParams.set('step', node.step.name);
-  }
-  if (dagRunId) {
-    searchParams.set('dagRunId', dagRunId);
-  }
-
-  const url = `/dags/${name}/log?${searchParams.toString()}`;
+  const url = buildDAGPageURL({
+    fileName: name,
+    remoteNode,
+    tab: 'log',
+    step: node.step.name,
+    rootDAGRunId: isSubDAGRun ? dagRun.rootDAGRunId : dagRunId,
+    rootDAGRunName: isSubDAGRun ? dagRun.rootDAGRunName : undefined,
+    subDAGRunId: isSubDAGRun ? dagRun.dagRunId : undefined,
+  });
 
   // Determine row highlight based on status
   const getRowHighlight = () => {
@@ -308,6 +335,7 @@ function NodeStatusTableRow({
       if (isDAGRunContext) {
         // For dagRuns, navigate to /dag-runs/{root-dag-name}/{root-dag-run-id}?subDAGRunId=...
         const searchParams = new URLSearchParams();
+        searchParams.set('remoteNode', remoteNode);
         searchParams.set('subDAGRunId', subDAGRunId);
 
         // Determine root DAG information
@@ -340,6 +368,7 @@ function NodeStatusTableRow({
       } else {
         // For DAGs, use the existing approach with query parameters
         const searchParams = new URLSearchParams();
+        searchParams.set('remoteNode', remoteNode);
         searchParams.set('subDAGRunId', subDAGRunId);
 
         // Use root dagRun information from the dagRun prop if available
@@ -381,6 +410,10 @@ function NodeStatusTableRow({
   };
 
   const handleRetry = async () => {
+    if (!config.permissions.runDags) {
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
@@ -788,25 +821,23 @@ function NodeStatusTableRow({
               )}
             </div>
           </TableCell>
-          {dagRunId && (
+          {showStepActions && (
             <TableCell className="text-center">
               <div className="flex items-center justify-center gap-1">
-                {/* Retry button - hidden for Waiting and Rejected steps */}
-                {node.status !== NodeStatus.Waiting &&
-                  node.status !== NodeStatus.Rejected && (
-                    <Button
-                      size="icon-sm"
-                      variant="secondary"
-                      title="Retry from this step"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowDialog(true);
-                      }}
-                      disabled={loading || dagRun.status === Status.Running}
-                    >
-                      <Play className="h-4 w-4 text-success" />
-                    </Button>
-                  )}
+                {canRetryStep && (
+                  <Button
+                    size="icon-sm"
+                    variant="secondary"
+                    title="Retry from this step"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowDialog(true);
+                    }}
+                    disabled={loading || dagRun.status === Status.Running}
+                  >
+                    <Play className="h-4 w-4 text-success" />
+                  </Button>
+                )}
               </div>
               <Dialog open={showDialog} onOpenChange={setShowDialog}>
                 <DialogContent>
@@ -844,7 +875,7 @@ function NodeStatusTableRow({
         {/* Inline log viewer row - spans entire table width */}
         {isLogExpanded && hasLogs && (
           <StyledTableRow className="bg-muted">
-            <TableCell colSpan={dagRunId ? 7 : 6} className="p-3">
+            <TableCell colSpan={showStepActions ? 7 : 6} className="p-3">
               <div className="w-full">
                 {/* Header with tabs and expand button */}
                 <div className="flex items-center justify-between mb-2">
@@ -1213,20 +1244,18 @@ function NodeStatusTableRow({
         </div>
       )}
 
-      {dagRunId && (
+      {showStepActions && (
         <div className="flex justify-end mt-4 gap-2">
-          {/* Retry button - hidden for Waiting and Rejected steps */}
-          {node.status !== NodeStatus.Waiting &&
-            node.status !== NodeStatus.Rejected && (
-              <button
-                className="p-2 rounded-full hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Retry from this step"
-                onClick={() => setShowDialog(true)}
-                disabled={loading || dagRun.status === Status.Running}
-              >
-                <Play className="h-6 w-6 text-success" />
-              </button>
-            )}
+          {canRetryStep && (
+            <button
+              className="p-2 rounded-full hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Retry from this step"
+              onClick={() => setShowDialog(true)}
+              disabled={loading || dagRun.status === Status.Running}
+            >
+              <Play className="h-6 w-6 text-success" />
+            </button>
+          )}
           <Dialog open={showDialog} onOpenChange={setShowDialog}>
             <DialogContent>
               <DialogHeader>

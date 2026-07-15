@@ -69,7 +69,6 @@ var customStepRuntimeExpressionRegexp = regexp.MustCompile("`[^`]+`|\\$\\{[^}]+\
 var customStepWholeRuntimeExpressionRegexp = regexp.MustCompile("^\\s*(?:`[^`]+`|\\$\\{[^}]+\\}|\\$[A-Za-z_][A-Za-z0-9_]*)\\s*$")
 
 var builtinStepTypeNames = map[string]struct{}{
-	"agent":         {},
 	"action":        {},
 	"artifact":      {},
 	"archive":       {},
@@ -81,6 +80,7 @@ var builtinStepTypeNames = map[string]struct{}{
 	"dag_enqueue":   {},
 	"docker":        {},
 	"file":          {},
+	"foreach":       {},
 	"gha":           {},
 	"git":           {},
 	"github-action": {},
@@ -172,7 +172,6 @@ func StepTypeNames() []string {
 }
 
 var customStepForbiddenCallSiteFields = map[string]struct{}{
-	"agent":          {},
 	"call":           {},
 	"command":        {},
 	"container":      {},

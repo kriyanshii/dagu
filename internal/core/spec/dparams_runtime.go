@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dagucloud/dagu/internal/cmn/eval"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 )
 
@@ -129,14 +129,17 @@ func resolveLegacyEntries(ctx BuildContext, plan *dagParamPlan, rawParams string
 	}
 
 	scope := buildParamEvalScope(ctx)
+	params := make(cmnvalue.Values)
+	paramDeclarations := paramDeclarationsForPlan(plan)
 	for i := range entries {
 		if i < len(plan.entries) {
-			if err := resolveLegacyEntry(ctx, &entries[i], plan.entries[i], overridden[i], &scope, i); err != nil {
+			if err := resolveLegacyEntry(ctx, &entries[i], plan.entries[i], overridden[i], &scope, params, paramDeclarations, i); err != nil {
 				return nil, err
 			}
 			continue
 		}
 		addEntryToParamScope(&scope, entries[i], i)
+		addEntryToParamValues(params, entries[i])
 	}
 
 	if plan.schema == nil {
@@ -381,14 +384,14 @@ func runtimePairsFromEntries(entries []dagParamEntry) []paramPair {
 	return pairs
 }
 
-func buildParamEvalScope(ctx BuildContext) *eval.EnvScope {
+func buildParamEvalScope(ctx BuildContext) *cmnvalue.EnvScope {
 	if ctx.envScope != nil && ctx.envScope.scope != nil {
 		return ctx.envScope.scope
 	}
 
-	scope := eval.NewEnvScope(nil, true)
+	scope := cmnvalue.NewEnvScope(nil, true)
 	if len(ctx.opts.BuildEnv) > 0 {
-		scope = scope.WithEntries(ctx.opts.BuildEnv, eval.EnvSourceDotEnv)
+		scope = scope.WithEntries(ctx.opts.BuildEnv, cmnvalue.EnvSourceDotEnv)
 	}
 	return scope
 }
@@ -398,11 +401,14 @@ func resolveLegacyEntry(
 	entry *dagParamEntry,
 	base dagParamEntry,
 	overridden bool,
-	scope **eval.EnvScope,
+	scope **cmnvalue.EnvScope,
+	params cmnvalue.Values,
+	paramDeclarations cmnvalue.Values,
 	index int,
 ) error {
 	if overridden || strings.TrimSpace(base.Eval) == "" || ctx.opts.Has(BuildFlagNoEval) {
 		addEntryToParamScope(scope, *entry, index)
+		addEntryToParamValues(params, *entry)
 		return nil
 	}
 
@@ -410,16 +416,25 @@ func resolveLegacyEntry(
 	if evalCtx == nil {
 		evalCtx = context.Background()
 	}
+	var runtimeScope cmnvalue.RuntimeScope
 	if *scope != nil {
-		evalCtx = eval.WithEnvScope(evalCtx, *scope)
+		runtimeScope.Env = *scope
 	}
-
-	value, err := eval.String(evalCtx, base.Eval, eval.WithOSExpansion())
+	runtimeScope.Params = params
+	fieldPath := fmt.Sprintf("params[%d].eval", index)
+	reportNamespaceUnavailableStepOutputReferences(ctx.valueReferenceNotices, fieldPath, base.Eval)
+	resolver := cmnvalue.NewResolver(
+		cmnvalue.StaticScope{Params: paramDeclarations},
+		runtimeScope,
+		cmnvalue.WithValueReferenceNotices(buildNoticeSink(ctx.valueReferenceNotices)),
+	)
+	value, err := resolver.String(evalCtx, base.Eval, cmnvalue.DynamicParamEvalField(fieldPath))
 	if err != nil {
 		if base.HasValue {
 			entry.Value = base.Value
 			entry.HasValue = true
 			addEntryToParamScope(scope, *entry, index)
+			addEntryToParamValues(params, *entry)
 			return nil
 		}
 		return core.NewValidationError(
@@ -432,10 +447,11 @@ func resolveLegacyEntry(
 	entry.Value = value
 	entry.HasValue = true
 	addEntryToParamScope(scope, *entry, index)
+	addEntryToParamValues(params, *entry)
 	return nil
 }
 
-func addEntryToParamScope(scope **eval.EnvScope, entry dagParamEntry, index int) {
+func addEntryToParamScope(scope **cmnvalue.EnvScope, entry dagParamEntry, index int) {
 	if scope == nil || *scope == nil || !entry.HasValue {
 		return
 	}
@@ -443,7 +459,18 @@ func addEntryToParamScope(scope **eval.EnvScope, entry dagParamEntry, index int)
 	if name == "" {
 		return
 	}
-	*scope = (*scope).WithEntry(name, entry.Value, eval.EnvSourceParam)
+	*scope = (*scope).WithEntry(name, entry.Value, cmnvalue.EnvSourceParam)
+}
+
+func addEntryToParamValues(params cmnvalue.Values, entry dagParamEntry) {
+	if params == nil || !entry.HasValue {
+		return
+	}
+	name := strings.TrimSpace(entry.Name)
+	if !isParamReferenceName(name) {
+		return
+	}
+	params[name] = entry.Value
 }
 
 func paramScopeName(entry dagParamEntry, index int) string {

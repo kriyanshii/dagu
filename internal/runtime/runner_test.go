@@ -7,11 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -19,13 +21,76 @@ import (
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
 	"github.com/dagucloud/dagu/internal/runtime"
-	"github.com/dagucloud/dagu/internal/runtime/builtin/agentstep"
 	"github.com/dagucloud/dagu/internal/runtime/builtin/chat"
+	runtimeexec "github.com/dagucloud/dagu/internal/runtime/executor"
 	"github.com/dagucloud/dagu/internal/test"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type stoppedStatusExecutor struct {
+	ready    chan struct{}
+	stopped  chan struct{}
+	stopOnce sync.Once
+	stdout   io.Writer
+	stderr   io.Writer
+}
+
+func newStoppedStatusExecutor() *stoppedStatusExecutor {
+	return &stoppedStatusExecutor{
+		ready:   make(chan struct{}),
+		stopped: make(chan struct{}),
+	}
+}
+
+func (e *stoppedStatusExecutor) SetStdout(out io.Writer) { e.stdout = out }
+
+func (e *stoppedStatusExecutor) SetStderr(out io.Writer) { e.stderr = out }
+
+func (e *stoppedStatusExecutor) Run(ctx context.Context) error {
+	close(e.ready)
+
+	select {
+	case <-e.stopped:
+		return fmt.Errorf("executor stopped")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (e *stoppedStatusExecutor) Kill(os.Signal) error {
+	e.stopOnce.Do(func() {
+		close(e.stopped)
+	})
+	return nil
+}
+
+func (e *stoppedStatusExecutor) DetermineNodeStatus() (core.NodeStatus, error) {
+	return core.NodeFailed, nil
+}
+
+func registerStoppedStatusExecutor(t *testing.T) (string, <-chan *stoppedStatusExecutor) {
+	t.Helper()
+
+	executorType := "test-stopped-status-" + uuid.Must(uuid.NewV7()).String()
+	execCh := make(chan *stoppedStatusExecutor, 1)
+	runtimeexec.RegisterExecutor(
+		executorType,
+		func(context.Context, core.Step) (runtimeexec.Executor, error) {
+			exec := newStoppedStatusExecutor()
+			execCh <- exec
+			return exec, nil
+		},
+		nil,
+		core.ExecutorCapabilities{},
+	)
+	t.Cleanup(func() {
+		runtimeexec.UnregisterExecutor(executorType)
+	})
+
+	return executorType, execCh
+}
 
 func shellTestPath(path string) string {
 	return filepath.ToSlash(path)
@@ -33,10 +98,6 @@ func shellTestPath(path string) string {
 
 func windowsShellTest() bool {
 	return os.PathSeparator == '\\'
-}
-
-func shellSubstitution(command string) string {
-	return "`" + command + "`"
 }
 
 func trimmedCounterReadCommand(counterFile string) string {
@@ -70,25 +131,8 @@ func fileMissingCommand(path string) string {
 	return fmt.Sprintf("test ! -f %s", test.PosixQuote(path))
 }
 
-func repeatCounterValueCondition(counterFile string) string {
-	if windowsShellTest() {
-		return shellSubstitution(fmt.Sprintf(
-			"if (Test-Path %s) { [System.IO.File]::ReadAllText(%s).TrimEnd([char]13,[char]10) } else { '' }",
-			test.PowerShellQuote(counterFile),
-			test.PowerShellQuote(counterFile),
-		))
-	}
-	return shellSubstitution(trimmedCounterReadCommand(counterFile))
-}
-
 func repeatExpectedCondition(counterFile, expected string) *core.Condition {
-	if windowsShellTest() {
-		return &core.Condition{Condition: repeatCounterEqualsCommand(counterFile, expected)}
-	}
-	return &core.Condition{
-		Condition: repeatCounterValueCondition(counterFile),
-		Expected:  expected,
-	}
+	return &core.Condition{Condition: repeatCounterEqualsCommand(counterFile, expected)}
 }
 
 func repeatConditionMutationTimeout() time.Duration {
@@ -471,7 +515,7 @@ func TestRunner(t *testing.T) {
 				withDepends("1"),
 				withCommand("false"),
 				withPrecondition(&core.Condition{
-					Condition: "`echo 1`",
+					Condition: "1",
 					Expected:  "0",
 				}),
 				withContinueOn(core.ContinueOn{
@@ -531,7 +575,7 @@ func TestRunner(t *testing.T) {
 	})
 	t.Run("ContinueOnOutputStderr", func(t *testing.T) {
 		r := setupRunner(t)
-		command := test.JoinLines(
+		command := test.JoinShellCommands(
 			test.Stderr("test_output"),
 			test.Output("test_output"),
 			"exit 1",
@@ -1099,8 +1143,12 @@ func TestRunner(t *testing.T) {
 	t.Run("WorkingDirNoExist", func(t *testing.T) {
 		r := setupRunner(t)
 
+		blockingFile := filepath.Join(t.TempDir(), "not-a-directory")
+		require.NoError(t, os.WriteFile(blockingFile, nil, 0o600))
+		workingDir := filepath.Join(blockingFile, "child")
+
 		plan := r.newPlan(t,
-			newStep("1", withWorkingDir("/nonexistent"),
+			newStep("1", withWorkingDir(workingDir),
 				withScript("echo 1"),
 			),
 		)
@@ -1109,11 +1157,25 @@ func TestRunner(t *testing.T) {
 
 		result.assertNodeStatus(t, "1", core.NodeFailed)
 
-		if windowsShellTest() {
-			require.Contains(t, strings.ToLower(result.Error.Error()), "cannot find the path specified")
-		} else {
-			require.Contains(t, result.Error.Error(), "no such file or directory")
-		}
+		require.Contains(t, result.Error.Error(), "failed to create working directory")
+	})
+	t.Run("InvalidWorkingDirReferencePreservesLiteralPathForScript", func(t *testing.T) {
+		r := setupRunner(t)
+
+		sentinel := filepath.Join(t.TempDir(), "executed")
+		plan := r.newPlan(t,
+			newStep("1", withWorkingDir("${consts.missing}"),
+				withScript(createEmptyFileCommand(sentinel)),
+			),
+		)
+
+		result := plan.assertRun(t, core.Succeeded)
+
+		node := plan.GetNodeByName("1")
+		require.NotNil(t, node)
+		result.assertNodeStatus(t, "1", core.NodeSucceeded)
+		assert.Equal(t, filepath.Join(plan.workDir, "${consts.missing}"), node.State().WorkingDir)
+		require.FileExists(t, sentinel)
 	})
 	t.Run("OutputVariables", func(t *testing.T) {
 		t.Parallel()
@@ -1187,9 +1249,9 @@ func TestRunner(t *testing.T) {
 	t.Run("HandlingJSONWithSpecialChars", func(t *testing.T) {
 		r := setupRunner(t)
 
-		jsonData := "{\n\t\"key\": \"value\"\n}"
+		jsonData := `{\n\t"key": "value"\n}\n`
 		plan := r.newPlan(t,
-			newStep("1", withCommand(test.Output(jsonData)), withOutput("OUT")),
+			newStep("1", withCommand(test.OutputEscaped(jsonData)), withOutput("OUT")),
 			newStep("2", withCommand(test.ExpandedOutput("${OUT.key}")), withDepends("1"), withOutput("RESULT")),
 		)
 
@@ -1653,7 +1715,7 @@ func TestRunner_StepLevelTimeout(t *testing.T) {
 		r := setupRunner(t)
 		plan := r.newPlan(t,
 			newStep("retry_timeout",
-				withCommand(test.JoinLines(
+				withCommand(test.JoinShellCommands(
 					test.Sleep(sleepDuration),
 					"exit 1",
 				)),
@@ -2000,6 +2062,98 @@ func TestRunner_DAGPreconditions(t *testing.T) {
 		// Check that the runner was canceled
 		assert.Equal(t, core.Aborted, r.runner.Status(ctx, plan.Plan))
 	})
+
+	t.Run("DAGPreconditionAbortDoesNotLeakToNextRun", func(t *testing.T) {
+		r := setupRunner(t)
+
+		abortedPlan := r.newPlan(t, successStep("first"))
+		abortedDAG := &core.DAG{
+			Name:       "test_dag_aborted",
+			WorkingDir: abortedPlan.workDir,
+			Preconditions: []*core.Condition{
+				{
+					Condition: "$(exit 1)",
+					Expected:  "ready",
+				},
+			},
+		}
+		abortedLogPath := filepath.Join(r.cfg.LogDir, fmt.Sprintf("%s_%s.log", abortedDAG.Name, r.cfg.DAGRunID))
+		abortedCtx := runtime.NewContext(abortedPlan.Context, abortedDAG, r.cfg.DAGRunID, abortedLogPath)
+
+		require.NoError(t, r.runner.Run(abortedCtx, abortedPlan.Plan, nil))
+		assert.Equal(t, core.Aborted, r.runner.Status(abortedCtx, abortedPlan.Plan))
+
+		successPlan := r.newPlan(t, successStep("second"))
+		successDAG := &core.DAG{
+			Name:       "test_dag_success",
+			WorkingDir: successPlan.workDir,
+		}
+		successLogPath := filepath.Join(r.cfg.LogDir, fmt.Sprintf("%s_%s.log", successDAG.Name, r.cfg.DAGRunID))
+		successCtx := runtime.NewContext(successPlan.Context, successDAG, r.cfg.DAGRunID, successLogPath)
+
+		require.NoError(t, r.runner.Run(successCtx, successPlan.Plan, nil))
+		assert.Equal(t, core.Succeeded, r.runner.Status(successCtx, successPlan.Plan))
+	})
+}
+
+func TestRunner_DAGPreconditionShellReferencePreserved(t *testing.T) {
+	if windowsShellTest() {
+		t.Skip("DAG precondition shell reference test uses /bin/sh")
+	}
+
+	r := setupRunner(t)
+	plan := r.newPlan(t, successStep("1"))
+
+	dag := &core.DAG{
+		Name:       "test_dag",
+		WorkingDir: plan.workDir,
+		Shell:      "/bin/sh",
+		ShellArgs:  []string{"${params.shell_arg}"},
+		ParamDefs: []core.ParamDef{{
+			Name: "shell_arg",
+			Type: core.ParamDefTypeString,
+		}},
+		Preconditions: []*core.Condition{{
+			Condition: "exit 0",
+		}},
+	}
+	logFilename := fmt.Sprintf("%s_%s.log", dag.Name, r.cfg.DAGRunID)
+	logFilePath := filepath.Join(r.cfg.LogDir, logFilename)
+	ctx := runtime.NewContext(plan.Context, dag, r.cfg.DAGRunID, logFilePath)
+
+	err := r.runner.Run(ctx, plan.Plan, nil)
+	require.NoError(t, err)
+	assert.Equal(t, core.Aborted, r.runner.Status(ctx, plan.Plan))
+}
+
+func TestRunner_StepPreconditionReferencePreserved(t *testing.T) {
+	r := setupRunner(t)
+	plan := r.newPlan(t,
+		newStep("1",
+			withPrecondition(&core.Condition{Condition: "${params.ready}", Expected: "true"}),
+			withCommand("echo should_not_run"),
+		),
+	)
+
+	dag := &core.DAG{
+		Name:       "test_dag",
+		WorkingDir: plan.workDir,
+		ParamDefs: []core.ParamDef{{
+			Name: "ready",
+			Type: core.ParamDefTypeString,
+		}},
+	}
+	logFilename := fmt.Sprintf("%s_%s.log", dag.Name, r.cfg.DAGRunID)
+	logFilePath := filepath.Join(r.cfg.LogDir, logFilename)
+	ctx := runtime.NewContext(plan.Context, dag, r.cfg.DAGRunID, logFilePath)
+
+	err := r.runner.Run(ctx, plan.Plan, nil)
+	require.NoError(t, err)
+	assert.Equal(t, core.Succeeded, r.runner.Status(ctx, plan.Plan))
+
+	node := plan.GetNodeByName("1")
+	require.NotNil(t, node)
+	assert.Equal(t, core.NodeSkipped, node.State().Status)
 }
 
 func TestRunner_StatusDefersForcedStatusUntilTerminal(t *testing.T) {
@@ -2027,6 +2181,16 @@ func TestRunner_StatusDefersForcedStatusUntilTerminal(t *testing.T) {
 }
 
 func TestRunner_SignalHandling(t *testing.T) {
+	t.Run("SignalBeforeRun", func(t *testing.T) {
+		r := setupRunner(t)
+		plan := r.newPlan(t, successStep("1"))
+
+		r.runner.Signal(r.Context, plan.Plan, syscall.SIGTERM, nil, false)
+
+		result := plan.assertRun(t, core.Aborted)
+		result.assertNodeStatus(t, "1", core.NodeNotStarted)
+	})
+
 	t.Run("SignalWithDoneChannel", func(t *testing.T) {
 		r := setupRunner(t)
 
@@ -2075,6 +2239,38 @@ func TestRunner_SignalHandling(t *testing.T) {
 		result := plan.assertRun(t, core.Aborted)
 		result.assertNodeStatus(t, "1", core.NodeAborted)
 	})
+}
+
+func TestRunner_CancelSuppressesPostStopExecutorStatusError(t *testing.T) {
+	executorType, execCh := registerStoppedStatusExecutor(t)
+	r := setupRunner(t)
+
+	plan := r.newPlan(t, newStep("1", withExecutorType(executorType)))
+	dag := &core.DAG{Name: "test_dag", WorkingDir: plan.workDir}
+	logFilename := fmt.Sprintf("%s_%s.log", dag.Name, r.cfg.DAGRunID)
+	logFilePath := path.Join(r.cfg.LogDir, logFilename)
+	ctx := runtime.NewContext(plan.Context, dag, r.cfg.DAGRunID, logFilePath)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.runner.Run(ctx, plan.Plan, nil)
+	}()
+
+	exec := <-execCh
+	<-exec.ready
+
+	r.runner.Signal(ctx, plan.Plan, syscall.SIGTERM, nil, false)
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(platformTestDuration(2*time.Second, 10*time.Second)):
+		t.Fatal("runner did not finish after cancellation")
+	}
+
+	require.Equal(t, core.Aborted, r.runner.Status(ctx, plan.Plan))
+	result := runResult{planHelper: plan}
+	result.assertNodeStatus(t, "1", core.NodeAborted)
 }
 
 func TestRunner_ComplexDependencyChains(t *testing.T) {
@@ -2221,7 +2417,7 @@ func TestRunner_TimeoutDuringRetry(t *testing.T) {
 	// Step that will keep retrying until timeout
 	plan := r.newPlan(t,
 		newStep("1",
-			withCommand(test.JoinLines(
+			withCommand(test.JoinShellCommands(
 				test.Sleep(100*time.Millisecond),
 				"exit 1",
 			)),
@@ -3006,7 +3202,7 @@ func TestRunner_EventHandlerStepIDAccess(t *testing.T) {
 			),
 			newStep("worker_step",
 				withID("worker"),
-				withCommand(test.JoinLines(
+				withCommand(test.JoinShellCommands(
 					test.Output("Worker processing done"),
 					"exit 0",
 				)),
@@ -3049,7 +3245,7 @@ func TestRunner_EventHandlerStepIDAccess(t *testing.T) {
 			),
 			newStep("failing_step",
 				withID("failing"),
-				withCommand(test.JoinLines(
+				withCommand(test.JoinShellCommands(
 					test.Stderr("Error occurred"),
 					"exit 1",
 				)),
@@ -3163,7 +3359,7 @@ func TestRunner_EventHandlerStepIDAccess(t *testing.T) {
 		plan := r.newPlan(t,
 			newStep("main",
 				withID("main"),
-				withCommand(test.JoinLines(
+				withCommand(test.JoinShellCommands(
 					test.Output("Processing"),
 					"exit 0",
 				)),
@@ -3383,6 +3579,55 @@ func TestRunner_DeadlockDetection(t *testing.T) {
 	require.Equal(t, core.Failed, r.Status(ctx, plan))
 }
 
+func TestRunner_ClosesPreparedOutputWritersOnFailedProgress(t *testing.T) {
+	t.Parallel()
+
+	writers := &closeTrackingLogWriterFactory{}
+	helper := setupRunner(t)
+	plan := helper.newPlan(t, failStep("fail"))
+	dag := &core.DAG{Name: "test_dag", WorkingDir: plan.workDir}
+	logFile := filepath.Join(helper.cfg.LogDir, fmt.Sprintf("%s_%s.log", dag.Name, helper.cfg.DAGRunID))
+	ctx := runtime.NewContext(
+		helper.Context,
+		dag,
+		helper.cfg.DAGRunID,
+		logFile,
+		runtime.WithLogWriterFactory(writers),
+	)
+
+	progressCh := make(chan *runtime.Node, 4)
+	err := helper.runner.Run(ctx, plan.Plan, progressCh)
+	close(progressCh)
+
+	progressCount := 0
+	for range progressCh {
+		progressCount++
+	}
+
+	require.Error(t, err)
+	require.GreaterOrEqual(t, progressCount, 2)
+	require.Equal(t, 2, writers.closes)
+}
+
+type closeTrackingLogWriterFactory struct {
+	closes int
+}
+
+func (f *closeTrackingLogWriterFactory) NewStepWriter(_ context.Context, _ string, _ int) io.WriteCloser {
+	return &closeTrackingWriter{closes: &f.closes}
+}
+
+type closeTrackingWriter struct {
+	closes *int
+}
+
+func (w *closeTrackingWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+func (w *closeTrackingWriter) Close() error {
+	(*w.closes)++
+	return nil
+}
+
 func TestNewEnvWithStepInfo(t *testing.T) {
 	t.Parallel()
 
@@ -3404,29 +3649,6 @@ func TestNewEnvWithStepInfo(t *testing.T) {
 }
 
 func TestRunner_ChatMessagesHandler(t *testing.T) {
-	t.Run("BuiltinHarnessSupportsChatMessages", func(t *testing.T) {
-		t.Parallel()
-
-		step := newStep("harness1", withExecutorType("harness"))
-		step.ExecutorConfig.Config = map[string]any{"provider": core.HarnessProviderBuiltin}
-
-		assert.True(t, runtime.StepSupportsChatMessages(step))
-	})
-
-	t.Run("BuiltinHarnessFallbackSupportsChatMessages", func(t *testing.T) {
-		t.Parallel()
-
-		step := newStep("harness1", withExecutorType("harness"))
-		step.ExecutorConfig.Config = map[string]any{
-			"provider": "codex",
-			"fallback": []any{
-				map[string]any{"provider": core.HarnessProviderBuiltin},
-			},
-		}
-
-		assert.True(t, runtime.StepSupportsChatMessages(step))
-	})
-
 	t.Run("CLIHarnessDoesNotSupportChatMessages", func(t *testing.T) {
 		t.Parallel()
 
@@ -3606,125 +3828,9 @@ func TestRunner_ChatMessagesHandler(t *testing.T) {
 		assert.Equal(t, 0, handler.writeCalls)
 	})
 
-	t.Run("AgentStepSavesMessages", func(t *testing.T) {
-		t.Parallel()
-
-		handler := newMockMessagesHandler()
-		r := setupRunner(t, withMessagesHandler(handler))
-
-		plan := r.newPlan(t, newStep("agent1", withExecutorType(agentstep.MockExecutorType)))
-		result := plan.assertRun(t, core.Succeeded)
-		result.assertNodeStatus(t, "agent1", core.NodeSucceeded)
-
-		assert.Equal(t, 1, handler.writeCalls)
-		assert.NotEmpty(t, handler.messages["agent1"])
-
-		// Verify cost metadata was preserved
-		msgs := handler.messages["agent1"]
-		var foundCost bool
-		for _, m := range msgs {
-			if m.Metadata != nil && m.Metadata.Cost > 0 {
-				foundCost = true
-				assert.Equal(t, "openai", m.Metadata.Provider)
-				assert.Equal(t, "gpt-4", m.Metadata.Model)
-				assert.InDelta(t, 0.001, m.Metadata.Cost, 1e-9)
-			}
-		}
-		assert.True(t, foundCost, "expected at least one message with cost metadata")
-	})
-
-	t.Run("AgentStepInheritsFromDependency", func(t *testing.T) {
-		t.Parallel()
-
-		handler := newMockMessagesHandler()
-		handler.messages["step1"] = []exec.LLMMessage{
-			{Role: exec.RoleSystem, Content: "be helpful"},
-			{Role: exec.RoleUser, Content: "prior message"},
-		}
-
-		r := setupRunner(t, withMessagesHandler(handler))
-
-		plan := r.newPlan(t,
-			successStep("step1"),
-			newStep("agent1", withDepends("step1"), withExecutorType(agentstep.MockExecutorType)),
-		)
-		result := plan.assertRun(t, core.Succeeded)
-		result.assertNodeStatus(t, "agent1", core.NodeSucceeded)
-
-		assert.Equal(t, 1, handler.writeCalls)
-		// The mock prepends inherited context, so saved messages should contain the inherited ones
-		msgs := handler.messages["agent1"]
-		assert.True(t, len(msgs) > 2, "expected inherited + own messages")
-	})
-
-	t.Run("HandlerNotCalledForAgentStepWithNoMessages", func(t *testing.T) {
-		t.Parallel()
-
-		handler := newMockMessagesHandler()
-		r := setupRunner(t, withMessagesHandler(handler))
-
-		// agentStep helper creates a step with executor type "agent" (real executor),
-		// which will fail since no agent config is available — but the gate should
-		// allow the step through (setup/save calls won't panic).
-		plan := r.newPlan(t, agentStep("agent_fail"))
-		_ = plan.assertRun(t, core.Failed)
-
-		// Handler must not be called: step failed so saveChatMessages is skipped.
-		assert.Equal(t, 0, handler.writeCalls)
-	})
 }
 
 func TestSetupPushBackConversation(t *testing.T) {
-	t.Run("LoadsOwnMessagesForPushedBackAgentStep", func(t *testing.T) {
-		t.Parallel()
-
-		handler := newMockMessagesHandler()
-		// Pre-populate the step's own previous messages.
-		handler.messages["agent1"] = []exec.LLMMessage{
-			{Role: exec.RoleSystem, Content: "be helpful"},
-			{Role: exec.RoleUser, Content: "original prompt"},
-			{Role: exec.RoleAssistant, Content: "previous response"},
-		}
-		// Also set dependency messages to verify they get replaced.
-		handler.messages["dep1"] = []exec.LLMMessage{
-			{Role: exec.RoleUser, Content: "dep message"},
-		}
-
-		r := setupRunner(t, withMessagesHandler(handler))
-
-		step := newStep("agent1",
-			withExecutorType(core.ExecutorTypeAgent),
-			withDepends("dep1"),
-			withApproval(&core.ApprovalConfig{
-				Prompt: "review this",
-				Input:  []string{"FEEDBACK"},
-			}),
-		)
-
-		plan := r.newPlan(t, successStep("dep1"), step)
-		node := plan.GetNodeByName("agent1")
-		require.NotNil(t, node)
-
-		// Simulate push-back: set ApprovalIteration > 0
-		node.SetApprovalIteration(1)
-
-		ctx := context.Background()
-
-		// First, setupChatMessages sets dependency messages.
-		r.runner.SetupChatMessages(ctx, node)
-		msgs := node.GetChatMessages()
-		require.Len(t, msgs, 1)
-		assert.Equal(t, "dep message", msgs[0].Content)
-
-		// Then, setupPushBackConversation replaces with own messages.
-		r.runner.SetupPushBackConversation(ctx, node)
-		msgs = node.GetChatMessages()
-		require.Len(t, msgs, 3)
-		assert.Equal(t, "be helpful", msgs[0].Content)
-		assert.Equal(t, "original prompt", msgs[1].Content)
-		assert.Equal(t, "previous response", msgs[2].Content)
-	})
-
 	t.Run("LoadsOwnMessagesForPushedBackChatStep", func(t *testing.T) {
 		t.Parallel()
 
@@ -3772,19 +3878,19 @@ func TestSetupPushBackConversation(t *testing.T) {
 		t.Parallel()
 
 		handler := newMockMessagesHandler()
-		handler.messages["agent1"] = []exec.LLMMessage{
+		handler.messages["chat1"] = []exec.LLMMessage{
 			{Role: exec.RoleUser, Content: "should not load"},
 		}
 
 		r := setupRunner(t, withMessagesHandler(handler))
 
-		step := newStep("agent1",
-			withExecutorType(core.ExecutorTypeAgent),
+		step := newStep("chat1",
+			withExecutorType(core.ExecutorTypeChat),
 			withApproval(&core.ApprovalConfig{}),
 		)
 
 		plan := r.newPlan(t, step)
-		node := plan.GetNodeByName("agent1")
+		node := plan.GetNodeByName("chat1")
 		// ApprovalIteration is 0 (default) — no push-back
 
 		ctx := context.Background()
@@ -3795,7 +3901,7 @@ func TestSetupPushBackConversation(t *testing.T) {
 		assert.Empty(t, msgs)
 	})
 
-	t.Run("NoOpForNonAgentStep", func(t *testing.T) {
+	t.Run("NoOpForNonLLMStep", func(t *testing.T) {
 		t.Parallel()
 
 		handler := newMockMessagesHandler()
@@ -3821,23 +3927,23 @@ func TestSetupPushBackConversation(t *testing.T) {
 		assert.Empty(t, msgs)
 	})
 
-	t.Run("LoadsOwnMessagesForPushedBackAgentStepWithoutApprovalConfig", func(t *testing.T) {
+	t.Run("LoadsOwnMessagesForPushedBackChatStepWithoutApprovalConfig", func(t *testing.T) {
 		t.Parallel()
 
 		handler := newMockMessagesHandler()
-		handler.messages["agent1"] = []exec.LLMMessage{
+		handler.messages["chat1"] = []exec.LLMMessage{
 			{Role: exec.RoleUser, Content: "previous prompt"},
 			{Role: exec.RoleAssistant, Content: "previous response"},
 		}
 
 		r := setupRunner(t, withMessagesHandler(handler))
 
-		step := newStep("agent1",
-			withExecutorType(core.ExecutorTypeAgent),
+		step := newStep("chat1",
+			withExecutorType(core.ExecutorTypeChat),
 		)
 
 		plan := r.newPlan(t, step)
-		node := plan.GetNodeByName("agent1")
+		node := plan.GetNodeByName("chat1")
 		node.SetApprovalIteration(1)
 
 		ctx := context.Background()
@@ -3857,13 +3963,13 @@ func TestSetupPushBackConversation(t *testing.T) {
 
 		r := setupRunner(t, withMessagesHandler(handler))
 
-		step := newStep("agent1",
-			withExecutorType(core.ExecutorTypeAgent),
+		step := newStep("chat1",
+			withExecutorType(core.ExecutorTypeChat),
 			withApproval(&core.ApprovalConfig{}),
 		)
 
 		plan := r.newPlan(t, step)
-		node := plan.GetNodeByName("agent1")
+		node := plan.GetNodeByName("chat1")
 		node.SetApprovalIteration(1)
 
 		ctx := context.Background()

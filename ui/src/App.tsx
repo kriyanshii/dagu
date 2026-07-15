@@ -2,37 +2,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import React from 'react';
-import {
-  BrowserRouter,
-  Link,
-  Navigate,
-  Route,
-  Routes,
-  useLocation,
-} from 'react-router-dom';
+import { BrowserRouter, Link, Route, Routes } from 'react-router-dom';
 import { SWRConfig, mutate as globalMutate } from 'swr';
 
 import { Shield } from 'lucide-react';
 
 import { ProtectedRoute } from './components/ProtectedRoute';
+import { QueryFeedback } from './components/QueryFeedback';
 import { ErrorModalProvider } from '@/components/ui/error-modal';
 import { ToastProvider } from '@/components/ui/simple-toast';
 import { AppBarContext } from './contexts/AppBarContext';
-import { AuthProvider, hasRole, useAuth } from './contexts/AuthContext';
+import { AuthProvider } from './contexts/AuthContext';
 import {
   Config,
   ConfigContext,
   ConfigUpdateContext,
 } from './contexts/ConfigContext';
 import { useHasFeature, useLicense } from './hooks/useLicense';
-import { PageContextProvider } from './contexts/PageContext';
 import { SchemaProvider } from './contexts/SchemaContext';
 import { SearchStateProvider } from './contexts/SearchStateContext';
 import {
   UserPreferencesProvider,
   useUserPreferences,
 } from './contexts/UserPreference';
-import { AgentChatModal, AgentChatProvider } from './features/agent';
 import Layout from './layouts/Layout';
 import fetchJson from './lib/fetchJson';
 import { fetchWithTimeout, shouldRetryQueryError } from './lib/requestTimeout';
@@ -48,47 +40,50 @@ import {
   type WorkspaceSelection,
 } from './lib/workspace';
 import { UserRole } from './api/v1/schema';
-import AgentMemoryPage from './pages/agent-memory';
-import AgentPage from './pages/agent';
-import AgentSettingsPage from './pages/agent-settings';
-import AgentSoulsPage from './pages/agent-souls';
-import SoulEditorPage from './pages/agent-souls/SoulEditorPage';
-import AgentToolsPage from './pages/agent-tools';
-import AdministrationPage from './pages/administration';
-import APIKeysPage from './pages/api-keys';
-import APIDocsPage from './pages/api-docs';
-import AuditLogsPage from './pages/audit-logs';
-import BaseConfigPage from './pages/base-config';
-import DAGRuns from './pages/dag-runs';
-import DAGRunDetails from './pages/dag-runs/dag-run';
-import DAGs from './pages/dags';
-import DAGDetails from './pages/dags/dag';
-import WorkflowDesignPage from './pages/design';
-import DocsPage from './pages/docs';
-import EventLogsPage from './pages/event-logs';
-import GitSyncPage from './pages/git-sync';
-import HomePage from './pages/home';
-import IncidentPoliciesPage from './pages/incident-policies';
-import IncidentProvidersPage from './pages/incident-providers';
-import IncidentsPage from './pages/incidents';
-import IntegrationsPage from './pages/integrations';
-import LicensePage from './pages/license';
 import LoginPage from './pages/login';
-import NotificationChannelsPage from './pages/notification-channels';
-import NotificationRulesPage from './pages/notification-rules';
-import NotificationsPage from './pages/notifications';
-import OverviewPage from './pages/overview';
-import ProfilesPage from './pages/profiles';
-import Queues from './pages/queues';
-import QueueDetailsPage from './pages/queues/queue';
-import Search from './pages/search';
-import SecretsPage from './pages/secrets';
 import SetupPage from './pages/setup';
-import SystemStatus from './pages/system-status';
-import TerminalPage from './pages/terminal';
-import RemoteNodesPage from './pages/remote-nodes';
-import UsersPage from './pages/users';
-import WebhooksPage from './pages/webhooks';
+import LoadingIndicator from './components/ui/loading-indicator';
+
+const AdministrationPage = React.lazy(() => import('./pages/administration'));
+const APIKeysPage = React.lazy(() => import('./pages/api-keys'));
+const APIDocsPage = React.lazy(() => import('./pages/api-docs'));
+const AuditLogsPage = React.lazy(() => import('./pages/audit-logs'));
+const BaseConfigPage = React.lazy(() => import('./pages/base-config'));
+const DAGRuns = React.lazy(() => import('./pages/dag-runs'));
+const DAGRunDetails = React.lazy(() => import('./pages/dag-runs/dag-run'));
+const DAGs = React.lazy(() => import('./pages/dags'));
+const DAGDetails = React.lazy(() => import('./pages/dags/dag'));
+const EventLogsPage = React.lazy(() => import('./pages/event-logs'));
+const GitSyncPage = React.lazy(() => import('./pages/git-sync'));
+const HomePage = React.lazy(() => import('./pages/home'));
+const IncidentPoliciesPage = React.lazy(
+  () => import('./pages/incident-policies')
+);
+const IncidentProvidersPage = React.lazy(
+  () => import('./pages/incident-providers')
+);
+const IncidentsPage = React.lazy(() => import('./pages/incidents'));
+const IntegrationsPage = React.lazy(() => import('./pages/integrations'));
+const LicensePage = React.lazy(() => import('./pages/license'));
+const NotificationChannelsPage = React.lazy(
+  () => import('./pages/notification-channels')
+);
+const NotificationRulesPage = React.lazy(
+  () => import('./pages/notification-rules')
+);
+const NotificationsPage = React.lazy(() => import('./pages/notifications'));
+const OverviewPage = React.lazy(() => import('./pages/overview'));
+const ViewPage = React.lazy(() => import('./pages/views'));
+const ProfilesPage = React.lazy(() => import('./pages/profiles'));
+const Queues = React.lazy(() => import('./pages/queues'));
+const QueueDetailsPage = React.lazy(() => import('./pages/queues/queue'));
+const Search = React.lazy(() => import('./pages/search'));
+const SecretsPage = React.lazy(() => import('./pages/secrets'));
+const SystemStatus = React.lazy(() => import('./pages/system-status'));
+const TerminalPage = React.lazy(() => import('./pages/terminal'));
+const RemoteNodesPage = React.lazy(() => import('./pages/remote-nodes'));
+const UsersPage = React.lazy(() => import('./pages/users'));
+const WebhooksPage = React.lazy(() => import('./pages/webhooks'));
 
 type Props = {
   config: Config;
@@ -180,37 +175,6 @@ function DeveloperElement({
   );
 }
 
-function WriteElement({
-  children,
-}: {
-  children: React.ReactElement;
-}): React.ReactElement {
-  const { user } = useAuth();
-  const config = React.useContext(ConfigContext);
-  const canWrite =
-    config.authMode !== 'builtin'
-      ? config.permissions.writeDags
-      : hasRole(user?.role ?? UserRole.viewer, UserRole.developer);
-  if (!canWrite || !config.agentEnabled) {
-    return <Navigate to="/" replace />;
-  }
-  return children;
-}
-
-function AgentChatModalHost({
-  enabled,
-}: {
-  enabled: boolean;
-}): React.ReactElement | null {
-  const location = useLocation();
-  const isDesignWorkspace =
-    location.pathname === '/design' || location.pathname.startsWith('/design/');
-  if (!enabled || isDesignWorkspace) {
-    return null;
-  }
-  return <AgentChatModal />;
-}
-
 function LicensedRoute({
   feature,
   children,
@@ -253,6 +217,65 @@ function LicenseRequiredMessage(): React.ReactElement {
         page to activate your license.
       </p>
     </div>
+  );
+}
+
+type LazyRouteErrorBoundaryProps = {
+  children: React.ReactNode;
+};
+
+type LazyRouteErrorBoundaryState = {
+  hasError: boolean;
+};
+
+class LazyRouteErrorBoundary extends React.Component<
+  LazyRouteErrorBoundaryProps,
+  LazyRouteErrorBoundaryState
+> {
+  state: LazyRouteErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): LazyRouteErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  render(): React.ReactNode {
+    if (this.state.hasError) {
+      return (
+        <div
+          role="alert"
+          className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center"
+        >
+          <h2 className="text-xl font-semibold">Unable to load this page</h2>
+          <p className="max-w-md text-sm text-muted-foreground">
+            The page may have changed since this tab was opened. Reload to use
+            the latest version.
+          </p>
+          <button
+            type="button"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+            onClick={() => window.location.reload()}
+          >
+            Reload
+          </button>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+function LazyRoutes({
+  children,
+}: {
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <LazyRouteErrorBoundary>
+      <React.Suspense fallback={<LoadingIndicator />}>
+        <Routes>{children}</Routes>
+      </React.Suspense>
+    </LazyRouteErrorBoundary>
   );
 }
 
@@ -545,320 +568,248 @@ function AppInner({ config: initialConfig }: Props): React.ReactElement {
                 <SchemaProvider>
                   <ErrorModalProvider>
                     <ToastProvider>
-                      <BrowserRouter basename={config.basePath}>
-                        <Routes>
-                          <Route path="/login" element={<LoginPage />} />
-                          <Route path="/setup" element={<SetupPage />} />
-                          <Route
-                            path="/*"
-                            element={
-                              <ProtectedRoute>
-                                <AgentChatProvider>
-                                  <PageContextProvider>
-                                    <Layout navbarColor={config.navbarColor}>
-                                      <Routes>
-                                        <Route
-                                          path="/"
-                                          element={<OverviewPage />}
-                                        />
-                                        <Route
-                                          path="/dashboard"
-                                          element={
-                                            <OverviewPage initialTab="timeline" />
-                                          }
-                                        />
-                                        <Route
-                                          path="/cockpit"
-                                          element={
-                                            <OverviewPage initialTab="cockpit" />
-                                          }
-                                        />
-                                        <Route
-                                          path="/home"
-                                          element={<HomePage />}
-                                        />
-                                        <Route
-                                          path="/api-docs"
-                                          element={<APIDocsPage />}
-                                        />
-                                        <Route
-                                          path="/integrations"
-                                          element={<IntegrationsPage />}
-                                        />
-                                        <Route
-                                          path="/notifications"
-                                          element={
-                                            <ActiveLicenseDeveloperElement>
-                                              <NotificationsPage />
-                                            </ActiveLicenseDeveloperElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/notification-rules"
-                                          element={
-                                            <ActiveLicenseDeveloperElement>
-                                              <NotificationRulesPage />
-                                            </ActiveLicenseDeveloperElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/notification-channels"
-                                          element={
-                                            <ActiveLicenseDeveloperElement>
-                                              <NotificationChannelsPage />
-                                            </ActiveLicenseDeveloperElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/incidents"
-                                          element={
-                                            <ActiveLicenseDeveloperElement>
-                                              <IncidentsPage />
-                                            </ActiveLicenseDeveloperElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/incident-providers"
-                                          element={
-                                            <ActiveLicenseDeveloperElement>
-                                              <IncidentProvidersPage />
-                                            </ActiveLicenseDeveloperElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/incident-policies"
-                                          element={
-                                            <ActiveLicenseDeveloperElement>
-                                              <IncidentPoliciesPage />
-                                            </ActiveLicenseDeveloperElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/dags/"
-                                          element={<DAGs />}
-                                        />
-                                        <Route
-                                          path="/dags/:fileName/:tab"
-                                          element={<DAGDetails />}
-                                        />
-                                        <Route
-                                          path="/dags/:fileName/"
-                                          element={<DAGDetails />}
-                                        />
-                                        <Route
-                                          path="/design"
-                                          element={
-                                            <WriteElement>
-                                              <WorkflowDesignPage />
-                                            </WriteElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/search/"
-                                          element={<Search />}
-                                        />
-                                        <Route
-                                          path="/docs/*"
-                                          element={<DocsPage />}
-                                        />
-                                        <Route
-                                          path="/queues"
-                                          element={<Queues />}
-                                        />
-                                        <Route
-                                          path="/queues/:name"
-                                          element={<QueueDetailsPage />}
-                                        />
-                                        <Route
-                                          path="/dag-runs"
-                                          element={<DAGRuns />}
-                                        />
-                                        <Route
-                                          path="/dag-runs/:name/:dagRunId"
-                                          element={<DAGRunDetails />}
-                                        />
-                                        <Route
-                                          path="/system-status"
-                                          element={
-                                            <DeveloperElement>
-                                              <SystemStatus />
-                                            </DeveloperElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/base-config"
-                                          element={
-                                            <DeveloperElement>
-                                              <BaseConfigPage />
-                                            </DeveloperElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/users"
-                                          element={
-                                            <AdminElement>
-                                              <UsersPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/administration"
-                                          element={
-                                            <AdminElement>
-                                              <AdministrationPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/remote-nodes"
-                                          element={
-                                            <AdminElement>
-                                              <RemoteNodesPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/api-keys"
-                                          element={
-                                            <AdminElement>
-                                              <APIKeysPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/webhooks"
-                                          element={
-                                            <DeveloperElement>
-                                              <WebhooksPage />
-                                            </DeveloperElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/secrets"
-                                          element={
-                                            <ManagerElement>
-                                              <SecretsPage />
-                                            </ManagerElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/profiles"
-                                          element={
-                                            <ManagerElement>
-                                              <ProfilesPage />
-                                            </ManagerElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/terminal"
-                                          element={
-                                            <AdminElement>
-                                              <TerminalPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/event-logs"
-                                          element={
-                                            <ManagerElement>
-                                              <EventLogsPage />
-                                            </ManagerElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/audit-logs"
-                                          element={
-                                            <ManagerElement>
-                                              <LicensedRoute feature="audit">
-                                                <AuditLogsPage />
-                                              </LicensedRoute>
-                                            </ManagerElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/license"
-                                          element={
-                                            <AdminElement>
-                                              <LicensePage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/git-sync"
-                                          element={
-                                            <AdminElement>
-                                              <GitSyncPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/agent"
-                                          element={
-                                            <AdminElement>
-                                              <AgentPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/agent-settings"
-                                          element={
-                                            <AdminElement>
-                                              <AgentSettingsPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/agent-tools"
-                                          element={
-                                            <AdminElement>
-                                              <AgentToolsPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/agent-memory"
-                                          element={
-                                            <AdminElement>
-                                              <AgentMemoryPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/agent-souls"
-                                          element={
-                                            <AdminElement>
-                                              <AgentSoulsPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/agent-souls/new"
-                                          element={
-                                            <AdminElement>
-                                              <SoulEditorPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                        <Route
-                                          path="/agent-souls/:soulId"
-                                          element={
-                                            <AdminElement>
-                                              <SoulEditorPage />
-                                            </AdminElement>
-                                          }
-                                        />
-                                      </Routes>
-                                    </Layout>
-                                    <AgentChatModalHost
-                                      enabled={config.agentEnabled}
-                                    />
-                                  </PageContextProvider>
-                                </AgentChatProvider>
-                              </ProtectedRoute>
-                            }
-                          />
-                        </Routes>
-                      </BrowserRouter>
+                      <QueryFeedback>
+                        <BrowserRouter basename={config.basePath}>
+                          <Routes>
+                            <Route path="/login" element={<LoginPage />} />
+                            <Route path="/setup" element={<SetupPage />} />
+                            <Route
+                              path="/*"
+                              element={
+                                <ProtectedRoute>
+                                  <Layout navbarColor={config.navbarColor}>
+                                    <LazyRoutes>
+                                      <Route
+                                        path="/"
+                                        element={<OverviewPage />}
+                                      />
+                                      <Route
+                                        path="/dashboard"
+                                        element={
+                                          <OverviewPage initialTab="timeline" />
+                                        }
+                                      />
+                                      <Route
+                                        path="/cockpit"
+                                        element={
+                                          <OverviewPage initialTab="cockpit" />
+                                        }
+                                      />
+                                      <Route
+                                        path="/views/:viewId"
+                                        element={<ViewPage />}
+                                      />
+                                      <Route
+                                        path="/home"
+                                        element={<HomePage />}
+                                      />
+                                      <Route
+                                        path="/api-docs"
+                                        element={<APIDocsPage />}
+                                      />
+                                      <Route
+                                        path="/integrations"
+                                        element={<IntegrationsPage />}
+                                      />
+                                      <Route
+                                        path="/notifications"
+                                        element={
+                                          <DeveloperElement>
+                                            <NotificationsPage />
+                                          </DeveloperElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/notification-rules"
+                                        element={
+                                          <DeveloperElement>
+                                            <NotificationRulesPage />
+                                          </DeveloperElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/notification-channels"
+                                        element={
+                                          <DeveloperElement>
+                                            <NotificationChannelsPage />
+                                          </DeveloperElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/incidents"
+                                        element={
+                                          <ActiveLicenseDeveloperElement>
+                                            <IncidentsPage />
+                                          </ActiveLicenseDeveloperElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/incident-providers"
+                                        element={
+                                          <ActiveLicenseDeveloperElement>
+                                            <IncidentProvidersPage />
+                                          </ActiveLicenseDeveloperElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/incident-policies"
+                                        element={
+                                          <ActiveLicenseDeveloperElement>
+                                            <IncidentPoliciesPage />
+                                          </ActiveLicenseDeveloperElement>
+                                        }
+                                      />
+                                      <Route path="/dags/" element={<DAGs />} />
+                                      <Route
+                                        path="/dags/:fileName/:tab"
+                                        element={<DAGDetails />}
+                                      />
+                                      <Route
+                                        path="/dags/:fileName/"
+                                        element={<DAGDetails />}
+                                      />
+                                      <Route
+                                        path="/search/"
+                                        element={<Search />}
+                                      />
+                                      <Route
+                                        path="/queues"
+                                        element={<Queues />}
+                                      />
+                                      <Route
+                                        path="/queues/:name"
+                                        element={<QueueDetailsPage />}
+                                      />
+                                      <Route
+                                        path="/dag-runs"
+                                        element={<DAGRuns />}
+                                      />
+                                      <Route
+                                        path="/dag-runs/:name/:dagRunId"
+                                        element={<DAGRunDetails />}
+                                      />
+                                      <Route
+                                        path="/system-status"
+                                        element={
+                                          <DeveloperElement>
+                                            <SystemStatus />
+                                          </DeveloperElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/base-config"
+                                        element={
+                                          <DeveloperElement>
+                                            <BaseConfigPage />
+                                          </DeveloperElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/users"
+                                        element={
+                                          <AdminElement>
+                                            <UsersPage />
+                                          </AdminElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/administration"
+                                        element={
+                                          <AdminElement>
+                                            <AdministrationPage />
+                                          </AdminElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/remote-nodes"
+                                        element={
+                                          <AdminElement>
+                                            <RemoteNodesPage />
+                                          </AdminElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/api-keys"
+                                        element={
+                                          <AdminElement>
+                                            <APIKeysPage />
+                                          </AdminElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/webhooks"
+                                        element={
+                                          <DeveloperElement>
+                                            <WebhooksPage />
+                                          </DeveloperElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/secrets"
+                                        element={
+                                          <ManagerElement>
+                                            <SecretsPage />
+                                          </ManagerElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/profiles"
+                                        element={
+                                          <ManagerElement>
+                                            <ProfilesPage />
+                                          </ManagerElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/terminal"
+                                        element={
+                                          <AdminElement>
+                                            <TerminalPage />
+                                          </AdminElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/event-logs"
+                                        element={
+                                          <ManagerElement>
+                                            <EventLogsPage />
+                                          </ManagerElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/audit-logs"
+                                        element={
+                                          <ManagerElement>
+                                            <LicensedRoute feature="audit">
+                                              <AuditLogsPage />
+                                            </LicensedRoute>
+                                          </ManagerElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/license"
+                                        element={
+                                          <AdminElement>
+                                            <LicensePage />
+                                          </AdminElement>
+                                        }
+                                      />
+                                      <Route
+                                        path="/git-sync"
+                                        element={
+                                          <AdminElement>
+                                            <GitSyncPage />
+                                          </AdminElement>
+                                        }
+                                      />
+                                    </LazyRoutes>
+                                  </Layout>
+                                </ProtectedRoute>
+                              }
+                            />
+                          </Routes>
+                        </BrowserRouter>
+                      </QueryFeedback>
                     </ToastProvider>
                   </ErrorModalProvider>
                 </SchemaProvider>

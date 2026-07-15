@@ -12,24 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/eval"
 	"github.com/dagucloud/dagu/internal/cmn/stringutil"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
+	"github.com/dagucloud/dagu/internal/core"
+	"github.com/dagucloud/dagu/internal/core/exec"
 )
-
-// EvalString evaluates the given string with the variables within the execution context.
-func EvalString(ctx context.Context, s string, opts ...eval.Option) (string, error) {
-	return GetEnv(ctx).EvalString(ctx, s, opts...)
-}
-
-// EvalStepString evaluates a step-owned string field while preserving literal
-// backticks. Step fields are treated as data or downstream program input unless
-// they are explicit condition expressions evaluated elsewhere.
-func EvalStepString(ctx context.Context, s string, opts ...eval.Option) (string, error) {
-	options := make([]eval.Option, 0, len(opts)+1)
-	options = append(options, eval.WithoutSubstitute())
-	options = append(options, opts...)
-	return EvalString(ctx, s, options...)
-}
 
 // EvalBool evaluates the given value with the variables within the execution context
 // and parses it as a boolean.
@@ -41,8 +28,142 @@ func EvalBool(ctx context.Context, value any) (bool, error) {
 // with the variables within the execution context.
 func EvalObject[T any](ctx context.Context, obj T) (T, error) {
 	env := GetEnv(ctx)
-	ctx = eval.WithEnvScope(ctx, env.Scope)
-	return eval.Object(ctx, obj, env.UserEnvsMap(), eval.WithStepMap(env.StepMap))
+	resolver := resolverFromEnv(env)
+	got, err := resolver.Object(ctx, obj, cmnvalue.WorkflowObjectField("object"))
+	if err != nil {
+		return obj, err
+	}
+	val, ok := got.(T)
+	if !ok {
+		return obj, fmt.Errorf("type assertion failed: expected %T, got %T", obj, got)
+	}
+	return val, nil
+}
+
+func resolverFromEnv(env Env) cmnvalue.Resolver {
+	var consts cmnvalue.Values
+	var params cmnvalue.Values
+	var paramsJSON string
+	var paramDeclarations cmnvalue.Values
+	if env.DAG != nil {
+		consts = cmnvalue.Values(env.DAG.Consts)
+		params = env.DAG.ParamValues()
+		paramsJSON = env.DAG.ParamsJSON
+		paramDeclarations = env.DAG.ParamDeclarations()
+	}
+	scope := cmnvalue.RuntimeScope{
+		Consts:         consts,
+		Params:         params,
+		ParamsJSON:     paramsJSON,
+		Env:            env.Scope,
+		Steps:          env.StepMap,
+		Foreach:        env.Foreach,
+		BuiltinContext: builtinContextFromEnv(env),
+	}
+	return cmnvalue.NewResolver(cmnvalue.StaticScope{Consts: consts, Params: paramDeclarations}, scope)
+}
+
+func builtinContextFromEnv(env Env) cmnvalue.BuiltinContext {
+	return builtinContextFromDAGContext(env.Context, env.Scope, env.Step)
+}
+
+func builtinContextFromDAGContext(rCtx Context, scope *cmnvalue.EnvScope, step core.Step) cmnvalue.BuiltinContext {
+	values := make(map[string]string)
+	addBuiltinContextValue(values, "context.dag.name", dagName(rCtx))
+	addBuiltinContextValue(values, "context.run.id", rCtx.DAGRunID)
+	addBuiltinContextValue(values, "context.attempt.started_at", rCtx.RunStartedAt)
+	addBuiltinContextValue(values, "context.run.scheduled_at", rCtx.ScheduleTime)
+	if rootDAGRunContextAvailable(rCtx) {
+		addBuiltinContextValue(values, "context.run.root_name", rCtx.RootDAGRun.Name)
+		addBuiltinContextValue(values, "context.run.root_id", rCtx.RootDAGRun.ID)
+	}
+	addBuiltinContextValue(values, "context.attempt.id", rCtx.AttemptID)
+	addBuiltinContextValue(values, "context.step.id", step.ID)
+	addBuiltinContextValue(values, "context.step.name", step.Name)
+	addBuiltinContextValue(values, "context.trigger.type", rCtx.TriggerType.String())
+	addBuiltinContextValue(values, "context.trigger.actor", rCtx.TriggerActor)
+	addBuiltinContextEnvValue(values, "context.run.status", scope, exec.EnvKeyDAGRunStatus)
+	addBuiltinContextEnvValue(values, "context.paths.log_file", scope, exec.EnvKeyDAGRunLogFile)
+	addBuiltinContextEnvValue(values, "context.paths.work_dir", scope, exec.EnvKeyDAGRunWorkDir)
+	addBuiltinContextEnvValue(values, "context.paths.artifacts_dir", scope, exec.EnvKeyDAGRunArtifactsDir)
+	addBuiltinContextEnvValue(values, "context.paths.step_stdout_file", scope, exec.EnvKeyDAGRunStepStdoutFile)
+	addBuiltinContextEnvValue(values, "context.paths.step_stderr_file", scope, exec.EnvKeyDAGRunStepStderrFile)
+	addBuiltinContextEnvValue(values, "context.paths.step_output_file", scope, exec.EnvKeyDAGUOutputFile)
+	addBuiltinContextValue(values, "context.profile.name", rCtx.ProfileName)
+	addBuiltinContextValue(values, "context.profile.resolved_at", rCtx.ProfileResolvedAt)
+	addBuiltinContextEnvValue(values, "context.pushback.iteration", scope, exec.EnvKeyDAGPushBackIteration)
+	addBuiltinContextEnvValue(values, "context.pushback.previous_stdout_file", scope, exec.EnvKeyDAGPushBackPreviousStdoutFile)
+	return cmnvalue.NewBuiltinContext(values)
+}
+
+func dagName(rCtx Context) string {
+	if rCtx.DAG == nil {
+		return ""
+	}
+	return rCtx.DAG.Name
+}
+
+func rootDAGRunContextAvailable(rCtx Context) bool {
+	if rCtx.RootDAGRun.Zero() {
+		return false
+	}
+	if rCtx.DAG != nil && rCtx.RootDAGRun.Name == rCtx.DAG.Name && rCtx.RootDAGRun.ID == rCtx.DAGRunID {
+		return false
+	}
+	return true
+}
+
+func addBuiltinContextValue(values map[string]string, path string, value string) {
+	if value == "" {
+		return
+	}
+	values[path] = value
+}
+
+func addBuiltinContextEnvValue(values map[string]string, path string, scope *cmnvalue.EnvScope, key string) {
+	if scope == nil {
+		return
+	}
+	value, ok := scope.Get(key)
+	if !ok {
+		return
+	}
+	addBuiltinContextValue(values, path, value)
+}
+
+func resolveRuntimeString(ctx context.Context, raw string, field cmnvalue.Field) (string, error) {
+	return resolverFromEnv(GetEnv(ctx)).String(ctx, raw, field)
+}
+
+func resolveRuntimeObject(ctx context.Context, obj any, field cmnvalue.Field) (any, error) {
+	return resolverFromEnv(GetEnv(ctx)).Object(ctx, obj, field)
+}
+
+func resolveRuntimeInt(ctx context.Context, raw string, field cmnvalue.Field) (int, error) {
+	return resolverFromEnv(GetEnv(ctx)).Int(ctx, raw, field)
+}
+
+func resolveWithEnvScope(ctx context.Context, env Env, scope *cmnvalue.EnvScope, raw string, field cmnvalue.Field) (string, error) {
+	copy := env
+	copy.Scope = scope
+	return resolverFromEnv(copy).String(ctx, raw, field)
+}
+
+// ValueResolver returns a semantic value resolver for the runtime environment in ctx.
+func ValueResolver(ctx context.Context) cmnvalue.Resolver {
+	return resolverFromEnv(GetEnv(ctx))
+}
+
+// ValueResolverWithScope returns a semantic value resolver using scope as the runtime env scope.
+func ValueResolverWithScope(ctx context.Context, scope *cmnvalue.EnvScope) cmnvalue.Resolver {
+	env := GetEnv(ctx)
+	env.Scope = scope
+	return resolverFromEnv(env)
+}
+
+// ResolveString resolves raw with the semantic field in the runtime environment.
+func ResolveString(ctx context.Context, raw string, field cmnvalue.Field) (string, error) {
+	return ValueResolver(ctx).String(ctx, raw, field)
 }
 
 // templateConfigEvalVariables clones the user env map and seeds omitted named DAG

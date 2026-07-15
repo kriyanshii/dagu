@@ -20,7 +20,7 @@ const useCanManageProfilesMock = vi.fn();
 const useCanViewAuditLogsMock = vi.fn();
 const useHasFeatureMock = vi.fn();
 const updatePreferenceMock = vi.fn();
-const toggleChatMock = vi.fn();
+const useViewsMock = vi.fn();
 
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => useAuthMock(),
@@ -53,8 +53,8 @@ vi.mock('../contexts/UserPreference', () => ({
   }),
 }));
 
-vi.mock('../features/agent', () => ({
-  useAgentChatContext: () => ({ toggleChat: toggleChatMock }),
+vi.mock('@/hooks/useViews', () => ({
+  useViews: () => useViewsMock(),
 }));
 
 const config: Config = {
@@ -74,7 +74,6 @@ const config: Config = {
   oidcButtonLabel: '',
   terminalEnabled: true,
   gitSyncEnabled: true,
-  agentEnabled: true,
   updateAvailable: false,
   latestVersion: '',
   permissions: {
@@ -141,6 +140,7 @@ function renderMenu(
 
 beforeEach(() => {
   localStorage.clear();
+  useViewsMock.mockReturnValue({ views: [] });
   useAuthMock.mockReturnValue({
     user: { id: '1', username: 'admin', role: UserRole.admin },
   });
@@ -255,11 +255,8 @@ describe('sidebar menu', () => {
     ).toHaveAttribute('aria-expanded', 'false');
 
     expect(
-      screen.queryByRole('link', { name: 'Docs' })
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('link', { name: 'API Docs' })
-    ).not.toBeInTheDocument();
+      screen.getByRole('link', { name: 'API Reference' })
+    ).not.toBeVisible();
     expect(
       screen.queryByRole('link', { name: 'Dashboard' })
     ).not.toBeInTheDocument();
@@ -307,7 +304,6 @@ describe('sidebar menu', () => {
     const workflowSubmenuItems = [
       screen.getByRole('link', { name: 'Search' }),
       screen.getByRole('link', { name: 'Base Config' }),
-      screen.getByRole('link', { name: 'Runbooks' }),
       screen.getByRole('link', { name: 'Git Sync' }),
     ];
     for (const item of workflowSubmenuItems) {
@@ -366,34 +362,27 @@ describe('sidebar menu', () => {
     expect(
       infrastructureSection.querySelector('svg:not(.lucide-chevron-down)')
     ).toBeNull();
+  });
 
-    expect(screen.getByRole('link', { name: 'Agent' })).toHaveAttribute(
-      'href',
-      '/agent'
-    );
+  it('renders pinned views as standalone sidebar links', () => {
+    useViewsMock.mockReturnValue({
+      views: [{ id: 'v1', name: 'Prod board', pinned: true }],
+    });
+
+    renderMenu('/');
+
+    // Overview stays a flat link, not an accordion.
     expect(
-      screen.getByRole('button', { name: 'Toggle Agent section' })
-    ).toHaveAttribute('aria-expanded', 'false');
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Toggle Agent section' })
-    );
-    const agentSubmenuItems = [
-      screen.getByRole('link', { name: 'Models' }),
-      screen.getByRole('link', { name: 'Tools' }),
-      screen.getByRole('link', { name: 'Memory' }),
-      screen.getByRole('link', { name: 'Souls' }),
-    ];
-    for (const item of agentSubmenuItems) {
-      expect(item).toBeVisible();
-      expect(item.querySelector('svg')).toBeNull();
-    }
-    expect(screen.getByRole('link', { name: 'Models' })).toHaveAttribute(
+      screen.queryByRole('button', { name: 'Toggle Overview section' })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute(
       'href',
-      '/agent-settings'
+      '/'
     );
-    expect(screen.getByRole('link', { name: 'Tools' })).toHaveAttribute(
+    // The pinned view is its own top-level link.
+    expect(screen.getByRole('link', { name: 'Prod board' })).toHaveAttribute(
       'href',
-      '/agent-tools'
+      '/views/v1'
     );
   });
 
@@ -486,37 +475,6 @@ describe('sidebar menu', () => {
     expect(
       screen.getByRole('button', { name: /infrastructure section/i })
     ).toHaveAttribute('aria-expanded', 'false');
-    expect(
-      screen.getByRole('button', { name: /toggle agent section/i })
-    ).toHaveAttribute('aria-expanded', 'false');
-  });
-
-  it('keeps agent settings reachable when agent is disabled', () => {
-    renderMenu('/administration', { agentEnabled: false });
-
-    fireEvent.click(
-      screen.getByRole('button', { name: /toggle administration section/i })
-    );
-    expect(screen.getByRole('link', { name: /agent/i })).toHaveAttribute(
-      'href',
-      '/agent'
-    );
-    expect(
-      screen.getByRole('button', { name: /toggle agent section/i })
-    ).toHaveAttribute('aria-expanded', 'false');
-    fireEvent.click(
-      screen.getByRole('button', { name: /toggle agent section/i })
-    );
-    expect(screen.getByRole('link', { name: /models/i })).toHaveAttribute(
-      'href',
-      '/agent-settings'
-    );
-    expect(screen.getByRole('link', { name: /tools/i })).toHaveAttribute(
-      'href',
-      '/agent-tools'
-    );
-    expect(screen.getByRole('link', { name: /memory/i })).toBeVisible();
-    expect(screen.getByRole('link', { name: /souls/i })).toBeVisible();
   });
 
   it('does not append Pro labels to unavailable sidebar features', () => {

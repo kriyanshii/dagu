@@ -4,7 +4,6 @@
 package distr_test
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"syscall"
@@ -82,24 +81,36 @@ worker_selector:
 steps:
   - name: long-sleep
     run: %s
-`, test.ShellQuote(test.Sleep(30*time.Second))), withLabels(map[string]string{"foo": "bar"}))
+`, test.ShellQuote(test.Sleep(1000*time.Second))), withLabels(map[string]string{"foo": "bar"}))
 		defer f.cleanup()
 
 		require.NoError(t, f.start())
 		f.startScheduler(30 * time.Second)
 
 		var dagRunID string
+		var subRunID string
 		require.Eventually(t, func() bool {
-			status, err := f.latestStatus()
+			workers, err := f.coordinatorClient.GetWorkers(f.coord.Context)
 			if err != nil {
 				return false
 			}
-			if status.Status == core.Running {
-				dagRunID = status.DAGRunID
-				return true
+			for _, worker := range workers {
+				for _, task := range worker.RunningTasks {
+					if task.GetDagName() == "dotest" && task.GetRootDagRunName() == f.dagWrapper.Name {
+						dagRunID = task.GetRootDagRunId()
+						subRunID = task.GetDagRunId()
+						return dagRunID != "" && subRunID != ""
+					}
+				}
 			}
 			return false
-		}, 10*time.Second, 200*time.Millisecond, "Timeout waiting for DAG to start running")
+		}, distrTestTimeout(15*time.Second), 200*time.Millisecond, "Timeout waiting for worker to start sub-DAG")
+
+		rootRef := exec.NewDAGRunRef(f.dagWrapper.Name, dagRunID)
+		require.Eventually(t, func() bool {
+			status, err := f.dagWrapper.DAGRunMgr.FindSubDAGRunStatus(f.coord.Context, rootRef, subRunID)
+			return err == nil && status != nil && status.Status == core.Running
+		}, distrTestTimeout(15*time.Second), 200*time.Millisecond, "Timeout waiting for sub-DAG to start running")
 
 		require.NoError(t, f.stop(dagRunID))
 
@@ -109,7 +120,7 @@ steps:
 				return false
 			}
 			return status.Status == core.Aborted || status.Status == core.Failed
-		}, 15*time.Second, 500*time.Millisecond, "Timeout waiting for DAG to be cancelled")
+		}, distrTestTimeout(15*time.Second), 500*time.Millisecond, "Timeout waiting for DAG to be cancelled")
 
 		finalStatus, err := f.latestStatus()
 		require.NoError(t, err)
@@ -505,80 +516,5 @@ steps:
 		require.NoError(t, err)
 		require.Equal(t, core.Succeeded, finalStatus.Status)
 		require.Equal(t, originalRunID, finalStatus.DAGRunID, "retry should maintain the same run ID")
-	})
-}
-
-func TestRetry_SharedFSMode(t *testing.T) {
-	t.Run("retryWorksWithSharedFSWorker", func(t *testing.T) {
-		f := newTestFixture(t, `
-name: retry-sharedfs-test
-worker_selector:
-  test: "true"
-steps:
-  - name: task1
-    run: echo "sharedfs task1"
-`, withWorkerMode(sharedFSMode))
-		defer f.cleanup()
-
-		require.NoError(t, f.enqueue())
-		f.waitForQueued()
-		f.startScheduler(30 * time.Second)
-
-		status := f.waitForStatus(core.Succeeded, 25*time.Second)
-		dagRunID := status.DAGRunID
-		f.cleanup()
-
-		ctx, cancel := context.WithTimeout(f.coord.Context, 30*time.Second)
-		defer cancel()
-
-		f.schedulerCtx = ctx
-		f.schedulerCancel = cancel
-		f.startScheduler(30 * time.Second)
-
-		require.NoError(t, f.retry(dagRunID))
-
-		require.Eventually(t, func() bool {
-			status, err := f.latestStatus()
-			if err != nil {
-				return false
-			}
-			return status.Status == core.Succeeded
-		}, 25*time.Second, 200*time.Millisecond)
-	})
-
-	t.Run("retryWorksWithSharedFSWorker_NoNameField", func(t *testing.T) {
-		f := newTestFixture(t, `
-worker_selector:
-  test: "true"
-steps:
-  - name: task1
-    run: echo "sharedfs task1"
-`, withWorkerMode(sharedFSMode))
-		defer f.cleanup()
-
-		require.NoError(t, f.enqueue())
-		f.waitForQueued()
-		f.startScheduler(30 * time.Second)
-
-		status := f.waitForStatus(core.Succeeded, 25*time.Second)
-		dagRunID := status.DAGRunID
-		f.cleanup()
-
-		ctx, cancel := context.WithTimeout(f.coord.Context, 30*time.Second)
-		defer cancel()
-
-		f.schedulerCtx = ctx
-		f.schedulerCancel = cancel
-		f.startScheduler(30 * time.Second)
-
-		require.NoError(t, f.retry(dagRunID))
-
-		require.Eventually(t, func() bool {
-			status, err := f.latestStatus()
-			if err != nil {
-				return false
-			}
-			return status.Status == core.Succeeded
-		}, 25*time.Second, 200*time.Millisecond)
 	})
 }

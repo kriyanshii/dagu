@@ -22,24 +22,26 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	CoordinatorService_Poll_FullMethodName               = "/coordinator.v1.CoordinatorService/Poll"
-	CoordinatorService_Dispatch_FullMethodName           = "/coordinator.v1.CoordinatorService/Dispatch"
-	CoordinatorService_GetWorkers_FullMethodName         = "/coordinator.v1.CoordinatorService/GetWorkers"
-	CoordinatorService_Heartbeat_FullMethodName          = "/coordinator.v1.CoordinatorService/Heartbeat"
-	CoordinatorService_AckTaskClaim_FullMethodName       = "/coordinator.v1.CoordinatorService/AckTaskClaim"
-	CoordinatorService_RunHeartbeat_FullMethodName       = "/coordinator.v1.CoordinatorService/RunHeartbeat"
-	CoordinatorService_ReportStatus_FullMethodName       = "/coordinator.v1.CoordinatorService/ReportStatus"
-	CoordinatorService_StreamLogs_FullMethodName         = "/coordinator.v1.CoordinatorService/StreamLogs"
-	CoordinatorService_StreamArtifacts_FullMethodName    = "/coordinator.v1.CoordinatorService/StreamArtifacts"
-	CoordinatorService_PutWorkspaceBundle_FullMethodName = "/coordinator.v1.CoordinatorService/PutWorkspaceBundle"
-	CoordinatorService_HasWorkspaceBundle_FullMethodName = "/coordinator.v1.CoordinatorService/HasWorkspaceBundle"
-	CoordinatorService_GetWorkspaceBundle_FullMethodName = "/coordinator.v1.CoordinatorService/GetWorkspaceBundle"
-	CoordinatorService_GetDAGRunStatus_FullMethodName    = "/coordinator.v1.CoordinatorService/GetDAGRunStatus"
-	CoordinatorService_RequestCancel_FullMethodName      = "/coordinator.v1.CoordinatorService/RequestCancel"
-	CoordinatorService_GetState_FullMethodName           = "/coordinator.v1.CoordinatorService/GetState"
-	CoordinatorService_PutState_FullMethodName           = "/coordinator.v1.CoordinatorService/PutState"
-	CoordinatorService_DeleteState_FullMethodName        = "/coordinator.v1.CoordinatorService/DeleteState"
-	CoordinatorService_ListState_FullMethodName          = "/coordinator.v1.CoordinatorService/ListState"
+	CoordinatorService_Poll_FullMethodName                   = "/coordinator.v1.CoordinatorService/Poll"
+	CoordinatorService_Dispatch_FullMethodName               = "/coordinator.v1.CoordinatorService/Dispatch"
+	CoordinatorService_GetWorkers_FullMethodName             = "/coordinator.v1.CoordinatorService/GetWorkers"
+	CoordinatorService_Heartbeat_FullMethodName              = "/coordinator.v1.CoordinatorService/Heartbeat"
+	CoordinatorService_AckTaskClaim_FullMethodName           = "/coordinator.v1.CoordinatorService/AckTaskClaim"
+	CoordinatorService_RunHeartbeat_FullMethodName           = "/coordinator.v1.CoordinatorService/RunHeartbeat"
+	CoordinatorService_ReportStatus_FullMethodName           = "/coordinator.v1.CoordinatorService/ReportStatus"
+	CoordinatorService_StreamLogs_FullMethodName             = "/coordinator.v1.CoordinatorService/StreamLogs"
+	CoordinatorService_StreamArtifacts_FullMethodName        = "/coordinator.v1.CoordinatorService/StreamArtifacts"
+	CoordinatorService_PutWorkspaceBundle_FullMethodName     = "/coordinator.v1.CoordinatorService/PutWorkspaceBundle"
+	CoordinatorService_HasWorkspaceBundle_FullMethodName     = "/coordinator.v1.CoordinatorService/HasWorkspaceBundle"
+	CoordinatorService_GetWorkspaceBundle_FullMethodName     = "/coordinator.v1.CoordinatorService/GetWorkspaceBundle"
+	CoordinatorService_GetDAGRunStatus_FullMethodName        = "/coordinator.v1.CoordinatorService/GetDAGRunStatus"
+	CoordinatorService_RequestCancel_FullMethodName          = "/coordinator.v1.CoordinatorService/RequestCancel"
+	CoordinatorService_GetState_FullMethodName               = "/coordinator.v1.CoordinatorService/GetState"
+	CoordinatorService_PutState_FullMethodName               = "/coordinator.v1.CoordinatorService/PutState"
+	CoordinatorService_DeleteState_FullMethodName            = "/coordinator.v1.CoordinatorService/DeleteState"
+	CoordinatorService_ListState_FullMethodName              = "/coordinator.v1.CoordinatorService/ListState"
+	CoordinatorService_GetDAG_FullMethodName                 = "/coordinator.v1.CoordinatorService/GetDAG"
+	CoordinatorService_ResolveSecretReference_FullMethodName = "/coordinator.v1.CoordinatorService/ResolveSecretReference"
 )
 
 // CoordinatorServiceClient is the client API for CoordinatorService service.
@@ -62,7 +64,6 @@ type CoordinatorServiceClient interface {
 	// specific coordinator instance.
 	RunHeartbeat(ctx context.Context, in *RunHeartbeatRequest, opts ...grpc.CallOption) (*RunHeartbeatResponse, error)
 	// ReportStatus is called by workers to push DAG run status updates.
-	// Used in shared-nothing architecture where workers don't have filesystem access.
 	ReportStatus(ctx context.Context, in *ReportStatusRequest, opts ...grpc.CallOption) (*ReportStatusResponse, error)
 	// StreamLogs is called by workers to stream step logs to the coordinator.
 	// Uses client streaming for efficient log transmission.
@@ -77,11 +78,11 @@ type CoordinatorServiceClient interface {
 	// GetWorkspaceBundle downloads an immutable content-addressed workspace bundle.
 	GetWorkspaceBundle(ctx context.Context, in *GetWorkspaceBundleRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WorkspaceBundleChunk], error)
 	// GetDAGRunStatus retrieves the status of a DAG run from the coordinator.
-	// Used by parent DAGs to poll status of remote sub-DAGs in shared-nothing mode.
+	// Used by parent DAGs to poll status of remote sub-DAGs.
 	GetDAGRunStatus(ctx context.Context, in *GetDAGRunStatusRequest, opts ...grpc.CallOption) (*GetDAGRunStatusResponse, error)
 	// RequestCancel is called to request cancellation of a DAG run.
-	// Used in shared-nothing mode for sub-DAG cancellation where the parent
-	// cannot directly access the sub-DAG's attempt.
+	// Used for sub-DAG cancellation where the parent cannot directly access the
+	// sub-DAG's attempt.
 	RequestCancel(ctx context.Context, in *RequestCancelRequest, opts ...grpc.CallOption) (*RequestCancelResponse, error)
 	// GetState retrieves persistent DAG state from the coordinator-owned store.
 	GetState(ctx context.Context, in *GetStateRequest, opts ...grpc.CallOption) (*GetStateResponse, error)
@@ -91,6 +92,13 @@ type CoordinatorServiceClient interface {
 	DeleteState(ctx context.Context, in *DeleteStateRequest, opts ...grpc.CallOption) (*DeleteStateResponse, error)
 	// ListState lists persistent DAG state entries by scope, namespace, and key prefix.
 	ListState(ctx context.Context, in *ListStateRequest, opts ...grpc.CallOption) (*ListStateResponse, error)
+	// GetDAG retrieves a DAG definition (raw YAML spec) from the coordinator's DAG store.
+	// Used as a fallback when a worker's local DAG store misses a definition during
+	// sub-DAG execution.
+	GetDAG(ctx context.Context, in *GetDAGRequest, opts ...grpc.CallOption) (*GetDAGResponse, error)
+	// ResolveSecretReference resolves or checks a Dagu-managed secret registry ref.
+	// Used by workers that cannot read the coordinator's secret store.
+	ResolveSecretReference(ctx context.Context, in *ResolveSecretReferenceRequest, opts ...grpc.CallOption) (*ResolveSecretReferenceResponse, error)
 }
 
 type coordinatorServiceClient struct {
@@ -299,6 +307,26 @@ func (c *coordinatorServiceClient) ListState(ctx context.Context, in *ListStateR
 	return out, nil
 }
 
+func (c *coordinatorServiceClient) GetDAG(ctx context.Context, in *GetDAGRequest, opts ...grpc.CallOption) (*GetDAGResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDAGResponse)
+	err := c.cc.Invoke(ctx, CoordinatorService_GetDAG_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *coordinatorServiceClient) ResolveSecretReference(ctx context.Context, in *ResolveSecretReferenceRequest, opts ...grpc.CallOption) (*ResolveSecretReferenceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveSecretReferenceResponse)
+	err := c.cc.Invoke(ctx, CoordinatorService_ResolveSecretReference_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CoordinatorServiceServer is the server API for CoordinatorService service.
 // All implementations must embed UnimplementedCoordinatorServiceServer
 // for forward compatibility.
@@ -319,7 +347,6 @@ type CoordinatorServiceServer interface {
 	// specific coordinator instance.
 	RunHeartbeat(context.Context, *RunHeartbeatRequest) (*RunHeartbeatResponse, error)
 	// ReportStatus is called by workers to push DAG run status updates.
-	// Used in shared-nothing architecture where workers don't have filesystem access.
 	ReportStatus(context.Context, *ReportStatusRequest) (*ReportStatusResponse, error)
 	// StreamLogs is called by workers to stream step logs to the coordinator.
 	// Uses client streaming for efficient log transmission.
@@ -334,11 +361,11 @@ type CoordinatorServiceServer interface {
 	// GetWorkspaceBundle downloads an immutable content-addressed workspace bundle.
 	GetWorkspaceBundle(*GetWorkspaceBundleRequest, grpc.ServerStreamingServer[WorkspaceBundleChunk]) error
 	// GetDAGRunStatus retrieves the status of a DAG run from the coordinator.
-	// Used by parent DAGs to poll status of remote sub-DAGs in shared-nothing mode.
+	// Used by parent DAGs to poll status of remote sub-DAGs.
 	GetDAGRunStatus(context.Context, *GetDAGRunStatusRequest) (*GetDAGRunStatusResponse, error)
 	// RequestCancel is called to request cancellation of a DAG run.
-	// Used in shared-nothing mode for sub-DAG cancellation where the parent
-	// cannot directly access the sub-DAG's attempt.
+	// Used for sub-DAG cancellation where the parent cannot directly access the
+	// sub-DAG's attempt.
 	RequestCancel(context.Context, *RequestCancelRequest) (*RequestCancelResponse, error)
 	// GetState retrieves persistent DAG state from the coordinator-owned store.
 	GetState(context.Context, *GetStateRequest) (*GetStateResponse, error)
@@ -348,6 +375,13 @@ type CoordinatorServiceServer interface {
 	DeleteState(context.Context, *DeleteStateRequest) (*DeleteStateResponse, error)
 	// ListState lists persistent DAG state entries by scope, namespace, and key prefix.
 	ListState(context.Context, *ListStateRequest) (*ListStateResponse, error)
+	// GetDAG retrieves a DAG definition (raw YAML spec) from the coordinator's DAG store.
+	// Used as a fallback when a worker's local DAG store misses a definition during
+	// sub-DAG execution.
+	GetDAG(context.Context, *GetDAGRequest) (*GetDAGResponse, error)
+	// ResolveSecretReference resolves or checks a Dagu-managed secret registry ref.
+	// Used by workers that cannot read the coordinator's secret store.
+	ResolveSecretReference(context.Context, *ResolveSecretReferenceRequest) (*ResolveSecretReferenceResponse, error)
 	mustEmbedUnimplementedCoordinatorServiceServer()
 }
 
@@ -411,6 +445,12 @@ func (UnimplementedCoordinatorServiceServer) DeleteState(context.Context, *Delet
 }
 func (UnimplementedCoordinatorServiceServer) ListState(context.Context, *ListStateRequest) (*ListStateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListState not implemented")
+}
+func (UnimplementedCoordinatorServiceServer) GetDAG(context.Context, *GetDAGRequest) (*GetDAGResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetDAG not implemented")
+}
+func (UnimplementedCoordinatorServiceServer) ResolveSecretReference(context.Context, *ResolveSecretReferenceRequest) (*ResolveSecretReferenceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ResolveSecretReference not implemented")
 }
 func (UnimplementedCoordinatorServiceServer) mustEmbedUnimplementedCoordinatorServiceServer() {}
 func (UnimplementedCoordinatorServiceServer) testEmbeddedByValue()                            {}
@@ -717,6 +757,42 @@ func _CoordinatorService_ListState_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CoordinatorService_GetDAG_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDAGRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CoordinatorServiceServer).GetDAG(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CoordinatorService_GetDAG_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CoordinatorServiceServer).GetDAG(ctx, req.(*GetDAGRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CoordinatorService_ResolveSecretReference_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveSecretReferenceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CoordinatorServiceServer).ResolveSecretReference(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CoordinatorService_ResolveSecretReference_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CoordinatorServiceServer).ResolveSecretReference(ctx, req.(*ResolveSecretReferenceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CoordinatorService_ServiceDesc is the grpc.ServiceDesc for CoordinatorService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -779,6 +855,14 @@ var CoordinatorService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListState",
 			Handler:    _CoordinatorService_ListState_Handler,
+		},
+		{
+			MethodName: "GetDAG",
+			Handler:    _CoordinatorService_GetDAG_Handler,
+		},
+		{
+			MethodName: "ResolveSecretReference",
+			Handler:    _CoordinatorService_ResolveSecretReference_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

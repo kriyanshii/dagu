@@ -6,6 +6,8 @@ package dagrun
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,11 +90,11 @@ func (att *Attempt) SetDAG(dag *core.DAG) {
 // NewAttempt creates a new Run for the specified file.
 func NewAttempt(file string, cache *fileutil.Cache[*exec.DAGRunStatus], opts ...AttemptOption) (*Attempt, error) {
 	dirName := filepath.Base(filepath.Dir(file))
-	matches := reAttemptDir.FindStringSubmatch(strings.TrimPrefix(dirName, "."))
-	if len(matches) != 3 {
+	attemptID, ok := attemptIDFromDir(dirName)
+	if !ok {
 		return nil, fmt.Errorf("invalid file path for run data: %s", file)
 	}
-	att := &Attempt{id: matches[2], file: file, cache: cache}
+	att := &Attempt{id: attemptID, file: file, cache: cache}
 	for _, opt := range opts {
 		opt(att)
 	}
@@ -206,6 +208,8 @@ func (att *Attempt) Write(ctx context.Context, status exec.DAGRunStatus) error {
 		return fmt.Errorf("status file not open: %w", ErrStatusFileNotOpen)
 	}
 
+	exec.NormalizeDAGRunConditions(&status)
+
 	if writeErr := att.writer.Write(ctx, status); writeErr != nil {
 		return fmt.Errorf("failed to write status: %w", ErrWriteFailed)
 	}
@@ -220,6 +224,10 @@ func (att *Attempt) Write(ctx context.Context, status exec.DAGRunStatus) error {
 		if dirtyErr := markRetryCandidatesDirty(att.file); dirtyErr != nil {
 			logger.Warn(ctx, "Failed to mark DAG-run retry candidates dirty", tag.Error(dirtyErr))
 		}
+	}
+
+	if err := updateLatestAttemptPointer(ctx, att.file); err != nil {
+		logger.Warn(ctx, "Failed to update DAG-run latest attempt pointer", tag.Error(err))
 	}
 
 	nextEventType, _, err := eventstore.EmitPersistedStatusTransitionFromContext(
@@ -311,12 +319,15 @@ func (att *Attempt) compactLocked(ctx context.Context) (retErr error) {
 		}()
 	}
 
-	status, err := att.parseLocked(ctx)
+	status, shouldCompact, err := att.statusForCompactionLocked(ctx)
 	if err == io.EOF {
 		return nil // Empty file, nothing to compact
 	}
 	if err != nil {
 		return fmt.Errorf("%w: %s: %v", ErrCompactFailed, att.file, err)
+	}
+	if !shouldCompact {
+		return nil
 	}
 
 	// Create a temporary file in the same directory
@@ -370,6 +381,52 @@ func (att *Attempt) compactLocked(ctx context.Context) (retErr error) {
 
 	success = true
 	return nil
+}
+
+// statusForCompactionLocked reads the current file and reports whether a
+// replacement would change its compacted contents.
+func (att *Attempt) statusForCompactionLocked(ctx context.Context) (*exec.DAGRunStatus, bool, error) {
+	f, err := openStatusFileWithRetry(att.file)
+	if err != nil {
+		return nil, false, fmt.Errorf("%w: %w", ErrReadFailed, err)
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+
+	var (
+		offset          int64
+		result          *exec.DAGRunStatus
+		validLineCount  int
+		invalidLineSeen bool
+	)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, false, fmt.Errorf("%w: %w", ErrReadFailed, err)
+		}
+		line, nextOffset, err := readLineFrom(f, offset)
+		if err == io.EOF {
+			if result == nil {
+				return nil, false, err
+			}
+			return result, invalidLineSeen || validLineCount > 1, nil
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("%w: %w", ErrReadFailed, err)
+		}
+
+		offset = nextOffset
+		if len(line) == 0 {
+			continue
+		}
+		status, err := exec.StatusFromJSON(string(line))
+		if err != nil {
+			invalidLineSeen = true
+			continue
+		}
+		result = status
+		validLineCount++
+	}
 }
 
 // safeRename safely replaces the target file with the source file,
@@ -653,10 +710,31 @@ func (att *Attempt) dagRunDir() string {
 }
 
 // WorkDir returns the path to the per-DAG-run working directory.
-// The work directory lives at the dag-run level (not attempt level)
-// so it persists across retries.
 func (att *Attempt) WorkDir() string {
-	return filepath.Join(att.dagRunDir(), "work")
+	return workDirForDAGRunDir(att.dagRunDir())
+}
+
+func workDirForDAGRunDir(dagRunDir string) string {
+	if rootDir, childRunID, ok := subDAGWorkDirParts(dagRunDir); ok {
+		return filepath.Join(rootDir, subDAGWorkDirName(childRunID))
+	}
+	return filepath.Join(dagRunDir, "work")
+}
+
+func subDAGWorkDirName(childRunID string) string {
+	sum := sha256.Sum256([]byte(childRunID))
+	return SubDAGWorkDirPrefix + strings.ToLower(
+		base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:8]),
+	)
+}
+
+func subDAGWorkDirParts(dagRunDir string) (rootDir, childRunID string, ok bool) {
+	parentDir := filepath.Dir(dagRunDir)
+	childRunID, ok = subDAGRunIDFromDir(filepath.Base(parentDir), filepath.Base(dagRunDir))
+	if !ok {
+		return "", "", false
+	}
+	return filepath.Dir(parentDir), childRunID, true
 }
 
 // readLineFrom reads a line from the file starting at the specified offset.

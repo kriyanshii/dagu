@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dagucloud/dagu/internal/cmn/eval"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/spec/types"
 )
@@ -18,11 +18,11 @@ import (
 //
 // strVariables may be either a map[string]any or a []any containing maps and/or
 // "key=value" strings; entries are collected in input order. For each pair, the
-// value is optionally evaluated and expanded (including command substitution and
-// references to previously defined variables) unless the BuildFlagNoEval option
-// is set on ctx. The environment is passed via context to ensure thread-safety
-// during concurrent DAG loading. The function returns a validation error if the
-// input is malformed or a value fails to evaluate.
+// value is optionally expanded with references to previously defined variables
+// unless the BuildFlagNoEval option is set on ctx. The environment is passed via
+// context to ensure thread-safety during concurrent DAG loading. The function
+// returns a validation error if the input is malformed or a value fails to
+// evaluate.
 func loadVariables(ctx BuildContext, strVariables any) (map[string]string, error) {
 	var pairs []pair
 	switch a := strVariables.(type) {
@@ -50,7 +50,8 @@ func loadVariables(ctx BuildContext, strVariables any) (map[string]string, error
 		}
 	}
 
-	return evaluatePairs(ctx, pairs)
+	_, vars, err := evaluatePairs(ctx, pairs)
+	return vars, err
 }
 
 // loadVariablesFromEnvValue loads environment variables from a types.EnvValue.
@@ -58,8 +59,13 @@ func loadVariables(ctx BuildContext, strVariables any) (map[string]string, error
 // and processes them using the same logic as loadVariables without modifying
 // the global OS environment.
 func loadVariablesFromEnvValue(ctx BuildContext, env types.EnvValue) (map[string]string, error) {
+	_, vars, err := loadEnvEntriesFromEnvValue(ctx, env)
+	return vars, err
+}
+
+func loadEnvEntriesFromEnvValue(ctx BuildContext, env types.EnvValue) ([]evaluatedEnvEntry, map[string]string, error) {
 	if env.IsZero() {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	entries := env.Entries()
@@ -71,14 +77,24 @@ func loadVariablesFromEnvValue(ctx BuildContext, env types.EnvValue) (map[string
 	return evaluatePairs(ctx, pairs)
 }
 
+type evaluatedEnvEntry struct {
+	key   string
+	value string
+}
+
+func (e evaluatedEnvEntry) String() string {
+	return e.key + "=" + e.value
+}
+
 // evaluatePairs evaluates a list of key-value pairs, expanding environment
-// variables and command substitutions unless BuildFlagNoEval is set.
-func evaluatePairs(ctx BuildContext, pairs []pair) (map[string]string, error) {
+// variables unless BuildFlagNoEval is set.
+func evaluatePairs(ctx BuildContext, pairs []pair) ([]evaluatedEnvEntry, map[string]string, error) {
 	vars := make(map[string]string, len(pairs))
+	entries := make([]evaluatedEnvEntry, 0, len(pairs))
 
 	// Build base scope once outside the loop to reduce allocations.
-	// We chain new entries immutably as we evaluate each pair.
-	var scope *eval.EnvScope
+	// New entries are chained immutably as each pair is evaluated.
+	var scope *cmnvalue.EnvScope
 	var evalCtx context.Context
 	if !ctx.opts.Has(BuildFlagNoEval) {
 		// Use the shared build scope (which includes resolved params)
@@ -86,42 +102,70 @@ func evaluatePairs(ctx BuildContext, pairs []pair) (map[string]string, error) {
 		if ctx.envScope != nil && ctx.envScope.scope != nil {
 			scope = ctx.envScope.scope
 		} else {
-			scope = eval.NewEnvScope(nil, true)
+			scope = cmnvalue.NewEnvScope(nil, true)
 		}
 		evalCtx = ctx.ctx
 		if evalCtx == nil {
 			evalCtx = context.Background()
 		}
 	}
+	var consts map[string]any
+	var params cmnvalue.Values
+	var paramsJSON string
+	var paramDeclarations cmnvalue.Values
+	if ctx.envScope != nil {
+		consts = ctx.envScope.consts
+		params = ctx.envScope.params
+		paramsJSON = ctx.envScope.paramsJSON
+		paramDeclarations = ctx.envScope.paramDeclarations
+	}
 
-	for _, p := range pairs {
+	for i, p := range pairs {
+		if err := validateEnvPair("env", i, p); err != nil {
+			return nil, nil, err
+		}
 		value := p.val
 
 		if !ctx.opts.Has(BuildFlagNoEval) {
 			if presolved, ok := ctx.opts.BuildEnv[p.key]; ok {
 				value = presolved
-				scope = scope.WithEntry(p.key, value, eval.EnvSourcePresolved)
+				scope = scope.WithEntry(p.key, value, cmnvalue.EnvSourcePresolved)
 				vars[p.key] = value
+				entries = append(entries, evaluatedEnvEntry{key: p.key, value: value})
 				continue
 			}
 
-			// Chain the new variable to scope for subsequent evaluations
-			scopeCtx := eval.WithEnvScope(evalCtx, scope)
-
 			var err error
-			value, err = eval.String(scopeCtx, value, eval.WithVariables(vars), eval.WithOSExpansion())
+			resolver := cmnvalue.NewResolver(
+				cmnvalue.StaticScope{Consts: cmnvalue.Values(consts), Params: paramDeclarations},
+				cmnvalue.RuntimeScope{Consts: cmnvalue.Values(consts), Params: params, ParamsJSON: paramsJSON, Env: scope},
+				cmnvalue.WithValueReferenceNotices(buildNoticeSink(ctx.valueReferenceNotices)),
+			)
+			value, err = resolver.String(evalCtx, value, cmnvalue.DAGEnvField(fmt.Sprintf("env[%d]", i)))
 			if err != nil {
-				return nil, core.NewValidationError("env", p.val, fmt.Errorf("%w: %s", ErrInvalidEnvValue, p.val))
+				return nil, nil, core.NewValidationError("env", p.val, fmt.Errorf("%w: %s", ErrInvalidEnvValue, p.val))
 			}
 
 			// Add evaluated value to scope for next iteration
-			scope = scope.WithEntry(p.key, value, eval.EnvSourceDAGEnv)
+			scope = scope.WithEntry(p.key, value, cmnvalue.EnvSourceDAGEnv)
 		}
 
 		vars[p.key] = value
+		entries = append(entries, evaluatedEnvEntry{key: p.key, value: value})
 	}
 
-	return vars, nil
+	return entries, vars, nil
+}
+
+func validateEnvPair(field string, idx int, p pair) error {
+	if cmnvalue.ValidEnvName(p.key) {
+		return nil
+	}
+	return core.NewValidationError(
+		field,
+		p.key,
+		fmt.Errorf("%w: invalid environment variable name %q at %s[%d]", ErrInvalidEnvValue, p.key, field, idx),
+	)
 }
 
 // collectRawPairs parses environment variable definitions from strVariables
@@ -161,6 +205,9 @@ func collectRawPairs(strVariables any) ([]string, error) {
 
 	envs := make([]string, len(pairs))
 	for i, p := range pairs {
+		if err := validateEnvPair("env", i, p); err != nil {
+			return nil, err
+		}
 		envs[i] = fmt.Sprintf("%s=%s", p.key, p.val)
 	}
 	return envs, nil

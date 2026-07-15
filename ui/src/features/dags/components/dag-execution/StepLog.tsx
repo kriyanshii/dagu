@@ -1,22 +1,26 @@
+// Copyright (C) 2026 Yota Hamada
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /**
  * StepLog component displays the execution log for a specific step in a DAG run.
  *
  * @module features/dags/components/dag-execution
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Download } from 'lucide-react';
-import { components, NodeStatus, Stream } from '../../../../api/v1/schema';
+import { ChevronDown, ChevronUp, Download, Search, X } from 'lucide-react';
+import { components, Stream } from '../../../../api/v1/schema';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ReloadButton } from '@/components/ui/reload-button';
 import { Switch } from '@/components/ui/switch';
-import { AppBarContext } from '../../../../contexts/AppBarContext';
 import { TOKEN_KEY } from '../../../../contexts/AuthContext';
 import { useConfig } from '../../../../contexts/ConfigContext';
+import { useRemoteNode } from '../../../../contexts/RemoteNodeContext';
 import { useUserPreferences } from '../../../../contexts/UserPreference';
 import { useQuery } from '../../../../hooks/api';
 import { whenEnabled } from '../../../../hooks/queryUtils';
 import { useStepLogSSE } from '../../../../hooks/useStepLogSSE';
+import { AnsiLine, stripAnsi } from '@/lib/ansi';
 import { isActiveNodeStatus } from '../../../../lib/status-utils';
 import LoadingIndicator from '@/components/ui/loading-indicator';
 
@@ -52,15 +56,6 @@ type Props = {
 };
 
 /**
- * Regular expression to match ANSI color codes for removal
- * Credit: https://github.com/chalk/ansi-regex/commit/02fa893d619d3da85411acc8fd4e2eea0e95a9d9 under MIT license
- */
-const ANSI_CODES_REGEX = [
-  '[\\u001B\\u009B][[\\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]+)*|[a-zA-Z\\d]+(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]*)*)?\\u0007)',
-  '(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]))',
-].join('|');
-
-/**
  * StepLog displays the log output for a specific step in a DAG run
  * Fetches log data from the API and refreshes every 30 seconds
  */
@@ -72,13 +67,15 @@ function StepLog({
   stream = Stream.stdout,
   node,
 }: Props) {
-  const appBarContext = React.useContext(AppBarContext);
+  const remoteNode = useRemoteNode();
   const config = useConfig();
   const { preferences, updatePreference } = useUserPreferences();
   const [viewMode, setViewMode] = useState<'tail' | 'head' | 'page'>('tail');
   const [pageSize, setPageSize] = useState(1000);
   const [currentPage, setCurrentPage] = useState(1);
   const [jumpToLine, setJumpToLine] = useState<number | ''>('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [activeMatch, setActiveMatch] = useState(0);
   const isActive = isActiveNodeStatus(node?.status);
 
   const [isLiveMode, setIsLiveMode] = useState(isActive);
@@ -105,14 +102,19 @@ function StepLog({
   // SSE is used for real-time updates when viewing tail of an active step (not sub-DAG runs)
   const shouldUseSSE =
     viewMode === 'tail' && isLiveMode && isActive && !isSubDAGRun;
-  const sseResult = useStepLogSSE(dagName, dagRunId, stepName, shouldUseSSE);
+  const sseResult = useStepLogSSE(
+    dagName,
+    dagRunId,
+    stepName,
+    shouldUseSSE,
+    remoteNode
+  );
   const sseIsActive =
     shouldUseSSE && sseResult.isConnected && !sseResult.shouldUseFallback;
 
   // Fall back to REST polling when SSE is not available or not connected
   const usePolling = !sseIsActive;
 
-  const remoteNode = appBarContext.selectedRemoteNode || 'local';
   const tail = viewMode === 'tail' ? pageSize : undefined;
   const head = viewMode === 'head' ? pageSize : undefined;
   const offset =
@@ -340,12 +342,32 @@ function StepLog({
     remoteNode,
   ]);
 
+  // Prioritize SSE data, then REST data, then cached data
+  const logData = (sseLogData ||
+    data ||
+    cachedData) as LogWithPagination | null;
+  const content = logData?.content || '';
+
+  const lines = React.useMemo(() => {
+    const rawLines = content ? content.split('\n') : ['<No log output>'];
+    return rawLines[rawLines.length - 1] === ''
+      ? rawLines.slice(0, -1)
+      : rawLines;
+  }, [content]);
+
+  const trimmedSearch = searchTerm.trim();
+  const matchIndexes = React.useMemo(() => {
+    if (!trimmedSearch) return [];
+    const term = trimmedSearch.toLowerCase();
+    return lines.reduce<number[]>((acc, line, index) => {
+      if (stripAnsi(line).toLowerCase().includes(term)) acc.push(index);
+      return acc;
+    }, []);
+  }, [lines, trimmedSearch]);
+
   if (isLoading && !cachedData && isInitialLoad.current) {
     return <LoadingIndicator />;
   }
-
-  // Prioritize SSE data, then REST data, then cached data
-  const logData = (sseLogData || data || cachedData) as LogWithPagination;
 
   // Show error state (but not 404 since that means no log file exists yet)
   const isNotFoundError = error?.message?.includes('not found');
@@ -359,19 +381,33 @@ function StepLog({
     );
   }
 
-  const content =
-    logData?.content.replace(new RegExp(ANSI_CODES_REGEX, 'g'), '') || '';
   const totalLines = logData?.totalLines || 0;
   const hasMore = logData?.hasMore || false;
   const isEstimate = logData?.isEstimate || false;
-
-  const rawLines = content ? content.split('\n') : ['<No log output>'];
-  const lines =
-    rawLines[rawLines.length - 1] === '' ? rawLines.slice(0, -1) : rawLines;
   const effectiveTotalLines =
     totalLines - lines.length <= 1 ? lines.length : totalLines;
 
   const totalPages = calculateTotalPages(effectiveTotalLines, pageSize);
+
+  function scrollToMatch(matchPosition: number): void {
+    const lineIndex = matchIndexes[matchPosition];
+    if (lineIndex === undefined) return;
+    const element = logContainerRef.current?.querySelector(
+      `[data-log-index="${lineIndex}"]`
+    ) as HTMLElement | null;
+    if (!element) return;
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    element.classList.add('bg-primary/20');
+    setTimeout(() => element.classList.remove('bg-primary/20'), 1200);
+  }
+
+  function goToMatch(direction: 1 | -1): void {
+    if (matchIndexes.length === 0) return;
+    const next =
+      (activeMatch + direction + matchIndexes.length) % matchIndexes.length;
+    setActiveMatch(next);
+    scrollToMatch(next);
+  }
 
   function getLineNumber(index: number): number {
     switch (viewMode) {
@@ -512,6 +548,68 @@ function StepLog({
           </div>
         )}
 
+        {/* Search within loaded lines */}
+        <div className="flex items-center gap-2 mt-2">
+          <Search className="h-3.5 w-3.5 text-muted-foreground" />
+          <Input
+            type="text"
+            placeholder="Search in loaded lines..."
+            value={searchTerm}
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              setActiveMatch(0);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                goToMatch(e.shiftKey ? -1 : 1);
+              } else if (e.key === 'Escape') {
+                setSearchTerm('');
+                setActiveMatch(0);
+              }
+            }}
+            className="w-48 h-7 text-xs"
+          />
+          {trimmedSearch && (
+            <>
+              <span className="text-xs text-muted-foreground whitespace-nowrap">
+                {matchIndexes.length === 0
+                  ? 'No matches'
+                  : `${Math.min(activeMatch + 1, matchIndexes.length)}/${matchIndexes.length}`}
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => goToMatch(-1)}
+                disabled={matchIndexes.length === 0}
+                title="Previous match (Shift+Enter)"
+              >
+                <ChevronUp className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => goToMatch(1)}
+                disabled={matchIndexes.length === 0}
+                title="Next match (Enter)"
+              >
+                <ChevronDown className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setSearchTerm('');
+                  setActiveMatch(0);
+                }}
+                title="Clear search (Esc)"
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </>
+          )}
+        </div>
+
         {/* Jump to line controls */}
         <div className="flex items-center gap-2 mt-2">
           <span className="text-xs text-muted-foreground">Jump to line:</span>
@@ -569,7 +667,11 @@ function StepLog({
           className={`h-full font-mono text-sm text-foreground log-content ${preferences.logWrap ? '' : 'min-w-max'}`}
         >
           {lines.map((line, index) => (
-            <div key={index} className="flex pr-2 py-0.5">
+            <div
+              key={index}
+              className="flex pr-2 py-0.5"
+              data-log-index={index}
+            >
               <span
                 className="text-muted-foreground mr-4 select-none w-14 text-right flex-shrink-0 self-start sticky left-0 bg-muted pl-4 pr-2 z-10"
                 data-line-number={getLineNumber(index)}
@@ -579,7 +681,14 @@ function StepLog({
               <span
                 className={`flex-grow select-text cursor-text ${preferences.logWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}`}
               >
-                {line || ' '}
+                {line ? (
+                  <AnsiLine
+                    text={line}
+                    highlight={trimmedSearch || undefined}
+                  />
+                ) : (
+                  ' '
+                )}
               </span>
             </div>
           ))}

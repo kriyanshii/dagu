@@ -71,6 +71,7 @@ func TestRestartCommand_BuiltExecutableRestoresExplicitEnv(t *testing.T) {
 	th := test.SetupCommand(t, test.WithBuiltExecutable())
 	t.Setenv("CMD_RESTART_EXPLICIT_ENV", "from-host")
 
+	holdTimeout := builtExecutableRestartWaitTimeout(t)
 	release := newHoldFile(t)
 	dag := th.DAG(t, fmt.Sprintf(`name: built-restart-explicit-env
 env:
@@ -81,7 +82,7 @@ steps:
   - name: "capture"
     run: printf '%%s|%%s' "$EXPORTED_SECRET" "${CMD_RESTART_EXPLICIT_ENV:-}"
     output: RESULT
-`, holdUntilFileExistsCommand(release)))
+`, holdUntilFileExistsCommandWithin(release, holdTimeout)))
 
 	startDone := make(chan error, 1)
 	go func() {
@@ -95,7 +96,7 @@ steps:
 		return err == nil && status != nil && status.Status == core.Running
 	}, 10*time.Second, 100*time.Millisecond)
 
-	releaseDone := releaseHoldFileWhenRecentStatusCountAtLeast(t, th, dag.Name, 2, release)
+	releaseDone := releaseHoldFileWhenRecentStatusCountAtLeastWithin(t, th, dag.Name, 2, release, holdTimeout)
 	test.RunBuiltCLI(t, th.Helper, []string{"CMD_RESTART_EXPLICIT_ENV=from-host"}, "restart", dag.Name)
 	require.NoError(t, <-releaseDone)
 
@@ -111,4 +112,17 @@ steps:
 	latestAttemptStatus, err := latestAttempt.ReadStatus(th.Context)
 	require.NoError(t, err)
 	require.Equal(t, "from-host|", test.StatusOutputValue(t, latestAttemptStatus, "RESULT"))
+}
+
+func builtExecutableRestartWaitTimeout(t *testing.T) time.Duration {
+	t.Helper()
+
+	timeout := 6 * commandLogWaitTimeout()
+	if deadline, ok := t.Deadline(); ok {
+		remaining := time.Until(deadline) - 15*time.Second
+		if remaining > 0 && remaining < timeout {
+			return remaining
+		}
+	}
+	return timeout
 }

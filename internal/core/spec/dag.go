@@ -19,16 +19,21 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
-	"github.com/dagucloud/dagu/internal/cmn/eval"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/spec/types"
 	"github.com/go-viper/mapstructure/v2"
 )
 
-const dagRunArtifactsDirEnvKey = "DAG_RUN_ARTIFACTS_DIR"
+const (
+	dagRunArtifactsDirEnvKey      = "DAG_RUN_ARTIFACTS_DIR"
+	dagRunArtifactsDirContextPath = "context.paths.artifacts_dir"
+)
 
 var dagRunArtifactsDirReferencePattern = regexp.MustCompile(
 	`(?:\$\{` + regexp.QuoteMeta(dagRunArtifactsDirEnvKey) + `\}` +
+		`|\$\{env\.` + regexp.QuoteMeta(dagRunArtifactsDirEnvKey) + `\}` +
+		`|\$\{` + regexp.QuoteMeta(dagRunArtifactsDirContextPath) + `\}` +
 		`|\$` + regexp.QuoteMeta(dagRunArtifactsDirEnvKey) + `(?:\b|[^A-Za-z0-9_])` +
 		`|\$env:` + regexp.QuoteMeta(dagRunArtifactsDirEnvKey) + `(?:\b|[^A-Za-z0-9_])` +
 		`|%` + regexp.QuoteMeta(dagRunArtifactsDirEnvKey) + `%` +
@@ -44,16 +49,17 @@ type dag struct {
 	Group string `yaml:"group,omitempty"`
 	// Description is the description of the DAG.
 	Description string `yaml:"description,omitempty"`
-	// Type is the execution type for steps (graph, chain, or agent).
+	// Type is the execution type for steps (graph or chain).
 	// Default is "graph" which uses dependency-based parallel execution.
 	// "chain" executes steps in the order they are defined.
-	// "agent" is reserved for future agent-based execution.
 	Type string `yaml:"type,omitempty"`
 	// Shell is the default shell to use for all steps in this DAG.
 	// If not specified, the system default shell is used.
 	// Can be overridden at the step level.
 	// Can be a string (e.g., "bash -e") or an array (e.g., ["bash", "-e"]).
 	Shell types.ShellValue `yaml:"shell,omitempty"`
+	// ShellArgs is the list of additional arguments passed to the root shell.
+	ShellArgs []string `yaml:"shell_args,omitempty"`
 	// WorkingDir is working directory for DAG execution
 	WorkingDir string `yaml:"working_dir,omitempty"`
 	// Dotenv is the path to the dotenv file (string or []string).
@@ -76,6 +82,8 @@ type dag struct {
 	// Can be "separate" (default) for separate .out and .err files,
 	// or "merged" for a single combined .log file.
 	LogOutput types.LogOutputValue `yaml:"log_output,omitempty"`
+	// Consts contains immutable values resolved while loading the DAG.
+	Consts any `yaml:"consts,omitempty"`
 	// Env is the environment variables setting.
 	Env types.EnvValue `yaml:"env,omitempty"`
 	// HandlerOn is the handler configuration.
@@ -522,6 +530,10 @@ var metadataIdentityStage = transformStage{
 	{"labels", newTransformer("Labels", buildLabels)},
 }
 
+var metadataConstsStage = transformStage{
+	{"consts", newTransformer("Consts", buildConsts)},
+}
+
 // Params must run before env so that env: values can reference ${param_name}.
 var metadataParamsEnvStage = transformStage{
 	{"params", newTransformer("Params", buildParams)},
@@ -555,6 +567,7 @@ var metadataExecutionPlacementStage = transformStage{
 
 var metadataTransformStages = []transformStage{
 	metadataIdentityStage,
+	metadataConstsStage,
 	metadataParamsEnvStage,
 	metadataScheduleStage,
 	metadataExecutionPlacementStage,
@@ -676,17 +689,22 @@ func (s *dagBuildState) validateSpecShape() {
 }
 
 func (s *dagBuildState) prepareParamEnvStage() {
-	baseScope := eval.NewEnvScope(nil, true)
+	baseScope := cmnvalue.NewEnvScope(nil, true)
 
 	buildEnv := make(map[string]string, len(s.ctx.opts.BuildEnv))
 	maps.Copy(buildEnv, s.ctx.opts.BuildEnv)
 	if len(buildEnv) > 0 {
-		baseScope = baseScope.WithEntries(buildEnv, eval.EnvSourceDotEnv)
+		baseScope = baseScope.WithEntries(buildEnv, cmnvalue.EnvSourceDotEnv)
+	}
+	var consts map[string]any
+	if s.ctx.baseDAG != nil && len(s.ctx.baseDAG.Consts) > 0 {
+		consts = maps.Clone(s.ctx.baseDAG.Consts)
 	}
 
 	s.ctx.envScope = &envScopeState{
 		scope:    baseScope,
 		buildEnv: buildEnv,
+		consts:   consts,
 	}
 	s.ctx.paramsState = &paramsState{}
 }
@@ -755,16 +773,18 @@ func (s *dagBuildState) buildActionGraph() {
 }
 
 func (s *dagBuildState) validateResult() {
-	if err := core.ValidateSteps(s.result); err != nil {
-		s.errs = append(s.errs, err)
-	}
+	if !s.ctx.opts.Has(BuildFlagOnlyMetadata) {
+		if err := core.ValidateSteps(s.result); err != nil {
+			s.errs = append(s.errs, err)
+		}
 
-	if len(s.result.WorkerSelector) > 0 && s.result.HasApprovalSteps() {
-		s.errs = append(s.errs, core.NewValidationError(
-			"worker_selector",
-			s.result.WorkerSelector,
-			fmt.Errorf("DAG with approval steps cannot be dispatched to workers"),
-		))
+		if len(s.result.WorkerSelector) > 0 && s.result.HasApprovalSteps() {
+			s.errs = append(s.errs, core.NewValidationError(
+				"worker_selector",
+				s.result.WorkerSelector,
+				fmt.Errorf("DAG with approval steps cannot be dispatched to workers"),
+			))
+		}
 	}
 
 	if s.result.Name != "" {
@@ -846,8 +866,6 @@ func buildType(_ BuildContext, d *dag) (string, error) {
 	switch t {
 	case core.TypeGraph, core.TypeChain:
 		return t, nil
-	case core.TypeAgent:
-		return "", core.NewValidationError("type", t, fmt.Errorf("type 'agent' is reserved and not yet supported"))
 	default:
 		return "", core.NewValidationError("type", t, fmt.Errorf("invalid type: %s (must be one of: graph, chain)", t))
 	}
@@ -1073,6 +1091,12 @@ func valueReferencesRunArtifactsDir(v reflect.Value) bool {
 		v = v.Elem()
 	}
 
+	if v.CanInterface() {
+		if provider, ok := v.Interface().(interface{ Value() any }); ok {
+			return valueReferencesRunArtifactsDir(reflect.ValueOf(provider.Value()))
+		}
+	}
+
 	switch v.Kind() {
 	case reflect.String:
 		return referencesArtifactsEnvVar(v.String())
@@ -1090,8 +1114,12 @@ func valueReferencesRunArtifactsDir(v reflect.Value) bool {
 			}
 		}
 	case reflect.Struct:
-		for _, field := range v.Fields() {
-			if valueReferencesRunArtifactsDir(field) {
+		t := v.Type()
+		for i := range v.NumField() {
+			if t.Field(i).PkgPath != "" {
+				continue
+			}
+			if valueReferencesRunArtifactsDir(v.Field(i)) {
 				return true
 			}
 		}
@@ -1443,7 +1471,7 @@ func buildMaxCleanUpTime(_ BuildContext, d *dag) (time.Duration, error) {
 }
 
 func buildEnvs(ctx BuildContext, d *dag) ([]string, error) {
-	vars, err := loadVariablesFromEnvValue(ctx, d.Env)
+	entries, vars, err := loadEnvEntriesFromEnvValue(ctx, d.Env)
 	if err != nil {
 		return nil, err
 	}
@@ -1451,13 +1479,13 @@ func buildEnvs(ctx BuildContext, d *dag) ([]string, error) {
 	// Add vars to the shared envScope state so subsequent transformers can use it.
 	// This replaces the old pattern of using os.Setenv which caused race conditions.
 	if ctx.envScope != nil && len(vars) > 0 {
-		ctx.envScope.scope = ctx.envScope.scope.WithEntries(vars, eval.EnvSourceDAGEnv)
+		ctx.envScope.scope = ctx.envScope.scope.WithEntries(vars, cmnvalue.EnvSourceDAGEnv)
 		maps.Copy(ctx.envScope.buildEnv, vars)
 	}
 
-	var envs []string
-	for k, v := range vars {
-		envs = append(envs, fmt.Sprintf("%s=%s", k, v))
+	envs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		envs = append(envs, entry.String())
 	}
 	return envs, nil
 }
@@ -1498,16 +1526,54 @@ func buildParams(ctx BuildContext, d *dag) ([]string, error) {
 		return nil, err
 	}
 	// Add resolved params to envScope so env: can reference ${param_name}
-	if ctx.envScope != nil && len(result.Params) > 0 {
-		paramVars := make(map[string]string, len(result.Params))
-		for _, p := range result.Params {
-			if k, v, ok := strings.Cut(p, "="); ok {
-				paramVars[k] = v
+	if ctx.envScope != nil {
+		ctx.envScope.paramDeclarations = paramDeclarationsFromResult(result)
+		ctx.envScope.params = paramValuesFromResult(result)
+		ctx.envScope.paramsJSON = result.ParamsJSON
+		if len(result.Params) > 0 {
+			paramVars := make(map[string]string, len(result.Params))
+			for _, p := range result.Params {
+				if k, v, ok := strings.Cut(p, "="); ok {
+					paramVars[k] = v
+				}
 			}
+			ctx.envScope.scope = ctx.envScope.scope.WithEntries(paramVars, cmnvalue.EnvSourceParam)
 		}
-		ctx.envScope.scope = ctx.envScope.scope.WithEntries(paramVars, eval.EnvSourceParam)
 	}
 	return result.Params, nil
+}
+
+func paramDeclarationsFromResult(result *paramsResult) cmnvalue.Values {
+	if result == nil {
+		return nil
+	}
+	declarations := make(cmnvalue.Values)
+	for _, def := range result.ParamDefs {
+		if isParamReferenceName(def.Name) {
+			declarations[def.Name] = ""
+		}
+	}
+	if len(declarations) == 0 {
+		return nil
+	}
+	return declarations
+}
+
+func paramValuesFromResult(result *paramsResult) cmnvalue.Values {
+	if result == nil || len(result.Params) == 0 {
+		return nil
+	}
+	params := make(cmnvalue.Values)
+	for _, param := range result.Params {
+		name, value, ok := strings.Cut(param, "=")
+		if ok && isParamReferenceName(name) {
+			params[name] = value
+		}
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
 }
 
 func buildDefaultParams(ctx BuildContext, d *dag) (string, error) {
@@ -1826,7 +1892,7 @@ func buildShellArgs(ctx BuildContext, d *dag) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return result.Args, nil
+	return append(result.Args, d.ShellArgs...), nil
 }
 
 func buildWorkingDir(ctx BuildContext, d *dag) (string, error) {
@@ -2864,9 +2930,6 @@ func validateHarnessProviderConfig(defs core.HarnessDefinitions, cfg map[string]
 	}
 	if strings.Contains(providerName, "${") {
 		return nil
-	}
-	if core.IsBuiltinAgentHarnessProvider(providerName) {
-		return core.ValidateBuiltinAgentHarnessConfig(cfg)
 	}
 	if core.IsBuiltinCLIHarnessProvider(providerName) {
 		return nil

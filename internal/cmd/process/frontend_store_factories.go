@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/agent"
 	authmodel "github.com/dagucloud/dagu/internal/auth"
 	"github.com/dagucloud/dagu/internal/auth/tokensecret"
 	"github.com/dagucloud/dagu/internal/cmn/config"
@@ -25,19 +24,18 @@ import (
 	"github.com/dagucloud/dagu/internal/persis/store"
 	authservice "github.com/dagucloud/dagu/internal/service/auth"
 	"github.com/dagucloud/dagu/internal/service/frontend"
+	"github.com/dagucloud/dagu/internal/view"
 )
 
 // NewFrontendStoreFactories returns the file-backed persistence wiring for the frontend server.
 func NewFrontendStoreFactories() frontend.StoreFactories {
 	return frontend.StoreFactories{
-		SnapshotStoreFactory:             file.NewSnapshotStores,
 		WorkspaceBaseConfigStoreFactory:  file.NewWorkspaceBaseConfigStore,
 		BaseConfigStoreFactory:           newBaseConfigStore,
-		AgentStoresFactory:               newFrontendAgentStores,
-		AgentSessionStoreFactory:         file.NewAgentSessionStore,
-		DocStoreFactory:                  file.NewDocStore,
 		BuiltinAuthFactory:               newBuiltinAuthService,
 		RemoteNodeStoreFactory:           file.NewRemoteNodeStore,
+		SecretStoreFactory:               file.NewSecretStore,
+		ProfileStoreFactory:              file.NewProfileStore,
 		DAGSettingsStoreFactory:          file.NewDAGSettingsStore,
 		NotificationStoreFactory:         file.NewNotificationStore,
 		NotificationMonitorStateFileFunc: file.NotificationMonitorStateFile,
@@ -47,7 +45,12 @@ func NewFrontendStoreFactories() frontend.StoreFactories {
 		UpgradeCheckStoreFactory:         file.NewUpgradeCheckStore,
 		AuditStoreFactory:                newAuditStore,
 		EventStoreFactory:                file.NewEventStore,
+		ViewStoreFactory:                 newViewStore,
 	}
+}
+
+func newViewStore(cfg *config.Config) (view.Store, error) {
+	return store.NewViewStore(file.NewCollection(cfg.Paths.ViewsDir, file.WithIndentedJSON()))
 }
 
 func newBaseConfigStore(filePath string) (baseconfig.Store, error) {
@@ -56,20 +59,6 @@ func newBaseConfigStore(filePath string) (baseconfig.Store, error) {
 
 func newAuditStore(cfg *config.Config) (frontend.AuditStore, error) {
 	return file.NewAuditStore(cfg)
-}
-
-func newFrontendAgentStores(ctx context.Context, cfg *config.Config, opts frontend.AgentStoresOptions) agent.RuntimeStores {
-	fileOpts := make([]file.AgentStoresOption, 0, 3)
-	if opts.MemoryCache != nil {
-		fileOpts = append(fileOpts, file.WithAgentMemoryCache(opts.MemoryCache))
-	}
-	if opts.SeedReferences {
-		fileOpts = append(fileOpts, file.WithAgentSeedReferences())
-	}
-	if opts.SeedExampleSouls {
-		fileOpts = append(fileOpts, file.WithAgentSeedExampleSouls())
-	}
-	return file.NewAgentStores(ctx, cfg, fileOpts...)
 }
 
 // newBuiltinAuthService creates the file-backed auth store and authentication service.

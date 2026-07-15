@@ -52,6 +52,28 @@ steps:
 	require.Equal(t, "/work/quant-signal", envMap["PROJECT_DIR"])
 }
 
+func TestResolveEnvConstDotenvPath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".env.const"), []byte("CONST_DOTENV=ready\n"), 0o600))
+
+	dag, err := spec.LoadYAML(context.Background(), fmt.Appendf(nil, `
+consts:
+  - env_file: .env.const
+  - root: %s
+working_dir: ${consts.root}
+dotenv: ${consts.env_file}
+steps:
+  - name: print
+    run: echo ${CONST_DOTENV}
+`, root))
+	require.NoError(t, err)
+
+	dag.LoadDotEnv(context.Background())
+	require.Equal(t, "ready", runtimeEnvSliceMap(dag.Env)["CONST_DOTENV"])
+}
+
 func TestResolveEnvWithWarningsReturnsDotenvWarnings(t *testing.T) {
 	t.Parallel()
 
@@ -105,6 +127,75 @@ steps:
 	result, err := spec.ResolveEnvWithWarnings(context.Background(), persisted, []string{"COL=foo"}, spec.ResolveEnvOptions{})
 	require.NoError(t, err)
 	require.Equal(t, "foo", runtimeEnvSliceMap(result.Env)["TARGET_TABLE"])
+}
+
+func TestResolveEnvWithWarningsLoadsDotenvWithParamsReference(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	workDir := filepath.Join(root, "zscores")
+	require.NoError(t, os.MkdirAll(workDir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, ".env.prod"), []byte("TARGET_TABLE=prod\n"), 0o600))
+
+	yamlData := fmt.Appendf(nil, `
+name: calculate_zscores
+working_dir: %q
+params:
+  - name: ENVIRONMENT
+    type: string
+dotenv:
+  - ".env.${params.ENVIRONMENT}"
+steps:
+  - name: assert_variables_defined
+    run: echo "${TARGET_TABLE}"
+`, workDir)
+	dag, err := spec.LoadYAML(context.Background(), yamlData, spec.WithParams("ENVIRONMENT=prod"))
+	require.NoError(t, err)
+	require.Contains(t, dag.Params, "ENVIRONMENT=prod")
+	dag.LoadDotEnv(context.Background())
+	require.Empty(t, dag.BuildErrors)
+	require.Equal(t, "prod", runtimeEnvSliceMap(dag.Env)["TARGET_TABLE"])
+
+	persisted := dag.Clone()
+	persisted.Env = nil
+	persisted.Params = nil
+	result, err := spec.ResolveEnvWithWarnings(context.Background(), persisted, []string{"ENVIRONMENT=prod"}, spec.ResolveEnvOptions{})
+	require.NoError(t, err)
+	require.Equal(t, "prod", runtimeEnvSliceMap(result.Env)["TARGET_TABLE"])
+}
+
+func TestResolveEnvWithWarningsPreservesMissingDotenvParamReference(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	workDir := filepath.Join(root, "zscores")
+	require.NoError(t, os.MkdirAll(workDir, 0o750))
+
+	yamlData := fmt.Appendf(nil, `
+name: calculate_zscores
+working_dir: %q
+params:
+  - name: ENVIRONMENT
+    type: string
+dotenv:
+  - ".env.${params.ENVIRONMENT}"
+steps:
+  - name: assert_variables_defined
+    run: echo "${TARGET_TABLE}"
+`, workDir)
+	dag, err := spec.LoadYAML(context.Background(), yamlData)
+	require.NoError(t, err)
+	dag.LoadDotEnv(context.Background())
+	require.Empty(t, dag.BuildErrors)
+	require.Empty(t, dag.Env)
+
+	persisted, err := spec.LoadYAML(context.Background(), yamlData)
+	require.NoError(t, err)
+	persisted.Env = nil
+	persisted.EnvEvaluated = false
+	result, err := spec.ResolveEnvWithWarnings(context.Background(), persisted, nil, spec.ResolveEnvOptions{})
+	require.NoError(t, err)
+	require.Empty(t, result.Env)
 }
 
 func TestResolveEnvWithWarningsDoesNotMutateDAGBackingSlices(t *testing.T) {
@@ -261,6 +352,19 @@ steps:
 	result, err := spec.ResolveEnvWithWarnings(ctx, dag, nil, spec.ResolveEnvOptions{})
 	require.NoError(t, err)
 	require.Equal(t, "old-value", runtimeEnvSliceMap(result.Env)["TOKEN"])
+}
+
+func TestResolveEnvWithWarningsReusesEvaluatedEmptySourceEnv(t *testing.T) {
+	dag := &core.DAG{
+		Name:         "evaluated-empty-source-env",
+		Env:          []string{},
+		EnvEvaluated: true,
+		YamlData:     []byte("invalid: ["),
+	}
+
+	result, err := spec.ResolveEnvWithWarnings(context.Background(), dag, nil, spec.ResolveEnvOptions{})
+	require.NoError(t, err)
+	require.Empty(t, result.Env)
 }
 
 func TestResolveEnvWithWarningsKeepsProgrammaticEnvWithoutSource(t *testing.T) {

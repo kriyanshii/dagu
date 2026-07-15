@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Yota Hamada
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /**
  * ExecutionLog component displays the execution log for a DAG run.
  *
@@ -10,13 +13,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ReloadButton } from '@/components/ui/reload-button';
 import { Switch } from '@/components/ui/switch';
-import { AppBarContext } from '../../../../contexts/AppBarContext';
 import { TOKEN_KEY } from '../../../../contexts/AuthContext';
 import { useConfig } from '../../../../contexts/ConfigContext';
+import { useRemoteNode } from '../../../../contexts/RemoteNodeContext';
 import { useUserPreferences } from '../../../../contexts/UserPreference';
 import { useQuery } from '../../../../hooks/api';
 import { whenEnabled } from '../../../../hooks/queryUtils';
 import { useDAGRunLogsSSE } from '../../../../hooks/useDAGRunLogsSSE';
+import { AnsiLine } from '@/lib/ansi';
 import LoadingIndicator from '@/components/ui/loading-indicator';
 
 // Extended Log type with pagination fields
@@ -45,20 +49,11 @@ type Props = {
 };
 
 /**
- * Regular expression to match ANSI color codes for removal
- * Credit: https://github.com/chalk/ansi-regex/commit/02fa893d619d3da85411acc8fd4e2eea0e95a9d9 under MIT license
- */
-const ANSI_CODES_REGEX = [
-  '[\\u001B\\u009B][[\\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]+)*|[a-zA-Z\\d]+(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]*)*)?\\u0007)',
-  '(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]))',
-].join('|');
-
-/**
  * ExecutionLog displays the log output for a DAG run
  * Fetches log data from the API and refreshes every 30 seconds
  */
 function ExecutionLog({ name, dagRunId, dagRun }: Props) {
-  const appBarContext = React.useContext(AppBarContext);
+  const remoteNode = useRemoteNode();
   const config = useConfig();
   const { preferences, updatePreference } = useUserPreferences();
   const [viewMode, setViewMode] = useState<'tail' | 'head' | 'page'>('tail');
@@ -94,14 +89,19 @@ function ExecutionLog({ name, dagRunId, dagRun }: Props) {
 
   // SSE is used for tail mode with live updates (not supported for sub-DAG runs)
   const useSSE = viewMode === 'tail' && isLiveMode && !isSubDAGRun;
-  const sseResult = useDAGRunLogsSSE(name, dagRunId, useSSE, pageSize);
+  const sseResult = useDAGRunLogsSSE(
+    name,
+    dagRunId,
+    useSSE,
+    pageSize,
+    remoteNode
+  );
 
   // Fall back to REST polling when SSE is unavailable or disconnected
   const usePolling =
     !useSSE || sseResult.shouldUseFallback || !sseResult.isConnected;
 
   // Build query params based on view mode
-  const remoteNode = appBarContext.selectedRemoteNode || 'local';
   const tail = viewMode === 'tail' ? pageSize : undefined;
   const head = viewMode === 'head' ? pageSize : undefined;
   const offset =
@@ -328,8 +328,7 @@ function ExecutionLog({ name, dagRunId, dagRun }: Props) {
   }
 
   // Process log data
-  const content =
-    logData?.content.replace(new RegExp(ANSI_CODES_REGEX, 'g'), '') || '';
+  const content = logData?.content || '';
   const totalLines = logData?.totalLines || 0;
   const hasMore = logData?.hasMore || false;
   const isEstimate = logData?.isEstimate || false;
@@ -551,7 +550,7 @@ function ExecutionLog({ name, dagRunId, dagRun }: Props) {
               <span
                 className={`flex-grow select-text cursor-text ${preferences.logWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}`}
               >
-                {line || ' '}
+                {line ? <AnsiLine text={line} /> : ' '}
               </span>
             </div>
           ))}

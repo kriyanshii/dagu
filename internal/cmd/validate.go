@@ -6,14 +6,18 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/dagucloud/dagu/internal/cmn/logger"
 	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/spec"
 	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/goccy/go-yaml/ast"
+	"github.com/goccy/go-yaml/parser"
 	"github.com/spf13/cobra"
 )
 
@@ -28,8 +32,9 @@ import (
 // error handling in tests without requiring subprocess patterns.
 func Validate() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "validate [flags] <DAG definition>",
-		Short: "Validate a DAG specification",
+		Use:          "validate [flags] <DAG definition>",
+		Short:        "Validate a DAG specification",
+		SilenceUsage: true,
 		Long: `Validate a DAG YAML file without executing it.
 
 Prints a human-readable result instead of structured logs.
@@ -52,6 +57,11 @@ similar to the server-side spec validation.`,
 }
 
 func runValidate(ctx *Context, args []string) error {
+	validatedInput, err := validateWorkflowFile(args[0])
+	if err != nil {
+		return errors.New(formatValidationErrors(args[0], err))
+	}
+
 	// Try loading the DAG without evaluation, resolving relative names against DAGsDir
 	loadOpts := []spec.LoadOption{
 		spec.WithoutEval(),
@@ -62,11 +72,17 @@ func runValidate(ctx *Context, args []string) error {
 		loadOpts = append(loadOpts, spec.WithBaseConfig(ctx.Config.Paths.BaseConfig))
 	}
 
-	dag, err := spec.Load(ctx, args[0], loadOpts...)
-
+	loadResult, err := spec.LoadWithResult(ctx, args[0], loadOpts...)
 	if err != nil {
 		// Collect and return a formatted error message
 		return errors.New(formatValidationErrors(args[0], err))
+	}
+	dag := loadResult.DAG
+
+	if !validatedInput && dag.Location != "" {
+		if _, err := validateWorkflowFile(dag.Location); err != nil {
+			return errors.New(formatValidationErrors(dag.Location, err))
+		}
 	}
 
 	// Run additional DAG-level validation (e.g., dependency references)
@@ -74,17 +90,177 @@ func runValidate(ctx *Context, args []string) error {
 		return errors.New(formatValidationErrors(args[0], vErr))
 	}
 
-	deprecatedWarnings := collectDeprecatedSyntaxWarnings(dag)
-	for _, warning := range deprecatedWarnings {
-		logger.Warn(ctx, warning, tag.File(args[0]))
+	logValidationWarnings(ctx, args[0], append(dag.BuildWarnings, collectDeprecatedSyntaxWarnings(dag)...))
+	logValueReferenceNotices(ctx, args[0], loadResult.ValueReferenceNotices)
+
+	return nil
+}
+
+func logValueReferenceNotices(ctx *Context, file string, notices []cmnvalue.ValueReferenceNotice) {
+	for _, notice := range notices {
+		if notice.Message == "" {
+			continue
+		}
+		if notice.Reason != "" {
+			logger.Info(ctx, notice.Message, tag.File(file), tag.Reason(string(notice.Reason)))
+			continue
+		}
+		logger.Info(ctx, notice.Message, tag.File(file))
+	}
+}
+
+func logValidationWarnings(ctx *Context, file string, warnings []string) {
+	seen := make(map[string]struct{}, len(warnings))
+	for _, warning := range warnings {
+		if warning == "" {
+			continue
+		}
+		if _, ok := seen[warning]; ok {
+			continue
+		}
+		seen[warning] = struct{}{}
+		logger.Warn(ctx, warning, tag.File(file))
+	}
+}
+
+func validateWorkflowFile(path string) (bool, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // validate reads the CLI-provided workflow file path.
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, validateWorkflowData(data)
+}
+
+func validateWorkflowData(data []byte) error {
+	file, err := parser.ParseBytes(data, 0)
+	if err != nil {
+		return err
+	}
+	if file == nil || len(file.Docs) == 0 {
+		return errors.New("yaml stream must contain at least one DAG document")
 	}
 
-	// Success
-	logger.Info(ctx, "DAG spec is valid",
-		tag.File(args[0]),
-		tag.Name(dag.GetName()),
-	)
+	var errs workflowValidationErrors
+	names := map[string]struct{}{}
+	for i, doc := range file.Docs {
+		errs.add(validateWorkflowDocument(i, doc, names)...)
+	}
+	if len(errs) > 0 {
+		return errs
+	}
 	return nil
+}
+
+func validateWorkflowDocument(index int, doc *ast.DocumentNode, names map[string]struct{}) []error {
+	var errs workflowValidationErrors
+	label := validateDocumentLabel(index)
+
+	root, err := validateDocumentRoot(label, doc)
+	if err != nil {
+		return []error{err}
+	}
+
+	fields := collectValidateRootFields(root)
+	errs.add(validateDocumentName(index, label, fields, names)...)
+	errs.add(validateDocumentSteps(label, fields)...)
+	return errs
+}
+
+func validateDocumentRoot(label string, doc *ast.DocumentNode) (*ast.MappingNode, error) {
+	if doc == nil || doc.Body == nil {
+		return nil, fmt.Errorf("%s must not be empty", label)
+	}
+
+	root, ok := doc.Body.(*ast.MappingNode)
+	if !ok || root == nil || len(root.Values) == 0 {
+		return nil, fmt.Errorf("%s must not be empty", label)
+	}
+
+	return root, nil
+}
+
+func collectValidateRootFields(root *ast.MappingNode) map[string]*ast.MappingValueNode {
+	fields := map[string]*ast.MappingValueNode{}
+	for _, item := range root.Values {
+		key, ok := validateScalarString(item.Key)
+		if ok {
+			fields[key] = item
+		}
+	}
+	return fields
+}
+
+func validateDocumentName(index int, label string, fields map[string]*ast.MappingValueNode, names map[string]struct{}) []error {
+	var errs workflowValidationErrors
+	if _, ok := fields["name"]; index == 0 && ok {
+		errs.add(fmt.Errorf("%s must not define name", label))
+	}
+	if index > 0 {
+		nameField, ok := fields["name"]
+		if !ok {
+			errs.add(fmt.Errorf("%s must define name", label))
+		} else if name, ok := validateScalarString(nameField.Value); !ok || strings.TrimSpace(name) == "" {
+			errs.add(fmt.Errorf("%s name must be a non-empty string", label))
+		} else if _, exists := names[name]; exists {
+			errs.add(fmt.Errorf("DAG document name %q must be unique", name))
+		} else {
+			names[name] = struct{}{}
+		}
+	}
+	return errs
+}
+
+func validateDocumentSteps(label string, fields map[string]*ast.MappingValueNode) []error {
+	stepsField, ok := fields["steps"]
+	if !ok {
+		return []error{fmt.Errorf("%s must define steps", label)}
+	}
+
+	steps, ok := stepsField.Value.(*ast.SequenceNode)
+	if !ok || steps == nil || len(steps.Values) == 0 {
+		return []error{fmt.Errorf("%s steps must be a non-empty sequence", label)}
+	}
+	return nil
+}
+
+func validateDocumentLabel(index int) string {
+	if index == 0 {
+		return "entrypoint document"
+	}
+	return fmt.Sprintf("document %d", index+1)
+}
+
+func validateScalarString(node ast.Node) (string, bool) {
+	switch n := node.(type) {
+	case *ast.StringNode:
+		return n.Value, true
+	default:
+		return "", false
+	}
+}
+
+type workflowValidationErrors []error
+
+func (e *workflowValidationErrors) add(errs ...error) {
+	for _, err := range errs {
+		if err != nil {
+			*e = append(*e, err)
+		}
+	}
+}
+
+func (e workflowValidationErrors) Error() string {
+	var b strings.Builder
+	for i, err := range e {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(err.Error())
+	}
+	return b.String()
 }
 
 func collectDeprecatedSyntaxWarnings(dag *core.DAG) []string {

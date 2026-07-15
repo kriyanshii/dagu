@@ -276,13 +276,15 @@ steps:
 		out1Command := test.Output("abc run def")
 		out2Command := test.Output("match")
 		dag := th.DAG(t, `steps:
-  - run: |
+  - id: source
+    run: |
 `+indentTestScript(out1Command, 6)+`
     output: OUT1
-  - run: |
+  - id: match
+    run: |
 `+indentTestScript(out2Command, 6)+`
     output: OUT2
-    depends: cmd_1
+    depends: source
     preconditions:
       - condition: "$OUT1"
         expected: "re:^abc.*def$"
@@ -299,12 +301,13 @@ steps:
 		t.Parallel()
 
 		dag := th.DAG(t, `steps:
-  - run: |
+  - id: config
+    run: |
       echo '{"port": 8080, "host": "localhost"}'
     output: CONFIG
 
   - run: echo "Starting server at ${CONFIG.host}:${CONFIG.port}"
-    depends: cmd_1
+    depends: config
     output: OUT1
 `)
 		agent := dag.Agent()
@@ -318,9 +321,14 @@ steps:
 		t.Parallel()
 
 		dataPrefix := filepath.ToSlash(filepath.Join(t.TempDir(), "dagu_test_integration"))
-		dag := th.DAG(t, fmt.Sprintf(`env:
+		dag := th.DAG(t, fmt.Sprintf(`params:
+  - name: process_date
+    type: string
+    eval: "`+"`"+`date '+%%Y%%m%%d_%%H%%M%%S'`+"`"+`"
+
+env:
   - DATA_DIR: %q
-  - PROCESS_DATE: "`+"`"+`date '+%%Y%%m%%d_%%H%%M%%S'`+"`"+`"
+  - PROCESS_DATE: "${params.process_date}"
 
 steps:
   - run: echo foo
@@ -473,12 +481,13 @@ steps:
 		t.Parallel()
 
 		dag := th.DAG(t, `steps:
-  - run: |
+  - id: config
+    run: |
       echo '{"port": 8080, "host": "localhost"}'
     output: CONFIG
 
   - name: start_server
-    depends: cmd_1
+    depends: config
     run: echo "Starting server at ${CONFIG.host}:${CONFIG.port}"
     output: OUT1
 `)
@@ -623,8 +632,7 @@ steps:
 		t.Parallel()
 
 		dag := th.DAG(t, `steps:
-  - run: |
-      echo 'hello world' && ls -al /
+  - run: echo 'hello world' && ls -al /
     with:
       shell: bash -o errexit -o xtrace -o pipefail -c
     output: OUT1

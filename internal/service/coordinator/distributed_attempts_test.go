@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDistributedAttemptOwnershipStatusDecision(t *testing.T) {
+func TestAttemptOwnershipStatusDecision(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -112,7 +112,7 @@ func TestDistributedAttemptOwnershipStatusDecision(t *testing.T) {
 	})
 }
 
-func TestDistributedAttemptOwnershipSyncFromStatus(t *testing.T) {
+func TestAttemptOwnershipSyncFromStatus(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -197,7 +197,43 @@ func TestDistributedAttemptOwnershipSyncFromStatus(t *testing.T) {
 	assert.ErrorIs(t, err, exec.ErrActiveRunNotFound)
 }
 
-func TestDistributedAttemptOwnershipTaskClaimTracking(t *testing.T) {
+func TestInlineRunSharesClaimLease(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	baseDir := filepath.Join(t.TempDir(), "distributed")
+	leaseStore := newTestDAGRunLeaseStore(baseDir)
+	activeStore := newTestActiveDistributedRunStore(baseDir)
+	ownership := newAttemptOwnership(attemptOwnershipConfig{
+		LeaseStore:     leaseStore,
+		ActiveRunStore: activeStore,
+	})
+
+	require.NoError(t, leaseStore.Upsert(ctx, exec.DAGRunLease{
+		AttemptKey:      "claim-key",
+		WorkerID:        "worker-1",
+		LastHeartbeatAt: time.Now().UTC().UnixMilli(),
+	}))
+	status := &exec.DAGRunStatus{
+		Name:       "child",
+		DAGRunID:   "child-run",
+		AttemptID:  "child-attempt",
+		AttemptKey: "child-key",
+		ClaimKey:   "claim-key",
+		WorkerID:   "worker-1",
+		Status:     core.Running,
+	}
+
+	ownership.syncFromStatus(ctx, "worker-1", status, "")
+
+	lease, err := leaseStore.Get(ctx, "claim-key")
+	require.NoError(t, err)
+	assert.True(t, lease.MatchesClaim(status.EffectiveClaimKey(), status.WorkerID))
+	_, err = activeStore.Get(ctx, "child-key")
+	require.NoError(t, err)
+}
+
+func TestAttemptOwnershipTaskClaimTracking(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()

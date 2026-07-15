@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -125,19 +124,6 @@ func filteredParentEnv() []string {
 		filtered = append(filtered, entry)
 	}
 	return filtered
-}
-
-func dagNameHint(target string) string {
-	name := strings.TrimSpace(target)
-	if name == "" {
-		return ""
-	}
-	base := filepath.Base(name)
-	ext := filepath.Ext(base)
-	if ext == ".yaml" || ext == ".yml" {
-		return strings.TrimSuffix(base, ext)
-	}
-	return base
 }
 
 // Start creates a start command spec.
@@ -278,10 +264,23 @@ func (b *SubCmdBuilder) Restart(dag *core.DAG, opts RestartOptions) CmdSpec {
 
 // Retry creates a retry command spec.
 func (b *SubCmdBuilder) Retry(dag *core.DAG, dagRunID string, stepName string) CmdSpec {
+	return b.retry(dag, dagRunID, stepName, exec1.DAGRunRef{})
+}
+
+// RetryWithRootDAGRun creates a retry command spec for a sub DAG-run with an
+// explicit root DAG-run reference.
+func (b *SubCmdBuilder) RetryWithRootDAGRun(dag *core.DAG, dagRunID string, stepName string, root exec1.DAGRunRef) CmdSpec {
+	return b.retry(dag, dagRunID, stepName, root)
+}
+
+func (b *SubCmdBuilder) retry(dag *core.DAG, dagRunID string, stepName string, root exec1.DAGRunRef) CmdSpec {
 	args := []string{"retry", fmt.Sprintf("--run-id=%s", dagRunID), "-q"}
 
 	if stepName != "" {
 		args = append(args, fmt.Sprintf("--step=%s", stepName))
+	}
+	if !root.Zero() {
+		args = append(args, fmt.Sprintf("--root=%s", root.String()))
 	}
 
 	if b.configFile != "" {
@@ -304,131 +303,14 @@ func (b *SubCmdBuilder) QueueDispatchRetry(dag *core.DAG, dagRunID string, stepN
 	return spec
 }
 
-// QueueDispatchTaskRetry creates a retry command spec for a worker-consumed queued run.
-func (b *SubCmdBuilder) QueueDispatchTaskRetry(task *exec1.DispatchTask, envHints []string, dagName string) CmdSpec {
-	spec := b.TaskRetry(task, envHints, dagName)
-	spec.Env = append(spec.Env, exec1.EnvKeyQueueDispatchRetry+"=1")
-	return spec
-}
-
-// TaskStart creates a start command spec for coordinator tasks.
-// envHints optionally provides resolved DAG/base-config env entries for
-// rebuild-time env values in the child process.
-func (b *SubCmdBuilder) TaskStart(task *exec1.DispatchTask, envHints []string, dagName string) CmdSpec {
-	args := []string{"start", "-q"}
-	env := b.parentEnv()
-
-	// Add hierarchy flags for sub DAGs
-	if task.RootDAGRunID != "" {
-		args = append(args, fmt.Sprintf("--root=%s:%s", task.RootDAGRunName, task.RootDAGRunID))
-	}
-	if task.ParentDAGRunID != "" {
-		args = append(args, fmt.Sprintf("--parent=%s:%s", task.ParentDAGRunName, task.ParentDAGRunID))
-	}
-
-	args = append(args, fmt.Sprintf("--run-id=%s", task.DAGRunID))
-	if task.AttemptID != "" {
-		args = append(args, fmt.Sprintf("--attempt-id=%s", task.AttemptID))
-	}
-
-	// Override derived name since temp files lack 'name:' field
-	if dagName == "" {
-		dagName = task.RootDAGRunName
-	}
-	if dagName == "" {
-		dagName = dagNameHint(task.Target)
-	}
-	if dagName != "" {
-		args = append(args, fmt.Sprintf("--name=%s", dagName))
-	}
-
-	// Worker ID prevents re-dispatch to coordinator
-	if task.WorkerID != "" {
-		args = append(args, fmt.Sprintf("--worker-id=%s", task.WorkerID))
-	}
-
-	if task.Labels != "" {
-		args = append(args, fmt.Sprintf("--labels=%s", task.Labels))
-	}
-	if task.ScheduleTime != "" {
-		args = append(args, fmt.Sprintf("--schedule-time=%s", task.ScheduleTime))
-	}
-	if task.SourceFile != "" {
-		args = append(args, fmt.Sprintf("--source-file=%s", task.SourceFile))
-	}
-	if task.ProfileName != "" {
-		args = append(args, fmt.Sprintf("--profile=%s", task.ProfileName))
-	}
-
-	if b.configFile != "" {
-		args = append(args, "--config", b.configFile)
-	}
-	args = append(args, task.Target)
-
-	if task.Params != "" {
-		args = append(args, "--", task.Params)
-	}
-	if task.ExternalStepRetry {
-		env = append(env, exec1.EnvKeyExternalStepRetry+"=1")
-	}
-
-	return CmdSpec{
-		Executable: b.executable,
-		Args:       args,
-		Env:        env,
-		BuildEnv:   append([]string{}, envHints...),
-	}
-}
-
-// TaskRetry creates a retry command spec for coordinator tasks.
-// envHints optionally provides resolved DAG/base-config env entries for
-// rebuild-time env values in the child process.
-func (b *SubCmdBuilder) TaskRetry(task *exec1.DispatchTask, envHints []string, dagName string) CmdSpec {
-	args := []string{"retry", fmt.Sprintf("--run-id=%s", task.DAGRunID), "-q"}
-	env := b.parentEnv()
-	if task.AttemptID != "" {
-		args = append(args, fmt.Sprintf("--attempt-id=%s", task.AttemptID))
-	}
-
-	if task.Step != "" {
-		args = append(args, fmt.Sprintf("--step=%s", task.Step))
-	}
-
-	// Pass worker ID for tracking which worker executes this DAG run
-	if task.WorkerID != "" {
-		args = append(args, fmt.Sprintf("--worker-id=%s", task.WorkerID))
-	}
-
-	if b.configFile != "" {
-		args = append(args, "--config", b.configFile)
-	}
-	if dagName == "" {
-		dagName = task.RootDAGRunName
-	}
-	if dagName == "" {
-		dagName = dagNameHint(task.Target)
-	}
-	args = append(args, dagName)
-	if task.ExternalStepRetry {
-		env = append(env, exec1.EnvKeyExternalStepRetry+"=1")
-	}
-
-	return CmdSpec{
-		Executable: b.executable,
-		Args:       args,
-		Env:        env,
-		BuildEnv:   append([]string{}, envHints...),
-	}
-}
-
 // CmdSpec describes a command to be executed with all its configuration.
 type CmdSpec struct {
 	Executable string
 	Args       []string
 	Env        []string
 	BuildEnv   []string
-	Stdout     *os.File
-	Stderr     *os.File
+	Stdout     io.Writer
+	Stderr     io.Writer
 }
 
 // StartOptions contains options for initiating a dag-run.
@@ -499,11 +381,11 @@ func buildCommandError(err error, stdout, stderr *cappedBuffer) error {
 }
 
 // fileOrDefault returns the file if non-nil, otherwise returns the default.
-func fileOrDefault(file, defaultFile *os.File) *os.File {
-	if file != nil {
-		return file
+func fileOrDefault(writer io.Writer, defaultWriter io.Writer) io.Writer {
+	if writer != nil {
+		return writer
 	}
-	return defaultFile
+	return defaultWriter
 }
 
 func effectiveLabels(labels, tags string) string {

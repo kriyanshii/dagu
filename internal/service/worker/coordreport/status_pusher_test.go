@@ -38,7 +38,7 @@ func (m *mockCoordinatorClient) ReportStatus(ctx context.Context, req *coordinat
 }
 
 // Stub methods for interface compliance - panic if called unexpectedly
-func (m *mockCoordinatorClient) Dispatch(_ context.Context, _ *exec.DispatchTask) error {
+func (m *mockCoordinatorClient) Dispatch(_ context.Context, _ exec.DispatchRequest) error {
 	panic("Dispatch not implemented in mock")
 }
 
@@ -98,6 +98,10 @@ func (m *mockCoordinatorClient) GetDAGRunStatus(_ context.Context, _, _ string, 
 	panic("GetDAGRunStatus not implemented in mock")
 }
 
+func (m *mockCoordinatorClient) GetDAG(_ context.Context, _ string) (string, error) {
+	panic("GetDAG not implemented in mock")
+}
+
 func (m *mockCoordinatorClient) RequestCancel(_ context.Context, _, _ string, _ *exec.DAGRunRef) error {
 	panic("RequestCancel not implemented in mock")
 }
@@ -106,11 +110,12 @@ func TestNewStatusPusher(t *testing.T) {
 	t.Parallel()
 
 	client := &mockCoordinatorClient{}
-	pusher := coordreport.NewStatusPusher(client, "worker-123")
+	pusher := coordreport.NewStatusPusher(client, "worker-123", "claim-key")
 
 	require.NotNil(t, pusher)
 	snapshot := coordreport.SnapshotStatusPusher(pusher)
 	assert.Equal(t, "worker-123", snapshot.WorkerID)
+	assert.Equal(t, "claim-key", snapshot.ClaimKey)
 	assert.Equal(t, client, snapshot.Client)
 }
 
@@ -128,7 +133,7 @@ func TestPush(t *testing.T) {
 			},
 		}
 
-		pusher := coordreport.NewStatusPusher(client, "worker-1")
+		pusher := coordreport.NewStatusPusher(client, "worker-1", "claim-key")
 		status := exec.DAGRunStatus{
 			Name:     "test-dag",
 			DAGRunID: "run-123",
@@ -147,6 +152,7 @@ func TestPush(t *testing.T) {
 		require.NoError(t, convErr)
 		require.NotNil(t, s)
 		assert.Equal(t, "run-123", s.DAGRunID)
+		assert.Equal(t, "claim-key", s.ClaimKey)
 	})
 
 	t.Run("Rejected", func(t *testing.T) {
@@ -161,7 +167,7 @@ func TestPush(t *testing.T) {
 			},
 		}
 
-		pusher := coordreport.NewStatusPusher(client, "worker-1")
+		pusher := coordreport.NewStatusPusher(client, "worker-1", "")
 		status := exec.DAGRunStatus{Name: "test-dag", DAGRunID: "run-123"}
 
 		err := pusher.Push(context.Background(), status)
@@ -183,7 +189,7 @@ func TestPush(t *testing.T) {
 			},
 		}
 
-		pusher := coordreport.NewStatusPusher(client, "worker-1")
+		pusher := coordreport.NewStatusPusher(client, "worker-1", "")
 		err := pusher.Push(context.Background(), exec.DAGRunStatus{})
 
 		require.Error(t, err)
@@ -202,7 +208,7 @@ func TestPush(t *testing.T) {
 			},
 		}
 
-		pusher := coordreport.NewStatusPusher(client, "worker-1")
+		pusher := coordreport.NewStatusPusher(client, "worker-1", "")
 		err := pusher.Push(context.Background(), exec.DAGRunStatus{})
 
 		require.Error(t, err)
@@ -218,7 +224,7 @@ func TestPush(t *testing.T) {
 			},
 		}
 
-		pusher := coordreport.NewStatusPusher(client, "worker-1")
+		pusher := coordreport.NewStatusPusher(client, "worker-1", "")
 		err := pusher.Push(context.Background(), exec.DAGRunStatus{})
 
 		require.Error(t, err)
@@ -238,7 +244,7 @@ func TestPush(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately
 
-		pusher := coordreport.NewStatusPusher(client, "worker-1")
+		pusher := coordreport.NewStatusPusher(client, "worker-1", "")
 		err := pusher.Push(ctx, exec.DAGRunStatus{})
 
 		require.Error(t, err)
@@ -276,7 +282,7 @@ func TestPush(t *testing.T) {
 			},
 		}
 
-		pusher := coordreport.NewStatusPusher(client, "worker-1")
+		pusher := coordreport.NewStatusPusher(client, "worker-1", "")
 		err := pusher.Push(context.Background(), status)
 
 		require.NoError(t, err)
@@ -306,7 +312,7 @@ func TestPush(t *testing.T) {
 			},
 		}
 
-		pusher := coordreport.NewStatusPusher(client, "worker-1", exec.HostInfo{ID: "coord-1", Host: "127.0.0.1", Port: 4321})
+		pusher := coordreport.NewStatusPusher(client, "worker-1", "owner-attempt-key", exec.HostInfo{ID: "coord-1", Host: "127.0.0.1", Port: 4321})
 		err := pusher.Push(context.Background(), exec.DAGRunStatus{Name: "test-dag", DAGRunID: "run-owner"})
 
 		require.NoError(t, err)

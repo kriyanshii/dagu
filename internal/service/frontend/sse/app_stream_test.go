@@ -4,65 +4,53 @@
 package sse
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"strings"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dagucloud/dagu/internal/cmn/config"
 )
 
-func TestWriteAppEventFrame(t *testing.T) {
-	recorder := httptest.NewRecorder()
-
-	err := writeAppEventFrame(recorder, AppEvent{
-		Type:     AppEventTypeDAGChanged,
-		FileName: "example.yaml",
-		Reason:   "updated",
-	})
-	require.NoError(t, err)
-
-	body := recorder.Body.String()
-	assert.Contains(t, body, "event: dag.changed\n")
-	assert.Contains(t, body, `"fileName":"example.yaml"`)
-	assert.Contains(t, body, `"reason":"updated"`)
-}
-
-func TestRecursiveWatcherStopIsIdempotent(_ *testing.T) {
-	watcher := &recursiveWatcher{
+func TestDirectoryWatcherStopIsIdempotent(t *testing.T) {
+	watcher := &directoryWatcher{
 		done: make(chan struct{}),
 	}
 
-	// Calling Stop twice asserts the method is idempotent and does not panic.
-	watcher.Stop()
-	watcher.Stop()
+	require.NotPanics(t, func() {
+		watcher.Stop()
+		watcher.Stop()
+	})
 }
 
-func TestAppStreamServiceShutdownIsIdempotent(_ *testing.T) {
+func TestAppStreamServiceShutdownIsIdempotent(t *testing.T) {
 	service := &AppStreamService{
 		cancel: func() {},
-		watchers: []*recursiveWatcher{
-			{done: make(chan struct{})},
+		watchers: []appWatcher{
+			&directoryWatcher{done: make(chan struct{})},
 		},
 	}
 
-	// Calling Shutdown twice asserts the method is idempotent and does not panic.
-	service.Shutdown()
-	service.Shutdown()
+	require.NotPanics(t, func() {
+		service.Shutdown()
+		service.Shutdown()
+	})
 }
 
-func TestAppHandlerHandleStreamUnavailable(t *testing.T) {
-	handler := NewAppHandler(nil, nil)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/events/app", nil)
-	recorder := httptest.NewRecorder()
+func TestNewAppStreamServiceDoesNotCreateDAGRunsDir(t *testing.T) {
+	root := t.TempDir()
+	dagRunsDir := filepath.Join(root, "dag-runs")
 
-	handler.HandleStream(recorder, req)
+	service, err := NewAppStreamService(AppStreamConfig{
+		Paths: config.PathsConfig{
+			SuspendFlagsDir: filepath.Join(root, "suspend"),
+			DAGRunsDir:      dagRunsDir,
+			QueueDir:        filepath.Join(root, "queue"),
+		},
+	})
 
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, recorder.Code)
-	}
-	if got := recorder.Header().Get("Content-Type"); strings.Contains(got, "text/event-stream") {
-		t.Fatalf("expected non-stream error response, got Content-Type %q", got)
-	}
+	require.NoError(t, err)
+	t.Cleanup(service.Shutdown)
+	assert.NoDirExists(t, dagRunsDir)
 }

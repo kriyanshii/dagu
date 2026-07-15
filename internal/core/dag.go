@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/internal/cmn/buildenv"
-	"github.com/dagucloud/dagu/internal/cmn/eval"
 	"github.com/dagucloud/dagu/internal/cmn/fileutil"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/joho/godotenv"
 	"github.com/robfig/cron/v3"
 )
@@ -29,8 +29,6 @@ const (
 	TypeGraph = "graph"
 	// TypeChain runs steps strictly in declaration order.
 	TypeChain = "chain"
-	// TypeAgent is reserved for agent-oriented execution flows.
-	TypeAgent = "agent"
 )
 
 // LogOutputMode represents the mode for log output handling.
@@ -82,7 +80,7 @@ type DAG struct {
 	Group string `json:"group,omitempty"`
 	// Name is the name of the DAG. The default is the filename without the extension.
 	Name string `json:"name,omitempty"`
-	// Type is the execution type (graph, chain, or agent). Default is graph.
+	// Type is the execution type (graph or chain). Default is graph.
 	Type string `json:"type,omitempty"`
 	// Shell is the default shell to use for all steps in this DAG.
 	// If not specified, the system default shell is used.
@@ -119,6 +117,8 @@ type DAG struct {
 	// Note: This field is evaluated at build time and may contain secrets.
 	// It is excluded from JSON serialization to prevent secret leakage.
 	Env []string `json:"-"`
+	// Consts contains immutable values resolved while loading the DAG.
+	Consts map[string]any `json:"consts,omitempty"`
 	// EnvEvaluated reports whether Env is safe to reuse as resolved build env.
 	EnvEvaluated bool `json:"-"`
 	// PresolvedBuildEnv stores resolved DAG/base-config env entries needed to
@@ -148,7 +148,7 @@ type DAG struct {
 	Params []string `json:"-"`
 	// ParamsJSON contains the JSON representation of the resolved parameters.
 	// When params were supplied as JSON, the original payload is preserved.
-	// Steps can consume this via the DAGU_PARAMS_JSON environment variable.
+	// Steps can consume this via the DAG_PARAMS_JSON environment variable.
 	// Note: This field is evaluated at build time and may contain secrets.
 	// It is excluded from JSON serialization to prevent secret leakage.
 	ParamsJSON string `json:"-"`
@@ -373,6 +373,9 @@ func (d *DAG) Clone() *DAG {
 	if d.PresolvedBuildEnv != nil {
 		clone.PresolvedBuildEnv = maps.Clone(d.PresolvedBuildEnv)
 	}
+	if d.Consts != nil {
+		clone.Consts = maps.Clone(d.Consts)
+	}
 	if d.Artifacts != nil {
 		artifactsCopy := *d.Artifacts
 		clone.Artifacts = &artifactsCopy
@@ -475,10 +478,6 @@ func (d *DAG) Validate() error {
 		}
 	}
 
-	for _, err := range d.validateOutputReferences() {
-		errs = append(errs, NewValidationError("output reference", nil, err))
-	}
-
 	if len(errs) == 0 {
 		return nil
 	}
@@ -533,9 +532,9 @@ func (d *DAG) loadDotEnvFiles(ctx context.Context) {
 	if evalCtx == nil {
 		evalCtx = context.Background()
 	}
-	evalCtx = eval.WithEnvScope(evalCtx, scope)
+	evalCtx = cmnvalue.WithEnvScope(evalCtx, scope)
 
-	workingDir := expandDotEnvPath(d.WorkingDir, scope)
+	workingDir := d.expandDotEnvPath(d.WorkingDir, scope)
 	relativeTos := []string{workingDir}
 	if fileDir := filepath.Dir(d.Location); d.Location != "" && fileDir != workingDir {
 		relativeTos = append(relativeTos, fileDir)
@@ -550,26 +549,38 @@ func (d *DAG) loadDotEnvFiles(ctx context.Context) {
 }
 
 // dotenvEnvScope builds the variable scope used to resolve dotenv search paths.
-func (d *DAG) dotenvEnvScope() *eval.EnvScope {
-	scope := eval.NewEnvScope(nil, true)
+func (d *DAG) dotenvEnvScope() *cmnvalue.EnvScope {
+	scope := cmnvalue.NewEnvScope(nil, true)
 	if params := buildenv.ToMap(d.Params); len(params) > 0 {
-		scope = scope.WithEntries(params, eval.EnvSourceParam)
+		scope = scope.WithEntries(params, cmnvalue.EnvSourceParam)
 	}
 	if len(d.PresolvedBuildEnv) > 0 {
-		scope = scope.WithEntries(d.PresolvedBuildEnv, eval.EnvSourcePresolved)
+		scope = scope.WithEntries(d.PresolvedBuildEnv, cmnvalue.EnvSourcePresolved)
 	}
 	if envs := buildenv.ToMap(d.Env); len(envs) > 0 {
-		scope = scope.WithEntries(envs, eval.EnvSourceDAGEnv)
+		scope = scope.WithEntries(envs, cmnvalue.EnvSourceDAGEnv)
 	}
 	return scope
 }
 
+func (d *DAG) expandConsts(value, field string) (string, error) {
+	resolver := cmnvalue.NewResolver(
+		cmnvalue.StaticScope{Consts: cmnvalue.Values(d.Consts)},
+		cmnvalue.RuntimeScope{Consts: cmnvalue.Values(d.Consts)},
+	)
+	return resolver.String(context.Background(), value, cmnvalue.StaticValidationField(field))
+}
+
 // expandDotEnvPath expands a dotenv-related path without mutating the DAG definition.
-func expandDotEnvPath(path string, scope *eval.EnvScope) string {
-	if scope == nil {
-		return os.ExpandEnv(path)
+func (d *DAG) expandDotEnvPath(path string, scope *cmnvalue.EnvScope) string {
+	expanded, err := d.expandConsts(path, "dotenv")
+	if err != nil {
+		expanded = path
 	}
-	return scope.Expand(path)
+	if scope == nil {
+		return os.ExpandEnv(expanded)
+	}
+	return scope.Expand(expanded)
 }
 
 // loadSingleDotEnvFile loads a single dotenv file and appends its variables to d.Env.
@@ -578,13 +589,17 @@ func (d *DAG) loadSingleDotEnvFile(ctx context.Context, resolver *fileutil.FileR
 		return
 	}
 
-	evaluatedPath, err := eval.String(ctx, filePath, eval.WithOSExpansion())
+	valueResolver := cmnvalue.NewResolver(
+		cmnvalue.StaticScope{Consts: cmnvalue.Values(d.Consts), Params: d.ParamDeclarations()},
+		cmnvalue.RuntimeScope{Consts: cmnvalue.Values(d.Consts), Params: d.ParamValues(), ParamsJSON: d.ParamsJSON, Env: cmnvalue.GetEnvScope(ctx)},
+	)
+	evaluatedPath, err := valueResolver.String(ctx, filePath, cmnvalue.DotenvPathField("dotenv"))
 	if err != nil {
-		d.BuildWarnings = append(d.BuildWarnings, fmt.Sprintf("failed to evaluate dotenv path %q: %v", filePath, err))
+		d.BuildErrors = append(d.BuildErrors, fmt.Errorf("failed to evaluate dotenv path %q: %w", filePath, err))
 		return
 	}
 
-	resolvedPath, err := resolver.ResolveFilePath(evaluatedPath)
+	resolvedPath, err := resolver.ResolveFilePathLiteral(evaluatedPath)
 	if err != nil || !fileutil.FileExists(resolvedPath) {
 		return
 	}
@@ -649,6 +664,64 @@ func (d *DAG) ParamsMap() map[string]string {
 		}
 	}
 	return params
+}
+
+// ParamDeclarations returns named parameters that can be referenced through ${params.name}.
+func (d *DAG) ParamDeclarations() cmnvalue.Values {
+	if d == nil || len(d.ParamDefs) == 0 {
+		return nil
+	}
+	params := make(cmnvalue.Values, len(d.ParamDefs))
+	for _, def := range d.ParamDefs {
+		name := strings.TrimSpace(def.Name)
+		if !isNamedValueParam(name) {
+			continue
+		}
+		params[name] = nil
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
+// ParamValues returns named runtime parameter values for ${params.name}.
+func (d *DAG) ParamValues() cmnvalue.Values {
+	if d == nil {
+		return nil
+	}
+	paramsMap := d.ParamsMap()
+	if len(paramsMap) == 0 {
+		return nil
+	}
+	params := make(cmnvalue.Values, len(paramsMap))
+	for name, value := range paramsMap {
+		if !isNamedValueParam(name) {
+			continue
+		}
+		params[name] = value
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
+func isNamedValueParam(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case i == 0 && ((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')):
+			continue
+		case i > 0 && ((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_'):
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ProcGroup returns the name of the process group for this DAG.
@@ -923,6 +996,8 @@ type Schedule struct {
 	Expression string `json:"expression,omitempty"`
 	// At is the canonical RFC 3339 timestamp for one-off schedules.
 	At string `json:"at,omitempty"`
+	// Profile is the runtime profile name that activates this schedule.
+	Profile string `json:"profile,omitempty"`
 	// Parsed is the parsed cron schedule.
 	Parsed cron.Schedule `json:"-"`
 	// AtTime is the parsed one-off schedule time.
@@ -941,11 +1016,13 @@ func (s Schedule) MarshalJSON() ([]byte, error) {
 		Kind       ScheduleKind `json:"kind,omitempty"`
 		Expression string       `json:"expression,omitempty"`
 		At         string       `json:"at,omitempty"`
+		Profile    string       `json:"profile,omitempty"`
 		Warnings   []string     `json:"warnings,omitempty"`
 	}{
 		Kind:       normalized.Kind,
 		Expression: normalized.Expression,
 		At:         normalized.At,
+		Profile:    normalized.Profile,
 		Warnings:   normalized.Warnings,
 	})
 }
@@ -953,29 +1030,15 @@ func (s Schedule) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON implements the json.Unmarshaler interface.
 // It also parses the cron expression to populate the Parsed field.
 func (s *Schedule) UnmarshalJSON(data []byte) error {
-	var alias struct {
-		Kind       ScheduleKind `json:"kind"`
-		Expression string       `json:"expression"`
-		At         string       `json:"at"`
-	}
-	if err := json.Unmarshal(data, &alias); err != nil {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
+	delete(raw, "warnings")
 
-	if alias.Kind == "" && alias.Expression == "" && alias.At == "" {
+	if len(raw) == 0 {
 		*s = Schedule{}
 		return nil
-	}
-
-	raw := make(map[string]any, 3)
-	if alias.Kind != "" {
-		raw["kind"] = string(alias.Kind)
-	}
-	if alias.Expression != "" {
-		raw["expression"] = alias.Expression
-	}
-	if alias.At != "" {
-		raw["at"] = alias.At
 	}
 
 	schedule, err := parseScheduleMap(raw, ScheduleParseOptions{AllowAt: true})

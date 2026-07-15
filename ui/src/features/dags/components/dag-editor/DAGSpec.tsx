@@ -24,7 +24,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { AppBarContext } from '../../../../contexts/AppBarContext';
+import { useRemoteNode } from '../../../../contexts/RemoteNodeContext';
 import { useSchema } from '../../../../contexts/SchemaContext';
 import { useUnsavedChanges } from '../../../../contexts/UnsavedChangesContext';
 import { useClient, useQuery } from '../../../../hooks/api';
@@ -37,10 +37,13 @@ import {
 import LoadingIndicator from '@/components/ui/loading-indicator';
 import { DAGContext } from '../../contexts/DAGContext';
 import { DAGStepTable } from '../dag-details';
+import { ValueReferenceNoticesButton } from '../value-reference-notices';
 import { FlowchartType, Graph } from '../visualization';
 import {
   buildAugmentedDAGSchema,
   customActionHintsEqual,
+  type EditorCustomActionHint,
+  type EditorLegacyDefinitionHint,
   extractLocalCustomDefinitionHints,
   legacyDefinitionHintsEqual,
   mergeCustomActionHints,
@@ -69,8 +72,7 @@ type Props = {
  * including visualization, attributes, steps, and YAML definition
  */
 function DAGSpec({ fileName, localDags, editorHints }: Props) {
-  const appBarContext = React.useContext(AppBarContext);
-  const remoteNode = appBarContext.selectedRemoteNode || 'local';
+  const remoteNode = useRemoteNode();
   const client = useClient();
   const { schema: baseSchema } = useSchema();
   const { showError } = useErrorModal();
@@ -123,7 +125,7 @@ function DAGSpec({ fileName, localDags, editorHints }: Props) {
     [setCookie, setFlowchart]
   );
 
-  const dagSSE = useDAGSSE(fileName, !!fileName);
+  const dagSSE = useDAGSSE(fileName, !!fileName, remoteNode);
 
   // Fetch spec — SWR is the single source of truth, refreshed by live invalidations
   const {
@@ -150,6 +152,7 @@ function DAGSpec({ fileName, localDags, editorHints }: Props) {
       : {
           dag: next.dag,
           errors: next.errors ?? [],
+          valueReferenceNotices: data?.valueReferenceNotices ?? [],
           spec: next.spec,
         }
   );
@@ -166,6 +169,7 @@ function DAGSpec({ fileName, localDags, editorHints }: Props) {
 
   // Server spec — SWR cache stays current via live invalidations or polling fallback
   const serverSpec = data?.spec ?? null;
+  const valueReferenceNotices = data?.valueReferenceNotices ?? [];
 
   // Change tracking (source-agnostic)
   const {
@@ -190,13 +194,19 @@ function DAGSpec({ fileName, localDags, editorHints }: Props) {
     () => extractLocalCustomDefinitionHints(serverSpec ?? '').actions
   );
 
-  const inheritedLegacyDefinitions = React.useMemo(
+  const parsedInheritedLegacyDefinitions = React.useMemo(
     () => toInheritedLegacyDefinitionHints(editorHints),
     [editorHints]
   );
-  const inheritedCustomActions = React.useMemo(
+  const inheritedLegacyDefinitions = useStableLegacyDefinitionHints(
+    parsedInheritedLegacyDefinitions
+  );
+  const parsedInheritedCustomActions = React.useMemo(
     () => toInheritedCustomActionHints(editorHints),
     [editorHints]
+  );
+  const inheritedCustomActions = useStableCustomActionHints(
+    parsedInheritedCustomActions
   );
 
   const parsedLocalDefinitions = React.useMemo(
@@ -518,6 +528,43 @@ function DAGSpec({ fileName, localDags, editorHints }: Props) {
       {(props) => {
         // Update refresh callback ref directly (safe in render)
         refreshCallbackRef.current = props.refresh;
+        const editorHeaderActions =
+          valueReferenceNotices.length > 0 || editable ? (
+            <div className="flex items-center gap-2">
+              {valueReferenceNotices.length > 0 && (
+                <ValueReferenceNoticesButton
+                  notices={valueReferenceNotices}
+                  description="Value-reference notices produced while loading this spec."
+                />
+              )}
+              {editable && (
+                <>
+                  {localHasUnsavedChanges && (
+                    <Button
+                      variant="ghost"
+                      title="Discard changes"
+                      onClick={discardChanges}
+                    >
+                      <Undo2 className="h-4 w-4" />
+                      Discard
+                    </Button>
+                  )}
+                  <Button
+                    id="save-config"
+                    title="Save changes (Ctrl+S / Cmd+S)"
+                    disabled={!localHasUnsavedChanges}
+                    onClick={async () => {
+                      await handleSave();
+                      props.refresh();
+                    }}
+                  >
+                    <Save className="h-4 w-4" />
+                    Save
+                  </Button>
+                </>
+              )}
+            </div>
+          ) : undefined;
 
         return (
           data?.dag && (
@@ -606,34 +653,7 @@ function DAGSpec({ fileName, localDags, editorHints }: Props) {
                   className="min-h-[400px]"
                   modelUri={editorModelUri}
                   schema={editorSchema}
-                  headerActions={
-                    editable ? (
-                      <>
-                        {localHasUnsavedChanges && (
-                          <Button
-                            variant="ghost"
-                            title="Discard changes"
-                            onClick={discardChanges}
-                          >
-                            <Undo2 className="h-4 w-4" />
-                            Discard
-                          </Button>
-                        )}
-                        <Button
-                          id="save-config"
-                          title="Save changes (Ctrl+S / Cmd+S)"
-                          disabled={!localHasUnsavedChanges}
-                          onClick={async () => {
-                            await handleSave();
-                            props.refresh();
-                          }}
-                        >
-                          <Save className="h-4 w-4" />
-                          Save
-                        </Button>
-                      </>
-                    ) : undefined
-                  }
+                  headerActions={editorHeaderActions}
                 />
               </div>
             </React.Fragment>
@@ -668,6 +688,26 @@ function getHandlers(
     steps.push(h?.exit);
   }
   return steps;
+}
+
+function useStableLegacyDefinitionHints(
+  hints: EditorLegacyDefinitionHint[]
+): EditorLegacyDefinitionHint[] {
+  const stableRef = React.useRef(hints);
+  if (!legacyDefinitionHintsEqual(stableRef.current, hints)) {
+    stableRef.current = hints;
+  }
+  return stableRef.current;
+}
+
+function useStableCustomActionHints(
+  hints: EditorCustomActionHint[]
+): EditorCustomActionHint[] {
+  const stableRef = React.useRef(hints);
+  if (!customActionHintsEqual(stableRef.current, hints)) {
+    stableRef.current = hints;
+  }
+  return stableRef.current;
 }
 
 export default DAGSpec;

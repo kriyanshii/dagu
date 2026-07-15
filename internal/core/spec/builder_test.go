@@ -299,8 +299,8 @@ func TestBuildValidationError(t *testing.T) {
 			name: "InvalidEnv",
 			yaml: `
 env:
-  - VAR: "` + "`invalid command`" + `"`,
-			expectedErr: spec.ErrInvalidEnvValue,
+  - VAR`,
+			errContains: "invalid format",
 		},
 		{
 			name: "InvalidParams",
@@ -374,7 +374,7 @@ steps:
 			},
 		},
 		{
-			name: "ValidEnvWithSubstitution",
+			name: "ValidEnvPreservesBacktickSubstitution",
 			yaml: `
 env:
   - VAR: "` + "`echo 123`" + `"
@@ -383,7 +383,7 @@ steps:
   - run: "true"
 `,
 			expected: map[string]string{
-				"VAR": "123",
+				"VAR": "`echo 123`",
 			},
 		},
 		{
@@ -553,7 +553,7 @@ steps:
 		require.Len(t, th.Steps, 1)
 		step := th.Steps[0]
 		assert.Equal(t, "script", step.Name)
-		assert.Equal(t, "echo hello\necho world", step.Script)
+		assert.Equal(t, "echo hello\necho world\n", step.Script)
 		assert.Empty(t, step.Command)
 		assert.Empty(t, step.CmdWithArgs)
 		assert.Empty(t, step.CmdArgsSys)
@@ -1246,6 +1246,24 @@ steps:
 		assert.Len(t, th.Steps[0].Preconditions, 1)
 		assert.Equal(t, &core.Condition{Condition: "test -f file.txt", Expected: "true"}, th.Steps[0].Preconditions[0])
 	})
+	t.Run("PreconditionEval", func(t *testing.T) {
+		t.Parallel()
+
+		data := []byte(`
+steps:
+  - name: "eval_gate"
+    run: "echo eval"
+    preconditions:
+      - eval: "$(printf ready)"
+        expected: "ready"
+`)
+		dag, err := spec.LoadYAML(context.Background(), data)
+		require.NoError(t, err)
+		th := DAG{t: t, DAG: dag}
+		assert.Len(t, th.Steps, 1)
+		assert.Len(t, th.Steps[0].Preconditions, 1)
+		assert.Equal(t, &core.Condition{Eval: "$(printf ready)", Expected: "ready"}, th.Steps[0].Preconditions[0])
+	})
 	t.Run("StepPreconditionsWithNegate", func(t *testing.T) {
 		t.Parallel()
 
@@ -1766,7 +1784,7 @@ steps:
 
 		require.Len(t, th.Steps, 6)
 		assert.Equal(t, "cmd_1", th.Steps[0].Name)
-		assert.Equal(t, "cmd_2", th.Steps[1].Name)
+		assert.Equal(t, "script_2", th.Steps[1].Name)
 		assert.Equal(t, "http_3", th.Steps[2].Name)
 		assert.Equal(t, "dag_4", th.Steps[3].Name)
 		assert.Equal(t, "docker_5", th.Steps[4].Name)
@@ -3054,39 +3072,6 @@ steps:
 		assert.Equal(t, true, fallback[0]["full-auto"])
 	})
 
-	t.Run("StepInheritsBuiltinHarnessFromDAG", func(t *testing.T) {
-		yaml := `
-harness:
-  provider: builtin
-  model: coder-default
-  tools:
-    enabled: [read, bash, patch, think]
-  fallback:
-    - provider: codex
-      full-auto: true
-steps:
-  - name: step1
-    action: harness.run
-    with:
-      prompt: "Review this repository"
-      max_iterations: 20
-`
-		dag, err := spec.LoadYAML(context.Background(), []byte(yaml))
-		require.NoError(t, err)
-		require.NotNil(t, dag.Harness)
-		require.Len(t, dag.Steps, 1)
-
-		step := dag.Steps[0]
-		assert.Equal(t, "harness", step.ExecutorConfig.Type)
-		assert.Equal(t, "builtin", step.ExecutorConfig.Config["provider"])
-		assert.Equal(t, "coder-default", step.ExecutorConfig.Config["model"])
-		assert.EqualValues(t, 20, step.ExecutorConfig.Config["max_iterations"])
-		fallback := mustHarnessFallback(t, step.ExecutorConfig.Config["fallback"])
-		require.Len(t, fallback, 1)
-		assert.Equal(t, "codex", fallback[0]["provider"])
-		assert.Equal(t, true, fallback[0]["full-auto"])
-	})
-
 	t.Run("StepOverridesPrimaryConfigAndInheritsFallback", func(t *testing.T) {
 		yaml := `
 harness:
@@ -3284,6 +3269,30 @@ steps:
 		assert.Equal(t, []string{"run"}, dag.Harnesses["gemini"].PrefixArgs)
 	})
 
+	t.Run("HarnessRunAcceptsStepContainer", func(t *testing.T) {
+		yaml := `
+steps:
+  - name: review
+    action: harness.run
+    container:
+      image: localhost/reviewer-claude:latest
+      volumes:
+        - ./src:/src:ro
+    with:
+      prompt: "Review this repository"
+      provider: claude
+`
+		dag, err := spec.LoadYAML(context.Background(), []byte(yaml))
+		require.NoError(t, err)
+		require.Len(t, dag.Steps, 1)
+
+		step := dag.Steps[0]
+		assert.Equal(t, "harness", step.ExecutorConfig.Type)
+		require.NotNil(t, step.Container)
+		assert.Equal(t, "localhost/reviewer-claude:latest", step.Container.Image)
+		assert.Equal(t, []string{"./src:/src:ro"}, step.Container.Volumes)
+	})
+
 	t.Run("UnknownCustomHarnessProviderFailsBuild", func(t *testing.T) {
 		yaml := `
 steps:
@@ -3303,19 +3312,6 @@ steps:
 harnesses:
   claude:
     binary: gemini
-steps:
-  - run: "Review this repository"
-`
-		_, err := spec.LoadYAML(context.Background(), []byte(yaml))
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), `conflicts with built-in provider`)
-	})
-
-	t.Run("BuiltinAgentHarnessNameCollisionFailsBuild", func(t *testing.T) {
-		yaml := `
-harnesses:
-  builtin:
-    binary: my-agent
 steps:
   - run: "Review this repository"
 `

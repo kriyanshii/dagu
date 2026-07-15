@@ -43,7 +43,6 @@ import (
 	"github.com/dagucloud/dagu/internal/service/frontend"
 	"github.com/dagucloud/dagu/internal/service/resource"
 	"github.com/dagucloud/dagu/internal/service/scheduler"
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -71,6 +70,7 @@ type Context struct {
 	DAGRunLeaseStore          exec.DAGRunLeaseStore
 	ActiveDistributedRunStore exec.ActiveDistributedRunStore
 
+	DAGStore       exec.DAGStore
 	Proc           exec.ProcHandle
 	LicenseManager *license.Manager
 	ContextStore   *clicontext.Store
@@ -100,6 +100,7 @@ func (c *Context) WithContext(ctx context.Context) *Context {
 		WorkerHeartbeatStore:      c.WorkerHeartbeatStore,
 		DAGRunLeaseStore:          c.DAGRunLeaseStore,
 		ActiveDistributedRunStore: c.ActiveDistributedRunStore,
+		DAGStore:                  c.DAGStore,
 		Proc:                      c.Proc,
 		LicenseManager:            c.LicenseManager,
 		ContextStore:              c.ContextStore,
@@ -231,16 +232,15 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 	if quiet {
 		opts = append(opts, logger.WithQuiet())
 	}
-	// For agent commands running in a terminal, suppress console output early
-	// to avoid debug logs cluttering the progress display or tree output
-	if !quiet && isAgentCommand(cmd.Name()) && term.IsTerminal(int(os.Stderr.Fd())) && os.Getenv("DISABLE_PROGRESS") == "" {
+	// For commands with progress output, suppress console output early to avoid
+	// debug logs cluttering the progress display or tree output.
+	if !quiet && isProgressOutputCommand(cmd.Name()) && term.IsTerminal(int(os.Stderr.Fd())) && os.Getenv("DISABLE_PROGRESS") == "" {
 		opts = append(opts, logger.WithQuiet())
 	}
 	if cfg.Core.LogFormat != "" {
 		opts = append(opts, logger.WithFormat(cfg.Core.LogFormat))
 	}
 	ctx = logger.WithLogger(ctx, logger.NewLogger(opts...))
-
 	// Log any warnings collected during configuration loading
 	for _, notice := range cfg.Notices {
 		logger.Info(ctx, notice)
@@ -255,8 +255,8 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 	baseCtx := ctx
 	eventSourceInstance := eventstore.DefaultSourceInstance()
 	var eventSvc *eventstore.Service
-	sharedNothingWorker := isSharedNothingWorker(cmd, cfg)
-	if !sharedNothingWorker && cfg.EventStore.Enabled {
+	workerCommand := isWorkerCommand(cmd)
+	if !workerCommand && cfg.EventStore.Enabled {
 		store, eventErr := file.NewEventStore(cfg)
 		if eventErr != nil {
 			logger.Warn(ctx, "Failed to initialize event store; continuing without event persistence", tag.Error(eventErr))
@@ -290,10 +290,10 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 		}, nil
 	}
 
-	// For shared-nothing workers, skip creating file-based stores
-	// as they only use temporary directories and push status to coordinator
-	if sharedNothingWorker {
-		logger.Debug(ctx, "Shared-nothing worker mode: skipping file-based stores",
+	// Workers run DAGs through the remote task handler and push runtime state
+	// to the coordinator, so they do not need local file-backed run stores.
+	if workerCommand {
+		logger.Debug(ctx, "Worker mode: skipping file-based run stores",
 			slog.Any("coordinators", cfg.Worker.Coordinators),
 		)
 		return &Context{
@@ -308,7 +308,7 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 			CLIContext:          selectedContext,
 			ContextName:         selectedContextName,
 			Scope:               scope,
-			// All stores are nil - shared-nothing workers don't need local storage
+			// Run stores are nil; worker execution reports runtime state to the coordinator.
 			// Status is pushed to coordinator, DAG definitions come from task payload
 		}, nil
 	}
@@ -342,8 +342,15 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 	qs := store.NewQueueStore(file.NewCollection(cfg.Paths.QueueDir))
 	stateStore := store.NewDAGStateStore(file.NewCollection(cfg.Paths.DAGStateDir))
 	sm := file.NewServiceRegistry(cfg)
-	dispatchTaskStore := store.NewDispatchTaskStore(file.NewCollection(distributedDir))
+	dispatchTaskStore := store.NewDispatchTaskStore(
+		file.NewCollection(distributedDir),
+		store.WithDispatchAdmissionLiveness(dagRunLeaseStore, activeDistributedRunStore),
+	)
 	workerHeartbeatStore := store.NewWorkerHeartbeatStore(file.NewCollection(filepath.Join(distributedDir, "workers")))
+	dagStore, err := cmdprocess.NewDAGStore(cfg, cmdprocess.DAGStoreConfig{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create DAG store: %w", err)
+	}
 
 	// Initialize license manager for server commands
 	var licMgr *license.Manager
@@ -410,6 +417,7 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 		WorkerHeartbeatStore:      workerHeartbeatStore,
 		DAGRunLeaseStore:          dagRunLeaseStore,
 		ActiveDistributedRunStore: activeDistributedRunStore,
+		DAGStore:                  dagStore,
 		LicenseManager:            licMgr,
 		ContextStore:              contextStore,
 		CLIContext:                selectedContext,
@@ -434,24 +442,12 @@ func commandFamilyName(cmd *cobra.Command) string {
 	if isContextCommand(cmd) {
 		return "context"
 	}
-	if isAgentCLICommand(cmd) {
-		return "agent"
-	}
 	return cmd.Name()
 }
 
 func isContextCommand(cmd *cobra.Command) bool {
 	for current := cmd; current != nil; current = current.Parent() {
 		if current.Name() == "context" {
-			return true
-		}
-	}
-	return false
-}
-
-func isAgentCLICommand(cmd *cobra.Command) bool {
-	for current := cmd; current != nil; current = current.Parent() {
-		if current.Name() == "agent" {
 			return true
 		}
 	}
@@ -537,7 +533,7 @@ func serviceForCommand(cmdName string) config.Service {
 		return config.ServiceWorker
 	case "coordinator":
 		return config.ServiceCoordinator
-	case "start", "restart", "retry", "dry", "exec", "agent":
+	case "start", "restart", "retry", "dry", "exec":
 		return config.ServiceAgent
 	default:
 		// For all other commands (status, stop, validate, etc.), load all config
@@ -545,24 +541,17 @@ func serviceForCommand(cmdName string) config.Service {
 	}
 }
 
-// isAgentCommand returns true if the command name is an agent command
-// that displays progress or tree output.
-func isAgentCommand(cmdName string) bool {
+func isProgressOutputCommand(cmdName string) bool {
 	switch cmdName {
-	case "start", "restart", "retry", "dry", "exec", "agent":
+	case "start", "restart", "retry", "dry", "exec":
 		return true
 	default:
 		return false
 	}
 }
 
-// isSharedNothingWorker checks if the current command is a worker with static coordinators
-// configured, indicating shared-nothing mode where no local storage is needed.
-func isSharedNothingWorker(cmd *cobra.Command, cfg *config.Config) bool {
-	if cmd.Name() != "worker" {
-		return false
-	}
-	return len(cfg.Worker.Coordinators) > 0
+func isWorkerCommand(cmd *cobra.Command) bool {
+	return cmd.Name() == "worker"
 }
 
 // NewServer creates and returns a new web UI server for this command context.
@@ -589,6 +578,7 @@ func (c *Context) NewCoordinatorClient() coordinator.Client {
 }
 
 func (c *Context) SubWorkflowRunnerFactory() func(context.Context) (runtimeexec.SubWorkflowRunner, error) {
+	stores := c.runtimeStores()
 	return node.NewSubWorkflowRunnerFactory(node.SubWorkflowRunnerConfig{
 		DAGRunMgr: c.DAGRunMgr,
 		DAGStoreFactory: func(context.Context) (exec.DAGStore, error) {
@@ -597,7 +587,8 @@ func (c *Context) SubWorkflowRunnerFactory() func(context.Context) (runtimeexec.
 		DAGRunStore:       c.DAGRunStore,
 		QueueStore:        c.QueueStore,
 		StateStore:        c.StateStore,
-		AgentStores:       c.agentStores(),
+		SecretStore:       stores.SecretStore,
+		ProfileStore:      stores.ProfileStore,
 		ServiceRegistry:   c.ServiceRegistry,
 		PeerConfig:        c.Config.Core.Peer,
 		DefaultExecMode:   c.Config.DefaultExecMode,
@@ -664,12 +655,12 @@ func (c *Context) dagStore(cfg dagStoreConfig) (exec.DAGStore, error) {
 	})
 }
 
-// agentStoresResult holds the agent stores created by agentStores().
-type agentStoresResult = cmdprocess.AgentStores
+// runtimeStoresResult holds the stores created by runtimeStores().
+type runtimeStoresResult = cmdprocess.RuntimeStores
 
-// agentStores creates the agent store bundle for this command context.
-func (c *Context) agentStores() agentStoresResult {
-	return cmdprocess.NewAgentStores(c.Context, c.Config, c.ContextStore)
+// runtimeStores creates the runtime store bundle for this command context.
+func (c *Context) runtimeStores() runtimeStoresResult {
+	return cmdprocess.NewRuntimeStores(c.Context, c.Config)
 }
 
 // OpenLogFile creates and opens a log file for a given dag-run.
@@ -742,13 +733,9 @@ func NewCommand(cmd *cobra.Command, flags []commandLineFlag, runFunc func(cmd *C
 	return cmd
 }
 
-// genRunID creates a new UUID string to be used as a dag-run IDentifier.
+// genRunID creates a new auto-generated dag-run ID.
 func genRunID() (string, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return "", err
-	}
-	return id.String(), nil
+	return exec.NewDAGRunID()
 }
 
 // validateRunID checks if the dag-run ID is valid and not empty.

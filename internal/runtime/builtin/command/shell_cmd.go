@@ -5,10 +5,11 @@ package command
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
+	"strings"
 )
 
 // cmdShell handles Windows cmd.exe.
@@ -18,7 +19,7 @@ var _ Shell = (*cmdShell)(nil)
 
 func (s *cmdShell) Match(name string) bool {
 	switch name {
-	case "cmd.exe", "cmd":
+	case "cmd":
 		return true
 	default:
 		return false
@@ -78,7 +79,11 @@ func (s *cmdShell) Build(ctx context.Context, b *shellCommandBuilder) (*exec.Cmd
 	if b.Script != "" {
 		args := cloneArgs(b.Shell[1:])
 		args = append(args, b.Args...)
-		if !slices.Contains(args, "/c") && !slices.Contains(args, "/C") {
+		carrierIdx := indexOfCmdCarrier(args)
+		if carrierIdx >= 0 && carrierIdx != len(args)-1 {
+			return nil, fmt.Errorf("script form cannot be used with cmd carrier %q followed by authored command text", args[carrierIdx])
+		}
+		if carrierIdx < 0 {
 			args = append(args, "/c")
 		}
 		args = append(args, b.Script)
@@ -87,15 +92,45 @@ func (s *cmdShell) Build(ctx context.Context, b *shellCommandBuilder) (*exec.Cmd
 
 	// Running a command string via shell
 	args := cloneArgs(b.Shell[1:])
+	if err := validateCmdCommandCarrier(args); err != nil {
+		return nil, err
+	}
 
 	// cmd.exe uses /c instead of -c
-	if !slices.Contains(args, "/c") && !slices.Contains(args, "/C") {
+	if indexOfCmdCarrier(args) < 0 {
 		args = append(args, "/c")
 	}
-
-	if scriptPath := b.normalizeScriptPath(); scriptPath != "" {
-		args = append(args, scriptPath)
-	}
+	args = append(args, b.ShellCommandArgs)
 
 	return exec.CommandContext(ctx, cmd, args...), nil // nolint: gosec
+}
+
+func validateCmdCommandCarrier(args []string) error {
+	carrierIdx := -1
+	for i, arg := range args {
+		if arg == "/c" || arg == "/C" {
+			if carrierIdx >= 0 {
+				return fmt.Errorf("command-form run accepts only one cmd command carrier")
+			}
+			carrierIdx = i
+			continue
+		}
+		lower := strings.ToLower(arg)
+		if strings.HasPrefix(lower, "/c") {
+			return fmt.Errorf("command-form run requires cmd command carrier /c as a separate shell argument; got %q", arg)
+		}
+	}
+	if carrierIdx >= 0 && carrierIdx != len(args)-1 {
+		return fmt.Errorf("command-form run requires cmd command carrier %q to be final before the command payload", args[carrierIdx])
+	}
+	return nil
+}
+
+func indexOfCmdCarrier(args []string) int {
+	for i, arg := range args {
+		if arg == "/c" || arg == "/C" {
+			return i
+		}
+	}
+	return -1
 }

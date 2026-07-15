@@ -4,7 +4,6 @@
 package command
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -12,16 +11,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
-	"github.com/dagucloud/dagu/internal/cmn/eval"
+	"github.com/dagucloud/dagu/internal/cmn/config"
 	"github.com/dagucloud/dagu/internal/cmn/fileutil"
 	"github.com/dagucloud/dagu/internal/cmn/logger"
 	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
+	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/runtime"
 	"github.com/dagucloud/dagu/internal/runtime/executor"
@@ -53,7 +51,7 @@ func (e *commandExecutor) Run(ctx context.Context) error {
 	e.mu.Lock()
 
 	if e.config.Script != "" {
-		scriptFile, err := setupScript(e.config.Dir, e.config.Script, e.config.Command, e.config.Shell)
+		scriptFile, err := setupScriptForExecution(e.config.Dir, e.config.Script, e.config.Command, e.config.Shell, e.config.UserSpecifiedShell)
 		if err != nil {
 			e.mu.Unlock()
 			return fmt.Errorf("failed to setup script: %w", err)
@@ -161,15 +159,12 @@ func (e *commandExecutor) stop(req cmdutil.StopRequest) error {
 	return err
 }
 
-// annotateStderrTail writes the full script to the stderr log with the
-// failing line(s) marked, and returns a cleaned version of the tail with
-// the temp script path stripped for use in the error field.
+// annotateStderrTail returns a cleaned version of the tail with the temp script
+// path stripped for use in the error field.
 func (e *commandExecutor) annotateStderrTail(tail string) string {
 	if e.config.Script == "" || e.scriptFile == "" {
 		return tail
 	}
-	offset := scriptLineOffset(e.scriptFile)
-	errorLines := extractErrorLines(tail, e.scriptFile)
 
 	// Strip temp script path from stderr for clean display.
 	// e.g. "/tmp/dagu_script-123.sh:3: not found" → "line 3: not found"
@@ -179,48 +174,7 @@ func (e *commandExecutor) annotateStderrTail(tail string) string {
 	cleaned = strings.ReplaceAll(cleaned, e.scriptFile+": ", "")
 	cleaned = strings.ReplaceAll(cleaned, baseName+": ", "")
 
-	// Write cleaned error + full script dump to stderr log
-	_, _ = fmt.Fprintf(e.config.Stderr, "\n--- error ---\n%s\n", strings.TrimRight(cleaned, "\n"))
-	writeScriptToStderr(e.config.Stderr, e.config.Script, offset, errorLines)
-
 	return cleaned
-}
-
-// extractErrorLines parses stderr for line-number references to the script
-// file and returns a set of those line numbers.
-func extractErrorLines(stderr, scriptFile string) map[int]bool {
-	baseName := filepath.Base(scriptFile)
-	escaped := regexp.QuoteMeta(baseName)
-	// Match patterns like "filename:3:" or "filename: line 3:"
-	re := regexp.MustCompile(escaped + `(?::|\: line )(\d+)`)
-
-	lines := make(map[int]bool)
-	for _, match := range re.FindAllStringSubmatch(stderr, -1) {
-		if n, err := strconv.Atoi(match[1]); err == nil {
-			lines[n] = true
-		}
-	}
-	return lines
-}
-
-// writeScriptToStderr writes the full script content with line numbers to
-// the stderr writer. Lines in errorLines are marked with ">>" for visibility.
-func writeScriptToStderr(w io.Writer, script string, lineOffset int, errorLines map[int]bool) {
-	_, _ = fmt.Fprintln(w, "\n--- script content ---")
-	for i, line := range strings.Split(script, "\n") {
-		num := i + 1
-		scriptLineNum := num + lineOffset
-		prefix := "    "
-		if errorLines[scriptLineNum] {
-			prefix = " >> "
-		}
-		if lineOffset > 0 {
-			_, _ = fmt.Fprintf(w, "%s%4d (orig %d): %s\n", prefix, scriptLineNum, num, line)
-		} else {
-			_, _ = fmt.Fprintf(w, "%s%4d: %s\n", prefix, num, line)
-		}
-	}
-	_, _ = fmt.Fprintln(w, "---")
 }
 
 type commandConfig struct {
@@ -238,6 +192,10 @@ type commandConfig struct {
 }
 
 func (cfg *commandConfig) newCmd(ctx context.Context, scriptFile string) (*exec.Cmd, error) {
+	if scriptFile == "" && cfg.ShellCommandArgs != "" && strings.ContainsAny(cfg.ShellCommandArgs, "\r\n") {
+		return nil, fmt.Errorf("resolved command text contains a line break")
+	}
+
 	var cmd *exec.Cmd
 	switch {
 	case cfg.Command != "" && scriptFile != "":
@@ -258,14 +216,17 @@ func (cfg *commandConfig) newCmd(ctx context.Context, scriptFile string) (*exec.
 		cmd = c
 
 	case len(cfg.Shell) > 0 && scriptFile != "":
-		// Check if the script has shebang and user did not specify a shell
-		shebang, shebangArgs, err := cfg.detectShebang(scriptFile)
+		// Check if the resolved script has a shebang and the step did not force a shell.
+		shebang, shebangArgs, err := cfg.detectShebang()
 		if err != nil {
 			return nil, fmt.Errorf("failed to detect shebang: %w", err)
 		}
 		if shebang != "" {
-			// Use the shebang interpreter to run the script
-			cmd = exec.CommandContext(cfg.Ctx, cmdutil.ResolveExecutable(shebang), append(shebangArgs, scriptFile)...) // nolint: gosec
+			shebangPath, err := resolveShebangExecutable(ctx, shebang)
+			if err != nil {
+				return nil, err
+			}
+			cmd = exec.CommandContext(cfg.Ctx, shebangPath, append(shebangArgs, scriptFile)...) // nolint: gosec
 			cmdutil.SetupCommand(cmd)
 			break
 		}
@@ -274,6 +235,7 @@ func (cfg *commandConfig) newCmd(ctx context.Context, scriptFile string) (*exec.
 		cmdBuilder := &shellCommandBuilder{
 			Dir:                cfg.Dir,
 			Shell:              cfg.Shell,
+			ShellPackages:      cfg.ShellPackages,
 			Script:             scriptFile,
 			UserSpecifiedShell: cfg.UserSpecifiedShell,
 		}
@@ -327,45 +289,11 @@ func (cfg *commandConfig) newCmd(ctx context.Context, scriptFile string) (*exec.
 	return cmd, nil
 }
 
-func (cfg *commandConfig) detectShebang(scriptFile string) (string, []string, error) {
+func (cfg *commandConfig) detectShebang() (string, []string, error) {
 	if cfg.UserSpecifiedShell {
 		return "", nil, nil
 	}
-	// read the first line of the script file
-	firstLine, err := readFirstLine(scriptFile)
-	if err != nil {
-		return "", nil, err
-	}
-	return cmdutil.DetectShebang(firstLine)
-}
-
-func readFirstLine(filePath string) (string, error) {
-	filePath = filepath.Clean(filePath)
-	file, err := os.Open(filePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to open file: %w", err)
-	}
-	defer func() {
-		_ = file.Close()
-	}()
-
-	scanner := bufio.NewScanner(file)
-	// Set a reasonable limit to prevent memory issues with extremely long lines
-	// Shebangs are typically < 256 bytes, but allow up to 4KB to be safe
-	const maxLineSize = 4 * 1024
-	buf := make([]byte, maxLineSize)
-	scanner.Buffer(buf, maxLineSize)
-
-	if scanner.Scan() {
-		return scanner.Text(), nil
-	}
-
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("failed to read file: %w", err)
-	}
-
-	// Empty file
-	return "", nil
+	return parseScriptShebang(cfg.Script)
 }
 
 // exitCodeFromError returns the process exit code represented by err.
@@ -443,13 +371,21 @@ func init() {
 		MultipleCommands: true,
 		Script:           true,
 		Shell:            true,
-		GetCommandEvalOptions: func(ctx context.Context, step core.Step) []eval.Option {
-			env := runtime.GetEnv(ctx)
-			return commandEvalOptions(env.Shell(ctx))
+		CommandContext: func(ctx context.Context, step core.Step) cmnvalue.CommandContext {
+			shell := commandContextShell(ctx, step)
+			return cmnvalue.CommandContext{
+				Target:          cmnvalue.CommandTargetLocal,
+				Shell:           shell,
+				ShellConfigured: len(shell) > 0,
+			}
 		},
-		GetScriptEvalOptions: func(ctx context.Context, step core.Step) []eval.Option {
-			env := runtime.GetEnv(ctx)
-			return commandEvalOptions(env.Shell(ctx))
+		ScriptContext: func(ctx context.Context, step core.Step) cmnvalue.CommandContext {
+			shell := commandContextShell(ctx, step)
+			return cmnvalue.CommandContext{
+				Target:          cmnvalue.CommandTargetLocal,
+				Shell:           shell,
+				ShellConfigured: len(shell) > 0,
+			}
 		},
 	}
 	executor.RegisterExecutor("", NewCommand, validateCommandStep, caps)
@@ -457,8 +393,21 @@ func init() {
 	executor.RegisterExecutor("command", NewCommand, validateCommandStep, caps)
 }
 
-// commandEvalOptions keeps the command executor aligned with the shape of the
-// main branch while delegating the shared policy to runtime.
-func commandEvalOptions(shell []string) []eval.Option {
-	return runtime.CommandEvalOptions(shell)
+func commandContextShell(ctx context.Context, step core.Step) []string {
+	if env, ok := runtime.LookupEnv(ctx); ok {
+		return env.Shell(ctx)
+	}
+	if _, ok := runtime.LookupDAGContext(ctx); ok {
+		return runtime.NewEnv(ctx, step).Shell(ctx)
+	}
+	if step.Shell != "" {
+		shell := []string{step.Shell}
+		return append(shell, step.ShellArgs...)
+	}
+	shellCmd := cmdutil.GetShellCommand(config.GetConfig(ctx).Core.DefaultShell)
+	if shellCmd == "" {
+		return nil
+	}
+	shell := []string{shellCmd}
+	return append(shell, step.ShellArgs...)
 }
