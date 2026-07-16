@@ -102,11 +102,11 @@ export default function TerminalPage() {
       fontSize: 14,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       theme: {
-        background: theme === 'dark' ? '#0f1129' : '#ffffff',
-        foreground: theme === 'dark' ? '#f1f5f9' : '#020617',
-        cursor: theme === 'dark' ? '#f1f5f9' : '#020617',
-        cursorAccent: theme === 'dark' ? '#0f1129' : '#ffffff',
-        selectionBackground: theme === 'dark' ? '#1c224d' : '#add6ff',
+        background: theme === 'dark' ? '#08090e' : '#fbfaf6',
+        foreground: theme === 'dark' ? '#dddcd4' : '#14161b',
+        cursor: theme === 'dark' ? '#dddcd4' : '#14161b',
+        cursorAccent: theme === 'dark' ? '#08090e' : '#fbfaf6',
+        selectionBackground: theme === 'dark' ? '#2a2452' : '#d9d3f5',
       },
       allowProposedApi: true,
     });

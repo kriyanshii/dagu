@@ -24,7 +24,7 @@ interface StepMessagesTableProps {
 
 const roleConfig: Record<string, { label: string; borderColor: string }> = {
   [ChatMessageRole.system]: { label: 'SYS', borderColor: 'border-l-amber-500' },
-  [ChatMessageRole.user]: { label: 'USER', borderColor: 'border-l-blue-500' },
+  [ChatMessageRole.user]: { label: 'USER', borderColor: 'border-l-violet-500' },
   [ChatMessageRole.assistant]: {
     label: 'ASST',
     borderColor: 'border-l-green-500',

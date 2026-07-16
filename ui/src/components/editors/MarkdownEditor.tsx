@@ -1,9 +1,16 @@
+import {
+  KILN_DARK,
+  KILN_LIGHT,
+  registerKilnThemes,
+} from '@/lib/monaco-theme';
 import { cn } from '@/lib/utils';
 import MonacoEditor, { loader } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor';
 import { useEffect, useRef } from 'react';
 
 loader.config({ monaco });
+
+registerKilnThemes();
 
 type Props = {
   value: string;
@@ -24,8 +31,8 @@ function MarkdownEditor({ value, onChange, readOnly = false, className }: Props)
   useEffect(() => {
     if (editorRef.current) {
       const newTheme = document.documentElement.classList.contains('dark')
-        ? 'vs-dark'
-        : 'vs';
+        ? KILN_DARK
+        : KILN_LIGHT;
       monaco.editor.setTheme(newTheme);
     }
   }, []);
@@ -39,8 +46,8 @@ function MarkdownEditor({ value, onChange, readOnly = false, className }: Props)
         ) {
           if (editorRef.current) {
             const newTheme = document.documentElement.classList.contains('dark')
-              ? 'vs-dark'
-              : 'vs';
+              ? KILN_DARK
+              : KILN_LIGHT;
             monaco.editor.setTheme(newTheme);
           }
         }
@@ -73,7 +80,7 @@ function MarkdownEditor({ value, onChange, readOnly = false, className }: Props)
       <MonacoEditor
         height="100%"
         language="markdown"
-        theme={isDarkMode ? 'vs-dark' : 'vs'}
+        theme={isDarkMode ? KILN_DARK : KILN_LIGHT}
         value={value}
         onChange={readOnly ? undefined : onChange}
         onMount={editorDidMount}

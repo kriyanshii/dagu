@@ -44,16 +44,16 @@ type NodeStatusConfig = {
 
 // Unified status colors matching the execution graph
 const NODE_STATUS_CONFIG: NodeStatusConfig[] = [
-  { key: 'succeeded', label: 'success', colorClass: 'bg-[#166534]' },
-  { key: 'running', label: 'running', colorClass: 'bg-[#43a047]' },
-  { key: 'retrying', label: 'retrying', colorClass: 'bg-[#e37400]' },
-  { key: 'failed', label: 'failed', colorClass: 'bg-[#d93025]' },
-  { key: 'queued', label: 'queued', colorClass: 'bg-[#5f6368]' },
-  { key: 'not_started', label: 'not started', colorClass: 'bg-[#5f6368]' },
-  { key: 'skipped', label: 'skipped', colorClass: 'bg-[#5f6368]' },
-  { key: 'aborted', label: 'aborted', colorClass: 'bg-[#d946ef]' },
-  { key: 'waiting', label: 'waiting', colorClass: 'bg-[#e37400]' },
-  { key: 'rejected', label: 'rejected', colorClass: 'bg-[#d93025]' },
+  { key: 'succeeded', label: 'success', colorClass: 'bg-[var(--status-success)]' },
+  { key: 'running', label: 'running', colorClass: 'bg-[var(--status-running)]' },
+  { key: 'retrying', label: 'retrying', colorClass: 'bg-[var(--status-warning)]' },
+  { key: 'failed', label: 'failed', colorClass: 'bg-[var(--status-error)]' },
+  { key: 'queued', label: 'queued', colorClass: 'bg-[var(--status-neutral)]' },
+  { key: 'not_started', label: 'not started', colorClass: 'bg-[var(--status-neutral)]' },
+  { key: 'skipped', label: 'skipped', colorClass: 'bg-[var(--status-neutral)]' },
+  { key: 'aborted', label: 'aborted', colorClass: 'bg-[var(--status-aborted)]' },
+  { key: 'waiting', label: 'waiting', colorClass: 'bg-[var(--status-warning)]' },
+  { key: 'rejected', label: 'rejected', colorClass: 'bg-[var(--status-error)]' },
 ];
 
 type ExecutionStatusConfig = {
@@ -67,31 +67,31 @@ const EXECUTION_STATUS_CONFIG: ExecutionStatusConfig[] = [
   {
     status: Status.Running,
     icon: PlayCircle,
-    iconClass: 'text-[#43a047]',
+    iconClass: 'text-[var(--status-running)]',
     message: 'Execution in progress',
   },
   {
     status: Status.Queued,
     icon: Clock,
-    iconClass: 'text-[#5f6368]',
+    iconClass: 'text-[var(--status-neutral)]',
     message: 'DAGRun is queued for execution',
   },
   {
     status: Status.Aborted,
     icon: StopCircle,
-    iconClass: 'text-[#d946ef]',
+    iconClass: 'text-[var(--status-aborted)]',
     message: 'Execution was aborted',
   },
   {
     status: Status.Waiting,
     icon: Clock,
-    iconClass: 'text-[#e37400]',
+    iconClass: 'text-[var(--status-warning)]',
     message: 'Waiting for approval',
   },
   {
     status: Status.Rejected,
     icon: StopCircle,
-    iconClass: 'text-[#d93025]',
+    iconClass: 'text-[var(--status-error)]',
     message: 'Execution was rejected',
   },
 ];

@@ -102,7 +102,9 @@ describe('DAGStatusOverview', () => {
       />
     );
 
-    expect(container.querySelector('.bg-\\[\\#e37400\\]')).not.toBeNull();
+    expect(
+      container.querySelector('.bg-\\[var\\(--status-warning\\)\\]')
+    ).not.toBeNull();
   });
 
   it('renders runtime conditions with Runnable as the summary before non-True details', () => {

@@ -154,7 +154,7 @@ const summaryConfig: Record<
 const statusConfig: Record<SyncStatus, { color: string; label: string }> = {
   [SyncStatus.synced]: { color: 'bg-emerald-500', label: 'synced' },
   [SyncStatus.modified]: { color: 'bg-amber-500', label: 'modified' },
-  [SyncStatus.untracked]: { color: 'bg-blue-500', label: 'untracked' },
+  [SyncStatus.untracked]: { color: 'bg-violet-500', label: 'untracked' },
   [SyncStatus.conflict]: { color: 'bg-rose-500', label: 'conflict' },
   [SyncStatus.missing]: { color: 'bg-slate-400', label: 'missing' },
 };
@@ -929,7 +929,7 @@ export default function GitSyncPage() {
                         </span>
                       )}
                       {kind === 'soul' && (
-                        <span className="text-[10px] px-1 py-0 rounded bg-cyan-500/10 text-cyan-600 dark:text-cyan-400">
+                        <span className="text-[10px] px-1 py-0 rounded bg-violet-500/10 text-violet-600 dark:text-violet-400">
                           soul
                         </span>
                       )}
