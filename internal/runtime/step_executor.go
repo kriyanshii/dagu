@@ -85,14 +85,21 @@ func (e *StepExecutor) Execute(ctx context.Context, node *Node, onSetup ...func(
 	node.SetError(err)
 	node.SetExitCode(exitCode)
 
-	if err := e.captureExecutorSideChannels(ctx, cmd, node); err != nil {
-		return err
+	declaredOutputsValue, hasDeclaredOutputs, captureErr := e.captureExecutorSideChannels(ctx, cmd, node)
+	if captureErr != nil {
+		if err == nil {
+			node.SetError(captureErr)
+		}
+		return captureErr
 	}
 
 	if err == nil {
 		if err := node.captureDeclaredStepOutputs(ctx); err != nil {
 			node.SetError(err)
 			return err
+		}
+		if hasDeclaredOutputs {
+			node.setStepOutputsValue(declaredOutputsValue)
 		}
 	}
 
@@ -161,7 +168,11 @@ func (e *StepExecutor) setupExecutorSideChannels(cmd executor.Executor, node *No
 	}
 }
 
-func (e *StepExecutor) captureExecutorSideChannels(ctx context.Context, cmd executor.Executor, node *Node) error {
+func (e *StepExecutor) captureExecutorSideChannels(
+	ctx context.Context,
+	cmd executor.Executor,
+	node *Node,
+) (string, bool, error) {
 	if chatHandler, ok := cmd.(executor.ChatMessageHandler); ok {
 		node.SetChatMessages(chatHandler.GetMessages())
 	}
@@ -186,16 +197,26 @@ func (e *StepExecutor) captureExecutorSideChannels(ctx context.Context, cmd exec
 
 	if outputsProvider, ok := cmd.(executor.OutputsProvider); ok {
 		outputs := outputsProvider.GetOutputs()
+		hasDeclaredOutputs := false
+		if declared, ok := cmd.(executor.DeclaredOutputsProvider); ok {
+			hasDeclaredOutputs = declared.PublishesDeclaredOutputs()
+		}
 		if len(outputs) == 0 {
 			node.clearOutputsValue()
-			return nil
+			if !hasDeclaredOutputs {
+				return "", false, nil
+			}
 		}
-		value, err := serializeOutputsValue(ctx, outputs)
+
+		declaredOutputsValue, err := serializeOutputsValue(ctx, outputs)
 		if err != nil {
-			return err
+			return "", false, err
 		}
-		node.setOutputsValue(value)
+		if len(outputs) > 0 {
+			node.setOutputsValue(declaredOutputsValue)
+		}
+		return declaredOutputsValue, hasDeclaredOutputs, nil
 	}
 
-	return nil
+	return "", false, nil
 }
