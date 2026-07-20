@@ -4,7 +4,9 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -206,6 +208,9 @@ func (l *ConfigLoader) Load() (*Config, error) {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("failed to read admin config: %w", err)
 		}
+	}
+	if err := l.loadOIDCWorkspaceMappingsEnv(); err != nil {
+		return nil, err
 	}
 
 	var def Definition
@@ -584,6 +589,8 @@ func (l *ConfigLoader) loadOIDCRoleMapping(cfg *Config, rm *OIDCRoleMappingDef) 
 	cfg.Server.Auth.OIDC.RoleMapping.DefaultRole = rm.DefaultRole
 	cfg.Server.Auth.OIDC.RoleMapping.GroupsClaim = rm.GroupsClaim
 	cfg.Server.Auth.OIDC.RoleMapping.GroupMappings = rm.GroupMappings
+	cfg.Server.Auth.OIDC.RoleMapping.WorkspaceMappings = rm.WorkspaceMappings
+	cfg.Server.Auth.OIDC.RoleMapping.DefaultWorkspaceAccess = rm.DefaultWorkspaceAccess
 	cfg.Server.Auth.OIDC.RoleMapping.RoleAttributePath = rm.RoleAttributePath
 
 	if rm.RoleAttributeStrict != nil {
@@ -592,6 +599,36 @@ func (l *ConfigLoader) loadOIDCRoleMapping(cfg *Config, rm *OIDCRoleMappingDef) 
 	if rm.SkipOrgRoleSync != nil {
 		cfg.Server.Auth.OIDC.RoleMapping.SkipOrgRoleSync = *rm.SkipOrgRoleSync
 	}
+}
+
+func (l *ConfigLoader) loadOIDCWorkspaceMappingsEnv() error {
+	const (
+		configKey = "auth.oidc.role_mapping.workspace_mappings"
+		envSuffix = "AUTH_OIDC_WORKSPACE_MAPPINGS"
+	)
+
+	envName := strings.ToUpper(AppSlug) + "_" + envSuffix
+	raw, exists := os.LookupEnv(envName)
+	if !exists {
+		return nil
+	}
+
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return fmt.Errorf("%s must be a JSON object", envName)
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	var mappings map[string][]OIDCWorkspaceGrant
+	if err := decoder.Decode(&mappings); err != nil {
+		return fmt.Errorf("invalid %s JSON: %w", envName, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("invalid %s JSON: expected a single object", envName)
+	}
+	l.v.Set(configKey, mappings)
+	return nil
 }
 
 func (l *ConfigLoader) loadBuiltinAuth(cfg *Config, auth *AuthDef) {
@@ -634,6 +671,10 @@ func (l *ConfigLoader) setAuthDefaults(cfg *Config) {
 	}
 	if cfg.Server.Auth.OIDC.RoleMapping.DefaultRole == "" {
 		cfg.Server.Auth.OIDC.RoleMapping.DefaultRole = "viewer"
+	}
+	roleMapping := &cfg.Server.Auth.OIDC.RoleMapping
+	if roleMapping.DefaultWorkspaceAccess == "" && len(roleMapping.WorkspaceMappings) == 0 {
+		roleMapping.DefaultWorkspaceAccess = OIDCDefaultWorkspaceAccessAll
 	}
 	if cfg.Server.Auth.OIDC.ButtonLabel == "" {
 		cfg.Server.Auth.OIDC.ButtonLabel = "Login with SSO"
@@ -1591,6 +1632,7 @@ var envBindings = []envBinding{
 	{key: "auth.oidc.role_mapping.default_role", env: "AUTH_OIDC_DEFAULT_ROLE"},
 	{key: "auth.oidc.role_mapping.groups_claim", env: "AUTH_OIDC_GROUPS_CLAIM"},
 	{key: "auth.oidc.role_mapping.group_mappings", env: "AUTH_OIDC_GROUP_MAPPINGS"},
+	{key: "auth.oidc.role_mapping.default_workspace_access", env: "AUTH_OIDC_DEFAULT_WORKSPACE_ACCESS"},
 	{key: "auth.oidc.role_mapping.role_attribute_path", env: "AUTH_OIDC_ROLE_ATTRIBUTE_PATH"},
 	{key: "auth.oidc.role_mapping.role_attribute_strict", env: "AUTH_OIDC_ROLE_ATTRIBUTE_STRICT"},
 	{key: "auth.oidc.role_mapping.skip_org_role_sync", env: "AUTH_OIDC_SKIP_ORG_ROLE_SYNC"},
