@@ -115,7 +115,7 @@ export interface paths {
         put?: never;
         /**
          * Change current user's password
-         * @description Allows the authenticated user to change their own password
+         * @description Allows a locally authenticated builtin user to change their own password. Externally authenticated users do not have Dagu passwords.
          */
         post: operations["changePassword"];
         delete?: never;
@@ -187,7 +187,7 @@ export interface paths {
         put?: never;
         /**
          * Reset user's password
-         * @description Resets a user's password to a new value. Requires admin role.
+         * @description Resets a locally authenticated builtin user's password to a new value. Requires admin role. Externally authenticated users do not have Dagu passwords.
          */
         post: operations["resetUserPassword"];
         delete?: never;
@@ -5023,6 +5023,11 @@ export interface components {
          * @enum {string}
          */
         UserRole: UserRole;
+        /**
+         * @description Authentication provider for a user account
+         * @enum {string}
+         */
+        UserAuthProvider: UserAuthProvider;
         /** @description Workspace name. The reserved names all, default, and global are not allowed. */
         WorkspaceName: string;
         /** @description Role granted for a specific workspace */
@@ -5100,11 +5105,7 @@ export interface components {
             username: string;
             role: components["schemas"]["UserRole"];
             workspaceAccess: components["schemas"]["WorkspaceAccess"];
-            /**
-             * @description Authentication provider (builtin or oidc)
-             * @enum {string}
-             */
-            authProvider?: UserAuthProvider;
+            authProvider?: components["schemas"]["UserAuthProvider"];
             /** @description Whether the user account is disabled */
             isDisabled?: boolean;
             /**
@@ -5125,8 +5126,12 @@ export interface components {
         /** @description Response containing list of users */
         UsersListResponse: {
             users: components["schemas"]["User"][];
-            /** @description Whether OIDC role and workspace access are synchronized by this node */
+            /** @description Whether OIDC workspace access is synchronized by this node */
             oidcWorkspaceAccessSyncEnabled?: boolean;
+            /** @description Authentication providers that synchronize user roles at login on this node */
+            managedRoleProviders: components["schemas"]["UserAuthProvider"][];
+            /** @description Authentication providers that synchronize workspace access at login on this node */
+            managedWorkspaceAccessProviders: components["schemas"]["UserAuthProvider"][];
         };
         /** @description API key information */
         APIKey: {
@@ -6051,7 +6056,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Password is managed by the identity provider */
+            /** @description Password is managed by the authentication provider */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6427,7 +6432,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Forbidden - requires admin role */
+            /** @description Forbidden - requires admin role, or the target user uses an external authentication provider */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -16602,7 +16607,8 @@ export enum UserRole {
 }
 export enum UserAuthProvider {
     builtin = "builtin",
-    oidc = "oidc"
+    oidc = "oidc",
+    proxy = "proxy"
 }
 export enum APIKeyAllowedSurfaces {
     rest_api = "rest_api",

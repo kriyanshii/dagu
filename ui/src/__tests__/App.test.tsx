@@ -127,6 +127,8 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     setupRequired: false,
     oidcEnabled: false,
     oidcButtonLabel: '',
+    proxyEnabled: false,
+    proxyButtonLabel: '',
     terminalEnabled: true,
     gitSyncEnabled: true,
     updateAvailable: false,

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/dagucloud/dagu/internal/auth"
@@ -83,6 +84,15 @@ func (m *mockUserStore) GetByOIDCIdentity(_ context.Context, issuer, subject str
 	return user, nil
 }
 
+func (m *mockUserStore) GetByTrustedProxyIdentity(_ context.Context, source, identity string) (*auth.User, error) {
+	for _, user := range m.users {
+		if user.TrustedProxySource == source && user.TrustedProxyUser == identity {
+			return user, nil
+		}
+	}
+	return nil, auth.ErrTrustedProxyIdentityNotFound
+}
+
 func (m *mockUserStore) List(_ context.Context) ([]*auth.User, error) {
 	users := make([]*auth.User, 0, len(m.users))
 	for _, u := range m.users {
@@ -106,6 +116,63 @@ func (m *mockUserStore) Update(_ context.Context, user *auth.User) error {
 		m.byOIDCIdentity[key] = user
 	}
 	return nil
+}
+
+func (m *mockUserStore) Patch(_ context.Context, id string, patch auth.UserPatch) (*auth.User, error) {
+	user, exists := m.users[id]
+	if !exists {
+		return nil, auth.ErrUserNotFound
+	}
+	if patch.Username != nil {
+		user.Username = *patch.Username
+	}
+	if patch.Role != nil {
+		user.Role = *patch.Role
+	}
+	if patch.WorkspaceAccess != nil {
+		user.WorkspaceAccess = auth.CloneWorkspaceAccess(patch.WorkspaceAccess)
+	}
+	if patch.PasswordHash != nil {
+		user.PasswordHash = *patch.PasswordHash
+	}
+	if patch.IsDisabled != nil {
+		user.IsDisabled = *patch.IsDisabled
+	}
+	return user, nil
+}
+
+func (m *mockUserStore) SyncAuthorization(
+	_ context.Context,
+	id string,
+	role auth.Role,
+	workspaceAccess *auth.WorkspaceAccess,
+) (auth.AuthorizationSyncResult, error) {
+	user, exists := m.users[id]
+	if !exists {
+		return auth.AuthorizationSyncResult{}, auth.ErrUserNotFound
+	}
+	if user.IsDisabled {
+		return auth.AuthorizationSyncResult{}, auth.ErrUserDisabled
+	}
+	result := auth.AuthorizationSyncResult{
+		User:                    user,
+		PreviousRole:            user.Role,
+		PreviousWorkspaceAccess: auth.CloneWorkspaceAccess(user.WorkspaceAccess),
+	}
+	if user.Role == role &&
+		(workspaceAccess == nil || auth.WorkspaceAccessEqual(user.WorkspaceAccess, workspaceAccess)) {
+		return result, nil
+	}
+	m.updateCalls++
+	if m.updateErr != nil {
+		return auth.AuthorizationSyncResult{}, m.updateErr
+	}
+	user.Role = role
+	if workspaceAccess != nil {
+		user.WorkspaceAccess = auth.CloneWorkspaceAccess(workspaceAccess)
+	}
+	result.Changed = true
+	return result, nil
 }
 
 func (m *mockUserStore) Delete(_ context.Context, id string) error {
@@ -766,6 +833,74 @@ func TestProcessLogin_SyncsAuthorizationOnce(t *testing.T) {
 	assert.Equal(t, 1, store.updateCalls)
 }
 
+type authorizationChangedAfterOIDCLookupStore struct {
+	auth.AuthorizationSyncUserStore
+	once      sync.Once
+	updateErr error
+}
+
+func (s *authorizationChangedAfterOIDCLookupStore) GetByOIDCIdentity(
+	ctx context.Context,
+	issuer string,
+	subject string,
+) (*auth.User, error) {
+	stored, err := s.AuthorizationSyncUserStore.GetByOIDCIdentity(ctx, issuer, subject)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := *stored
+	snapshot.WorkspaceAccess = auth.CloneWorkspaceAccess(stored.WorkspaceAccess)
+	s.once.Do(func() {
+		latest := *stored
+		latest.WorkspaceAccess = auth.AllWorkspaceAccess()
+		latest.Role = auth.RoleAdmin
+		s.updateErr = s.Update(ctx, &latest)
+	})
+	if s.updateErr != nil {
+		return nil, s.updateErr
+	}
+	return &snapshot, nil
+}
+
+func TestProcessLogin_SynchronizesAgainstLatestStoredAuthorization(t *testing.T) {
+	ctx := context.Background()
+	userStore := newMockUserStore()
+	existing := &auth.User{
+		ID:              "existing-id",
+		Username:        "existing",
+		Role:            auth.RoleViewer,
+		WorkspaceAccess: &auth.WorkspaceAccess{Grants: []auth.WorkspaceGrant{}},
+		AuthProvider:    auth.AuthProviderOIDC,
+		OIDCIssuer:      "https://issuer.example.com",
+		OIDCSubject:     "subject",
+	}
+	require.NoError(t, userStore.Create(ctx, existing))
+	concurrentStore := &authorizationChangedAfterOIDCLookupStore{AuthorizationSyncUserStore: userStore}
+	service, err := New(concurrentStore, Config{
+		Issuer:      existing.OIDCIssuer,
+		DefaultRole: auth.RoleViewer,
+		RoleMapping: RoleMapperConfig{
+			DefaultRole:            auth.RoleViewer,
+			DefaultWorkspaceAccess: "none",
+		},
+	})
+	require.NoError(t, err)
+
+	user, created, err := service.ProcessLogin(ctx, OIDCClaims{
+		Subject: existing.OIDCSubject,
+		Email:   "existing@example.com",
+	})
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, auth.RoleViewer, user.Role)
+	assert.Equal(t, &auth.WorkspaceAccess{Grants: []auth.WorkspaceGrant{}}, user.WorkspaceAccess)
+
+	persisted, err := userStore.GetByID(ctx, existing.ID)
+	require.NoError(t, err)
+	assert.Equal(t, auth.RoleViewer, persisted.Role)
+	assert.Equal(t, &auth.WorkspaceAccess{Grants: []auth.WorkspaceGrant{}}, persisted.WorkspaceAccess)
+}
+
 func TestProcessLogin_SyncCanonicalComparisonAvoidsWrite(t *testing.T) {
 	store := newMockUserStore()
 	existing := &auth.User{
@@ -940,11 +1075,10 @@ func TestProcessLogin_SkipSyncFreezesRoleAndAccess(t *testing.T) {
 		Issuer:      "https://issuer.example.com",
 		DefaultRole: auth.RoleViewer,
 		RoleMapping: RoleMapperConfig{
-			WorkspaceMappings: map[string][]WorkspaceGrantConfig{
-				"team": {{Workspace: "payments", Role: "operator"}},
-			},
-			SkipOrgRoleSync: true,
-			DefaultRole:     auth.RoleViewer,
+			GroupMappings:       map[string]string{"team": "operator"},
+			RoleAttributeStrict: true,
+			SkipOrgRoleSync:     true,
+			DefaultRole:         auth.RoleViewer,
 		},
 	})
 	require.NoError(t, err)
@@ -958,6 +1092,44 @@ func TestProcessLogin_SkipSyncFreezesRoleAndAccess(t *testing.T) {
 	assert.Equal(t, auth.RoleManager, user.Role)
 	assert.Equal(t, auth.AllWorkspaceAccess(), user.WorkspaceAccess)
 	assert.Zero(t, store.updateCalls)
+}
+
+func TestProcessLogin_SkipSyncStrictMissRejectsExistingUser(t *testing.T) {
+	store := newMockUserStore()
+	existing := &auth.User{
+		ID:              "existing-id",
+		Username:        "existing",
+		Role:            auth.RoleManager,
+		WorkspaceAccess: auth.AllWorkspaceAccess(),
+		AuthProvider:    "oidc",
+		OIDCIssuer:      "https://issuer.example.com",
+		OIDCSubject:     "subject",
+	}
+	require.NoError(t, store.Create(context.Background(), existing))
+
+	svc, err := New(store, Config{
+		Issuer:      "https://issuer.example.com",
+		DefaultRole: auth.RoleViewer,
+		RoleMapping: RoleMapperConfig{
+			GroupMappings:       map[string]string{"team": "operator"},
+			RoleAttributeStrict: true,
+			SkipOrgRoleSync:     true,
+			DefaultRole:         auth.RoleViewer,
+		},
+	})
+	require.NoError(t, err)
+
+	user, isNew, err := svc.ProcessLogin(context.Background(), OIDCClaims{
+		Subject:   "subject",
+		Email:     "existing@example.com",
+		RawClaims: map[string]any{"groups": []any{"other"}},
+	})
+	assert.ErrorIs(t, err, ErrNoRoleFound)
+	assert.Nil(t, user)
+	assert.False(t, isNew)
+	assert.Zero(t, store.updateCalls)
+	assert.Equal(t, auth.RoleManager, existing.Role)
+	assert.Equal(t, auth.AllWorkspaceAccess(), existing.WorkspaceAccess)
 }
 
 func TestProcessLogin_StrictMissRejectsExistingUser(t *testing.T) {
@@ -1079,6 +1251,41 @@ func TestProcessLogin_RoleOnlyUpdateFailurePreservesLegacyLoginBehavior(t *testi
 	assert.Same(t, existingAccess, user.WorkspaceAccess)
 	assert.Equal(t, auth.RoleViewer, store.users[existing.ID].Role)
 	assert.Same(t, existingAccess, store.users[existing.ID].WorkspaceAccess)
+	assert.Equal(t, 1, store.updateCalls)
+}
+
+func TestProcessLogin_RoleOnlySyncRejectsConcurrentDisable(t *testing.T) {
+	store := newMockUserStore()
+	existing := &auth.User{
+		ID:              "existing-id",
+		Username:        "existing",
+		Role:            auth.RoleViewer,
+		WorkspaceAccess: auth.AllWorkspaceAccess(),
+		AuthProvider:    "oidc",
+		OIDCIssuer:      "https://issuer.example.com",
+		OIDCSubject:     "subject",
+	}
+	require.NoError(t, store.Create(context.Background(), existing))
+	store.updateErr = auth.ErrUserDisabled
+
+	svc, err := New(store, Config{
+		Issuer:      "https://issuer.example.com",
+		DefaultRole: auth.RoleViewer,
+		RoleMapping: RoleMapperConfig{
+			GroupMappings: map[string]string{"staff": "operator"},
+			DefaultRole:   auth.RoleViewer,
+		},
+	})
+	require.NoError(t, err)
+
+	user, isNew, err := svc.ProcessLogin(context.Background(), OIDCClaims{
+		Subject:   "subject",
+		Email:     "existing@example.com",
+		RawClaims: map[string]any{"groups": []any{"staff"}},
+	})
+	assert.ErrorIs(t, err, auth.ErrUserDisabled)
+	assert.Nil(t, user)
+	assert.False(t, isNew)
 	assert.Equal(t, 1, store.updateCalls)
 }
 

@@ -221,6 +221,16 @@ func TestLoad_Env(t *testing.T) {
 						DefaultWorkspaceAccess: OIDCDefaultWorkspaceAccessAll,
 					},
 				},
+				Proxy: AuthTrustedProxy{
+					ButtonLabel: "Continue with SSO",
+					AutoSignup:  true,
+					RoleMapping: TrustedProxyRoleMapping{
+						DefaultRole:            "viewer",
+						DefaultWorkspaceAccess: TrustedProxyDefaultWorkspaceAccessNone,
+						RequireMapping:         false,
+						SkipOrgRoleSync:        false,
+					},
+				},
 				Builtin: AuthBuiltin{
 					Token: TokenConfig{TTL: 24 * time.Hour},
 				},
@@ -651,6 +661,16 @@ scheduler:
 					RoleMapping: OIDCRoleMapping{
 						DefaultRole:            "viewer",
 						DefaultWorkspaceAccess: OIDCDefaultWorkspaceAccessAll,
+					},
+				},
+				Proxy: AuthTrustedProxy{
+					ButtonLabel: "Continue with SSO",
+					AutoSignup:  true,
+					RoleMapping: TrustedProxyRoleMapping{
+						DefaultRole:            "viewer",
+						DefaultWorkspaceAccess: TrustedProxyDefaultWorkspaceAccessNone,
+						RequireMapping:         false,
+						SkipOrgRoleSync:        false,
 					},
 				},
 				Builtin: AuthBuiltin{

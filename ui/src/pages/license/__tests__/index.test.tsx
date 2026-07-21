@@ -33,6 +33,8 @@ function makeConfig(licenseOverrides: Partial<LicenseStatus> = {}): Config {
     setupRequired: false,
     oidcEnabled: false,
     oidcButtonLabel: '',
+    proxyEnabled: false,
+    proxyButtonLabel: '',
     terminalEnabled: false,
     gitSyncEnabled: false,
     updateAvailable: false,

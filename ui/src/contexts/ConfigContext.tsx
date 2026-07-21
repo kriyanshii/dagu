@@ -47,6 +47,8 @@ export type Config = {
   setupRequired: boolean;
   oidcEnabled: boolean;
   oidcButtonLabel: string;
+  proxyEnabled: boolean;
+  proxyButtonLabel: string;
   terminalEnabled: boolean;
   gitSyncEnabled: boolean;
   updateAvailable: boolean;

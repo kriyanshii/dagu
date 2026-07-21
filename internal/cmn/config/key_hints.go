@@ -67,6 +67,17 @@ var legacyToSnakeCaseKey = map[string]string{
 	"auth.oidc.rolemapping.roleattributestrict":    "auth.oidc.role_mapping.role_attribute_strict",
 	"auth.oidc.rolemapping.skiporgrolesync":        "auth.oidc.role_mapping.skip_org_role_sync",
 
+	// Auth proxy
+	"auth.proxy.buttonlabel":                        "auth.proxy.button_label",
+	"auth.proxy.autosignup":                         "auth.proxy.auto_signup",
+	"auth.proxy.rolemapping":                        "auth.proxy.role_mapping",
+	"auth.proxy.rolemapping.defaultrole":            "auth.proxy.role_mapping.default_role",
+	"auth.proxy.rolemapping.groupmappings":          "auth.proxy.role_mapping.group_mappings",
+	"auth.proxy.rolemapping.workspacemappings":      "auth.proxy.role_mapping.workspace_mappings",
+	"auth.proxy.rolemapping.defaultworkspaceaccess": "auth.proxy.role_mapping.default_workspace_access",
+	"auth.proxy.rolemapping.requiremapping":         "auth.proxy.role_mapping.require_mapping",
+	"auth.proxy.rolemapping.skiporgrolesync":        "auth.proxy.role_mapping.skip_org_role_sync",
+
 	// Permissions
 	"permissions.writedags": "permissions.write_dags",
 	"permissions.rundags":   "permissions.run_dags",

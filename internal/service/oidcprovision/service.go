@@ -66,7 +66,7 @@ type OIDCClaims struct {
 
 // Service provides OIDC user provisioning functionality.
 type Service struct {
-	userStore  auth.UserStore
+	userStore  auth.AuthorizationSyncUserStore
 	config     Config
 	roleMapper *RoleMapper
 	logger     *slog.Logger
@@ -74,6 +74,10 @@ type Service struct {
 
 // New creates a new OIDC provisioning service.
 func New(userStore auth.UserStore, config Config) (*Service, error) {
+	authorizationStore, ok := userStore.(auth.AuthorizationSyncUserStore)
+	if !ok {
+		return nil, errors.New("OIDC provisioner: user store does not support atomic authorization sync")
+	}
 	if config.RoleMapping.DefaultRole == auth.RoleNone {
 		config.RoleMapping.DefaultRole = config.DefaultRole
 	}
@@ -83,7 +87,7 @@ func New(userStore auth.UserStore, config Config) (*Service, error) {
 	}
 
 	return &Service{
-		userStore:  userStore,
+		userStore:  authorizationStore,
 		config:     config,
 		roleMapper: roleMapper,
 		logger:     slog.Default().With(slog.String("service", "oidcprovision")),
@@ -117,10 +121,19 @@ func (s *Service) ProcessLogin(ctx context.Context, claims OIDCClaims) (*auth.Us
 			return nil, false, authservice.ErrUserDisabled
 		}
 
-		// Sync mapped authorization on re-login unless synchronization is disabled.
-		if !s.config.RoleMapping.SkipOrgRoleSync {
+		// Synchronize mapped authorization, or enforce strict matching when synchronization is disabled.
+		if s.config.RoleMapping.SkipOrgRoleSync {
+			if err := s.validateStrictMapping(claims); err != nil {
+				s.logger.Warn("OIDC login rejected: authorization mapping failed",
+					slog.String("user_id", user.ID),
+					slog.String("error", err.Error()))
+				return nil, false, err
+			}
+		} else {
 			if err := s.syncUserAccess(ctx, user, claims); err != nil {
-				if s.roleMapper.WorkspaceAccessPolicyActive() || errors.Is(err, ErrNoRoleFound) {
+				if s.roleMapper.WorkspaceAccessPolicyActive() ||
+					errors.Is(err, ErrNoRoleFound) ||
+					errors.Is(err, auth.ErrUserDisabled) {
 					s.logger.Warn("OIDC login rejected: authorization mapping failed",
 						slog.String("user_id", user.ID),
 						slog.String("error", err.Error()))
@@ -204,6 +217,14 @@ func (s *Service) ProcessLogin(ctx context.Context, claims OIDCClaims) (*auth.Us
 	return user, true, nil // New user created
 }
 
+func (s *Service) validateStrictMapping(claims OIDCClaims) error {
+	if !s.config.RoleMapping.RoleAttributeStrict || !s.roleMapper.IsConfigured() {
+		return nil
+	}
+	_, _, err := s.roleMapper.MapAccess(claims.RawClaims)
+	return err
+}
+
 // determineAccess determines authorization for a user based on OIDC claims.
 func (s *Service) determineAccess(ctx context.Context, claims OIDCClaims) (auth.Role, *auth.WorkspaceAccess, error) {
 	if s.roleMapper.IsConfigured() {
@@ -239,23 +260,17 @@ func (s *Service) syncUserAccess(ctx context.Context, user *auth.User, claims OI
 		return err
 	}
 
-	roleChanged := user.Role != newRole
-	accessChanged := accessPolicyActive && !workspaceAccessEqual(user.WorkspaceAccess, newAccess)
-	if !roleChanged && !accessChanged {
-		return nil
+	workspaceAccess := newAccess
+	if !accessPolicyActive {
+		workspaceAccess = nil
 	}
-
-	oldRole := user.Role
-	oldAccess := auth.CloneWorkspaceAccess(user.WorkspaceAccess)
-	updated := *user
-	updated.Role = newRole
-	if accessPolicyActive {
-		updated.WorkspaceAccess = auth.CloneWorkspaceAccess(newAccess)
-	}
-	updated.UpdatedAt = time.Now().UTC()
-
-	if err := s.userStore.Update(ctx, &updated); err != nil {
+	syncResult, err := s.userStore.SyncAuthorization(ctx, user.ID, newRole, workspaceAccess)
+	if err != nil {
 		return fmt.Errorf("failed to update OIDC user authorization: %w", err)
+	}
+	updated := syncResult.User
+	if updated == nil {
+		return errors.New("failed to update OIDC user authorization: store returned no user")
 	}
 
 	user.Role = updated.Role
@@ -263,20 +278,23 @@ func (s *Service) syncUserAccess(ctx context.Context, user *auth.User, claims OI
 		user.WorkspaceAccess = auth.CloneWorkspaceAccess(updated.WorkspaceAccess)
 	}
 	user.UpdatedAt = updated.UpdatedAt
+	if !syncResult.Changed {
+		return nil
+	}
 
 	if accessPolicyActive {
 		s.logger.Info("OIDC user authorization updated",
 			slog.String("user_id", user.ID),
 			slog.String("username", user.Username),
-			slog.String("old_role", string(oldRole)),
+			slog.String("old_role", string(syncResult.PreviousRole)),
 			slog.String("new_role", string(newRole)),
-			slog.Any("old_workspace_access", canonicalWorkspaceAccess(oldAccess)),
+			slog.Any("old_workspace_access", canonicalWorkspaceAccess(syncResult.PreviousWorkspaceAccess)),
 			slog.Any("new_workspace_access", canonicalWorkspaceAccess(updated.WorkspaceAccess)))
 	} else {
 		s.logger.Info("OIDC user role updated",
 			slog.String("user_id", user.ID),
 			slog.String("username", user.Username),
-			slog.String("old_role", string(oldRole)),
+			slog.String("old_role", string(syncResult.PreviousRole)),
 			slog.String("new_role", string(newRole)))
 	}
 
@@ -305,12 +323,6 @@ func (s *Service) warnForDormantGrants(ctx context.Context, workspaceAccess *aut
 				slog.String("workspace", grant.Workspace))
 		}
 	}
-}
-
-func workspaceAccessEqual(left, right *auth.WorkspaceAccess) bool {
-	leftCanonical := canonicalWorkspaceAccess(left)
-	rightCanonical := canonicalWorkspaceAccess(right)
-	return leftCanonical.All == rightCanonical.All && slices.Equal(leftCanonical.Grants, rightCanonical.Grants)
 }
 
 func canonicalWorkspaceAccess(workspaceAccess *auth.WorkspaceAccess) auth.WorkspaceAccess {

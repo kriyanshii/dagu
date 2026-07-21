@@ -127,6 +127,8 @@ type funcsConfig struct {
 	AuthMode              config.AuthMode
 	OIDCEnabled           bool
 	OIDCButtonLabel       string
+	ProxyEnabled          bool
+	ProxyButtonLabel      string
 	TerminalEnabled       bool
 	GitSyncEnabled        bool
 	WorkspaceStore        workspacepkg.Store
@@ -154,6 +156,7 @@ func defaultFunctions(cfg *funcsConfig) template.FuncMap {
 		"remoteNodes":           func() string { return strings.Join(cfg.RemoteNodes, ",") },
 		"authMode":              func() string { return string(cfg.AuthMode) },
 		"oidcButtonLabel":       func() string { return cfg.OIDCButtonLabel },
+		"proxyButtonLabel":      func() string { return cfg.ProxyButtonLabel },
 		"initialWorkspacesJSON": func() string {
 			if cfg.WorkspaceStore == nil {
 				return "[]"
@@ -196,6 +199,15 @@ func defaultFunctions(cfg *funcsConfig) template.FuncMap {
 		// Feature toggle functions
 		"oidcEnabled": func() string {
 			if !cfg.OIDCEnabled {
+				return "false"
+			}
+			if cfg.LicenseChecker != nil && !cfg.LicenseChecker.IsFeatureEnabled(license.FeatureSSO) {
+				return "false"
+			}
+			return "true"
+		},
+		"proxyEnabled": func() string {
+			if !cfg.ProxyEnabled {
 				return "false"
 			}
 			if cfg.LicenseChecker != nil && !cfg.LicenseChecker.IsFeatureEnabled(license.FeatureSSO) {

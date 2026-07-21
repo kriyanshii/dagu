@@ -212,6 +212,18 @@ helm install dagu dagu/dagu \
   --set auth.mode=none
 ```
 
+Proxy authentication is available for deployments where an
+authenticating reverse proxy is the only network path to the UI. It requires
+builtin authentication, `auth.proxy.enabled: true`, and one UI replica. See
+[`PROXY_AUTH.md`](./PROXY_AUTH.md) for the trust contract,
+oauth2-proxy and ingress-nginx configuration, NetworkPolicy example, validation,
+and recovery guidance. By default, unmatched proxy users may log in and receive
+no named-workspace grants, while retaining the global viewer permission for
+unlabelled DAGs and their logs. Set `auth.proxy.roleMapping.requireMapping: true`
+to require a matching global or workspace mapping. Access is recalculated on
+every login for existing proxy users unless
+`auth.proxy.roleMapping.skipOrgRoleSync` is enabled.
+
 ### Component Resources
 
 ```yaml
