@@ -33,6 +33,7 @@ It must not be treated as product behavior until implementation catches up.
 | [022: MCP Change Tool](022-mcp-change-tool.md) | Implemented |
 | [023: Preconditions](023-preconditions.md) | Implemented |
 | [030: Git Worktree Action](030-git-worktree-action.md) | Implemented |
+| [031: Human Tasks](031-human-task.md) | Implemented |
 
 **Writing guidelines:**
 

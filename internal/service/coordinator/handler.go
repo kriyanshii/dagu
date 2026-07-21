@@ -558,7 +558,8 @@ func (h *Handler) releaseAdmissionToken(ctx context.Context, token string) {
 }
 
 func (h *Handler) finalizeAdmissionForStatus(ctx context.Context, status *exec.DAGRunStatus, attemptID string) {
-	if h.dispatchAdmissionStore == nil || status == nil || !isTerminalRunStatus(status.Status) {
+	if h.dispatchAdmissionStore == nil || status == nil ||
+		(status.Status != core.Waiting && !isTerminalRunStatus(status.Status)) {
 		return
 	}
 	attemptKey := exec.AttemptKeyForStatus(status, attemptID)
@@ -1629,6 +1630,7 @@ func (h *Handler) ReportStatus(ctx context.Context, req *coordinatorv1.ReportSta
 			// reporting worker disconnects.
 			ownership.syncFromStatus(context.WithoutCancel(ctx), req.WorkerId, dagRunStatus, bootstrappedAttempt.ID())
 			h.finalizeAdmissionForStatus(ctx, dagRunStatus, bootstrappedAttempt.ID())
+			h.closeCachedWaitingAttempt(ctx, dagRunStatus, bootstrappedAttempt)
 
 			return &coordinatorv1.ReportStatusResponse{Accepted: true}, nil
 		}
@@ -1674,11 +1676,23 @@ func (h *Handler) ReportStatus(ctx context.Context, req *coordinatorv1.ReportSta
 	// worker disconnects.
 	ownership.syncFromStatus(context.WithoutCancel(ctx), req.WorkerId, dagRunStatus, attempt.ID())
 	h.finalizeAdmissionForStatus(ctx, dagRunStatus, attempt.ID())
+	h.closeCachedWaitingAttempt(ctx, dagRunStatus, attempt)
 
 	// Note: We don't close the attempt immediately on terminal status because
 	// the agent may push the same terminal status multiple times from different
 	// code paths. Attempts are cleaned up during coordinator shutdown.
 	return &coordinatorv1.ReportStatusResponse{Accepted: true}, nil
+}
+
+func (h *Handler) closeCachedWaitingAttempt(
+	ctx context.Context,
+	status *exec.DAGRunStatus,
+	attempt exec.DAGRunAttempt,
+) {
+	if status == nil || attempt == nil || status.Status != core.Waiting {
+		return
+	}
+	h.closeCachedAttemptForRun(ctx, context.WithoutCancel(ctx), status.DAGRunID, attempt.ID())
 }
 
 func (h *Handler) bootstrapMissingSubAttempt(
@@ -2860,7 +2874,7 @@ func (h *Handler) closeCachedAttemptForRun(ctx, closeCtx context.Context, dagRun
 	}
 
 	if err := cachedAttempt.Close(closeCtx); err != nil {
-		logger.Warn(ctx, "Failed to close cached attempt before distributed stale-run repair",
+		logger.Warn(ctx, "Failed to close cached distributed attempt",
 			tag.RunID(dagRunID),
 			tag.AttemptID(cachedAttempt.ID()),
 			tag.Error(err),

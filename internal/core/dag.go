@@ -412,6 +412,19 @@ func (d *DAG) HasApprovalSteps() bool {
 	return false
 }
 
+// HasHumanTaskSteps reports whether the DAG directly contains a human task.
+func (d *DAG) HasHumanTaskSteps() bool {
+	if d == nil {
+		return false
+	}
+	for _, step := range d.Steps {
+		if step.HumanTask != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // SockAddr returns the unix socket address for the DAG.
 // The address is used to communicate with the agent process.
 func (d *DAG) SockAddr(dagRunID string) string {

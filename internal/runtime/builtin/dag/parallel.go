@@ -561,9 +561,9 @@ func (e *parallelExecutor) newChildExecutor(
 		return nil, err
 	}
 
-	if len(e.step.WorkerSelector) > 0 && child.DAG.HasApprovalSteps() {
-		_ = child.Cleanup(ctx)
-		return nil, fmt.Errorf("%w: %s", ErrApprovalStepsWithWorker, target)
+	if err := validateSubDAG(child.DAG, target, e.step.WorkerSelector); err != nil {
+		_ = child.Cleanup(context.WithoutCancel(ctx))
+		return nil, err
 	}
 
 	child.SetWorkerSelector(e.step.WorkerSelector)

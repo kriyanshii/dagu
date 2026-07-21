@@ -4,6 +4,7 @@
 package transform_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -21,7 +22,10 @@ func TestNodeFieldsRoundTrip(t *testing.T) {
 	outputVars.Store("KEY", "KEY=value")
 
 	original := &exec.Node{
-		Step:            core.Step{Name: "test-step"},
+		Step: core.Step{
+			Name:      "test-step",
+			HumanTask: &core.HumanTaskConfig{Prompt: "Review production deployment"},
+		},
 		Status:          core.NodeSucceeded,
 		Stdout:          "/tmp/stdout.log",
 		Stderr:          "/tmp/stderr.log",
@@ -36,6 +40,7 @@ func TestNodeFieldsRoundTrip(t *testing.T) {
 		SubRuns:         []exec.SubDAGRun{{DAGRunID: "sub-1", Params: "p1"}},
 		SubRunsRepeated: []exec.SubDAGRun{{DAGRunID: "sub-2", Params: "p2"}},
 		OutputVariables: outputVars,
+		HumanTaskInput:  json.RawMessage(`{"window":"2026-07-20T12:00:00Z"}`),
 		ApprovalInputs:  map[string]string{"input1": "value1"},
 		ApprovedAt:      "2024-01-15T10:02:00Z",
 		ApprovedBy:      "admin",

@@ -502,7 +502,6 @@ func loadDAGsFromData(ctx BuildContext, data []byte, filePath string, baseDef *d
 		}
 		dags = append(dags, dag)
 	}
-
 	if err := validateUniqueNames(dags); err != nil {
 		return nil, err
 	}

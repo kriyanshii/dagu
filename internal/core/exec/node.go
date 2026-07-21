@@ -4,6 +4,8 @@
 package exec
 
 import (
+	"encoding/json"
+
 	"github.com/dagucloud/dagu/internal/cmn/collections"
 	"github.com/dagucloud/dagu/internal/core"
 )
@@ -37,6 +39,7 @@ type Node struct {
 	OutputValue      *string              `json:"outputValue,omitempty"`
 	OutputsValue     *string              `json:"outputsValue,omitempty"`
 	StepOutputsValue *string              `json:"stepOutputsValue,omitempty"`
+	HumanTaskInput   json.RawMessage      `json:"humanTaskInput,omitempty"`
 	// ApprovedAt records when this wait step was approved
 	ApprovedAt string `json:"approvedAt,omitempty"`
 	// ApprovalInputs stores key-value parameters provided during approval

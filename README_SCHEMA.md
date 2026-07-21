@@ -195,6 +195,7 @@ Current builtin actions:
 | `jq.filter` | jq transforms | `filter`, plus `data` or `input` |
 | `dag.run` | Child DAG execution | `dag`, optional `params` |
 | `dag.enqueue` | Asynchronous child DAG enqueue | `dag`, optional `params`, optional `queue` |
+| `human.task` | Operator input before downstream steps continue | `prompt`, optional flat scalar `form` |
 | `router.route` | Conditional routing | `value`, `routes` |
 | `chat.completion` | LLM chat completion | `prompt` or `messages`, model config |
 | `harness.run` | CLI coding-agent harnesses | `prompt`, provider config, optional `stdin` |
@@ -227,6 +228,34 @@ object published by `stdout.outputs` or `action: outputs.write` before it is
 exposed to the parent step as `${step.outputs.*}`.
 
 ## Common Action Examples
+
+### Human Task
+
+Use `human.task` for a standalone processless step that waits for operator input. It requires an explicit `id` and `with.prompt`; omit `with.form` for acknowledgement-only tasks. Human tasks are allowed only in root DAGs. A root DAG containing one may run locally or on a distributed worker selected by its DAG-level `worker_selector`.
+
+```yaml
+steps:
+  - id: review
+    action: human.task
+    with:
+      prompt: Choose the deployment target
+      form:
+        type: object
+        properties:
+          environment:
+            type: string
+            enum: [staging, production]
+          notify:
+            type: boolean
+            default: true
+        required: [environment]
+
+  - id: deploy
+    depends: [review]
+    run: ./deploy.sh '${steps.review.outputs.environment}'
+```
+
+Form `additionalProperties` defaults to `false`. Every declared form property is a step output, published when submitted or defaulted, and available as `${steps.<step_id>.outputs.<name>}`; do not author `outputs:` on the human task. Complete a waiting task from a local CLI context with `dagu human-task complete --run-id=<run-id> --step=review <dag-name>`, adding repeated `--input key=value` flags or one `--inputs-json` object when the form accepts input. The scheduler must be running to resume a distributed run.
 
 ### SQL Query
 

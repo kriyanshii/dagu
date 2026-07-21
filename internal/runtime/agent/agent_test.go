@@ -145,6 +145,36 @@ func TestAgent_Run(t *testing.T) {
 
 		dag.AssertLatestStatus(t, core.Succeeded)
 	})
+	t.Run("HumanTaskAllowedOnRemoteWorker", func(t *testing.T) {
+		th := test.Setup(t)
+		dag := th.DAG(t, `steps:
+  - id: review
+    action: human.task
+    with:
+      prompt: Review the deployment
+`)
+		dagAgent := dag.Agent(test.WithAgentOptions(agent.Options{WorkerID: "worker-1"}))
+
+		err := dagAgent.Run(th.Context)
+		require.NoError(t, err)
+		dag.AssertLatestStatus(t, core.Waiting)
+	})
+	t.Run("HumanTaskRejectedInSubDAG", func(t *testing.T) {
+		th := test.Setup(t)
+		dag := th.DAG(t, `steps:
+  - id: review
+    action: human.task
+    with:
+      prompt: Review the deployment
+`)
+		dagAgent := dag.Agent(test.WithAgentOptions(agent.Options{
+			RootDAGRun:   exec.NewDAGRunRef("root", "root-run"),
+			ParentDAGRun: exec.NewDAGRunRef("parent", "parent-run"),
+		}))
+
+		err := dagAgent.Run(th.Context)
+		require.ErrorContains(t, err, "cannot run as a sub-DAG")
+	})
 	t.Run("DeleteOldHistory", func(t *testing.T) {
 		th := test.Setup(t)
 		dag := th.DAG(t, `steps:

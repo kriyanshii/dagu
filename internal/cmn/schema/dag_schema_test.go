@@ -868,6 +868,98 @@ steps:
 	}
 }
 
+func TestDAGSchemaHumanTask(t *testing.T) {
+	t.Parallel()
+
+	resolved := mustResolveDAGSchema(t)
+
+	tests := []struct {
+		name  string
+		spec  string
+		valid bool
+	}{
+		{
+			name: "AcknowledgementOnly",
+			spec: `
+steps:
+  - id: acknowledge
+    action: human.task
+    with:
+      prompt: Confirm the maintenance notice was read
+`,
+			valid: true,
+		},
+		{
+			name: "FlatScalarForm",
+			spec: `
+steps:
+  - id: review
+    action: human.task
+    with:
+      prompt: Review the deployment request
+      form:
+        type: object
+        properties:
+          retries:
+            type: integer
+            default: 0
+            minimum: 0
+            maximum: 5
+          confirmed:
+            type: boolean
+            default: false
+          decision:
+            oneOf:
+              - type: string
+                const: approve
+                title: Approve
+              - const: reject
+                title: Reject
+        required: [decision]
+`,
+			valid: true,
+		},
+		{
+			name: "MissingID",
+			spec: `
+steps:
+  - action: human.task
+    with:
+      prompt: Review
+`,
+		},
+		{
+			name: "RejectNestedProperty",
+			spec: `
+steps:
+  - id: review
+    action: human.task
+    with:
+      prompt: Review
+      form:
+        type: object
+        properties:
+          nested:
+            type: object
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			doc := mustParseYAMLDocument(t, tt.spec)
+			err := resolved.Validate(doc)
+			if tt.valid {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestDAGSchemaSchedule(t *testing.T) {
 	t.Parallel()
 

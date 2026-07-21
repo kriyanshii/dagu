@@ -215,25 +215,30 @@ func (d *dag) rawHandler(name core.HandlerType) map[string]any {
 		return nil
 	}
 
-	var key string
-	switch name {
-	case core.HandlerOnInit:
-		key = "init"
-	case core.HandlerOnSuccess:
-		key = "success"
-	case core.HandlerOnFailure:
-		key = "failure"
-	case core.HandlerOnAbort:
-		key = "abort"
-	case core.HandlerOnExit:
-		key = "exit"
-	case core.HandlerOnWait:
-		key = "wait"
-	default:
+	key := handlerFieldName(name)
+	if key == "" {
 		return nil
 	}
-
 	return d.handlerOnRaw[key]
+}
+
+func handlerFieldName(name core.HandlerType) string {
+	switch name {
+	case core.HandlerOnInit:
+		return "init"
+	case core.HandlerOnSuccess:
+		return "success"
+	case core.HandlerOnFailure:
+		return "failure"
+	case core.HandlerOnAbort:
+		return "abort"
+	case core.HandlerOnExit:
+		return "exit"
+	case core.HandlerOnWait:
+		return "wait"
+	default:
+		return ""
+	}
 }
 
 // smtpConfig defines the SMTP configuration.
@@ -3046,7 +3051,14 @@ func buildHandlers(ctx BuildContext, d *dag, result *core.DAG) (core.HandlerOn, 
 		if s == nil {
 			return nil, nil
 		}
-		return buildStepFromSpec(buildCtx, 0, s, d.rawHandler(name), map[string]struct{}{}, defs, name.String())
+		handler, err := buildStepFromSpec(buildCtx, 0, s, d.rawHandler(name), map[string]struct{}{}, defs, name.String())
+		if err != nil {
+			return nil, err
+		}
+		if handler.HumanTask != nil {
+			return nil, fmt.Errorf("action human.task cannot be used in handler_on.%s", handlerFieldName(name))
+		}
+		return handler, nil
 	}
 
 	if handlerOn.Init, err = buildHandler(d.HandlerOn.Init, core.HandlerOnInit); err != nil {

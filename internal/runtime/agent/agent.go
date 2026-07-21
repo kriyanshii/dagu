@@ -467,6 +467,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		tag.RunID(a.dagRunID),
 		tag.AttemptID(a.dagRunAttemptID),
 	)
+	if !a.parentDAGRun.Zero() && a.dag.HasHumanTaskSteps() {
+		return fmt.Errorf("DAG %q contains human task steps and cannot run as a sub-DAG", a.dag.Name)
+	}
 
 	// Initialize propagators for W3C trace context before anything else
 	telemetry.InitializePropagators()
@@ -1113,6 +1116,8 @@ func (a *Agent) Run(ctx context.Context) error {
 
 func (a *Agent) shouldDelayTerminalStatus(status core.Status) bool {
 	switch status {
+	case core.Waiting:
+		return true
 	case core.Failed, core.Aborted, core.Succeeded, core.PartiallySucceeded, core.Rejected:
 		if a.artifactFinalizer != nil && a.artifactDir != "" {
 			return true

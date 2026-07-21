@@ -84,6 +84,8 @@ type NodeState struct {
 	OutputsValue *string
 	// StepOutputsValue stores declared file-based outputs for ${steps.<id>.outputs.<name>} references.
 	StepOutputsValue *string
+	// HumanTaskInput stores the validated input submitted to complete a human task.
+	HumanTaskInput json.RawMessage
 	// ChatMessages stores the chat session messages for message passing between steps.
 	ChatMessages []exec.LLMMessage
 	// ToolDefinitions stores the tool definitions that were available to the LLM during execution.
@@ -331,6 +333,33 @@ func (d *Data) SetStatus(s core.NodeStatus) {
 	defer d.mu.Unlock()
 
 	d.inner.State.Status = s
+}
+
+// OpenHumanTask records the resolved prompt and transitions the node to waiting.
+func (d *Data) OpenHumanTask(prompt string, startedAt time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.setHumanTaskPrompt(prompt)
+	d.inner.State.StartedAt = startedAt
+	d.inner.State.DoneCount++
+	d.inner.State.Status = core.NodeWaiting
+}
+
+// CompleteHumanTaskDryRun records the resolved prompt and completes a dry-run task.
+func (d *Data) CompleteHumanTaskDryRun(prompt string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.setHumanTaskPrompt(prompt)
+	d.inner.State.DoneCount++
+	d.inner.State.Status = core.NodeSucceeded
+}
+
+func (d *Data) setHumanTaskPrompt(prompt string) {
+	task := *d.inner.Step.HumanTask
+	task.Prompt = prompt
+	d.inner.Step.HumanTask = &task
 }
 
 func (d *Data) StepInfo() cmnvalue.StepInfo {

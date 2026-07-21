@@ -39,7 +39,18 @@ type dagExecutor struct {
 var (
 	ErrWorkingDirNotExist      = fmt.Errorf("working directory does not exist")
 	ErrApprovalStepsWithWorker = fmt.Errorf("sub-DAG with approval steps cannot be dispatched to workers")
+	ErrHumanTaskStepsInSubDAG  = fmt.Errorf("human task steps are not allowed in sub-DAGs")
 )
+
+func validateSubDAG(childDAG *core.DAG, name string, workerSelector map[string]string) error {
+	if len(workerSelector) > 0 && childDAG.HasApprovalSteps() {
+		return fmt.Errorf("%w: %s", ErrApprovalStepsWithWorker, name)
+	}
+	if childDAG.HasHumanTaskSteps() {
+		return fmt.Errorf("%w: %s", ErrHumanTaskStepsInSubDAG, name)
+	}
+	return nil
+}
 
 func newDAGExecutor(ctx context.Context, step core.Step) (executor.Executor, error) {
 	if step.SubDAG == nil {
@@ -51,14 +62,15 @@ func newDAGExecutor(ctx context.Context, step core.Step) (executor.Executor, err
 		return nil, err
 	}
 
-	// Validate: sub-DAGs with approval steps cannot be dispatched to workers
-	if len(step.WorkerSelector) > 0 && child.DAG.HasApprovalSteps() {
-		return nil, fmt.Errorf("%w: %s", ErrApprovalStepsWithWorker, step.SubDAG.Name)
+	if err := validateSubDAG(child.DAG, step.SubDAG.Name, step.WorkerSelector); err != nil {
+		_ = child.Cleanup(context.WithoutCancel(ctx))
+		return nil, err
 	}
 	child.SetWorkerSelector(step.WorkerSelector)
 
 	dir := runtime.GetEnv(ctx).WorkingDir
 	if dir != "" && !fileutil.FileExists(dir) {
+		_ = child.Cleanup(context.WithoutCancel(ctx))
 		return nil, ErrWorkingDirNotExist
 	}
 

@@ -178,6 +178,63 @@ steps:
 
 Sub-DAGs do not inherit parent env vars. Pass values explicitly via `with.params`.
 
+## human.task
+
+Pause a root DAG run until an operator completes a processless step. A human task does not execute a command and is distinct from an approval gate: completion always succeeds the step, with no reject or rewind operation.
+
+```yaml
+params:
+  RELEASE: v1.2.3
+
+steps:
+  - id: review
+    action: human.task
+    with:
+      prompt: Select a deployment window for ${params.RELEASE}
+      form:
+        type: object
+        title: Deployment review
+        properties:
+          window:
+            type: string
+            enum: [morning, evening]
+          ticket:
+            type: string
+            pattern: '^CHG-[0-9]+$'
+          notify:
+            type: boolean
+            default: true
+        required: [window, ticket]
+
+  - id: deploy
+    depends: [review]
+    run: ./deploy --window '${steps.review.outputs.window}' --ticket '${steps.review.outputs.ticket}'
+```
+
+`with.prompt` is required and supports normal Dagu value references. `with.form` is optional; omit it for an acknowledgement-only task that accepts no input.
+
+The form is a flat object JSON Schema:
+
+- `type` must be `object`.
+- Property names must start with a letter and contain only letters, digits, or `_`.
+- Property types are `string`, `integer`, `number`, and `boolean`.
+- Supported property constraints include `default`, `enum`, `oneOf` choices, `minimum`, `maximum`, `minLength`, `maxLength`, and `pattern`.
+- `additionalProperties` defaults to `false`. Set it explicitly to `true` only when undeclared completion fields are intended.
+
+Dagu derives outputs from form properties; do not add an `outputs:` field to the human task. Every declared property is a step output, published when submitted or defaulted, and available as `${steps.<step_id>.outputs.<name>}`.
+
+Human tasks require an explicit `id` and cannot be used in sub-DAGs, lifecycle handlers, or `foreach.steps`. A root DAG containing human tasks can run locally or on a distributed worker selected by its DAG-level `worker_selector`. Executor, retry, repeat, timeout, container, step-level worker selector, output capture, and approval fields are not supported on the same step.
+
+Complete a waiting task from a local CLI context:
+
+```sh
+dagu human-task complete --run-id=<run-id> --step=review --input window=morning --input ticket=CHG-123 <dag-name>
+```
+
+Use `--inputs-json` instead of repeated `--input` flags when input types must be preserved exactly.
+
+Completing the last waiting human task resumes a local run directly. A distributed run is re-queued, so its scheduler must be running.
+
 ## Declared Step Outputs
 
 Declare `outputs:` when a step should publish named values for later steps as `${steps.<step_id>.outputs.<name>}`.
