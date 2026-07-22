@@ -26,7 +26,9 @@ Dagu turns existing scripts, runbooks, and agent-driven jobs into production wor
 For a quick look at how workflows are defined, see the examples.
 
 <div align="center">
-  <img src="./assets/images/dagu-demo.gif" width="720" alt="Dagu demo showing the cockpit kanban view and YAML workflow editing">
+  <a href="./assets/images/dagu-demo.mp4?raw=1">
+    <img src="./assets/images/dagu-demo.gif" width="720" alt="Dagu demo showing workflow definitions, the cockpit view, scheduling, built-in actions, and production features">
+  </a>
 </div>
 
 | Run Details | Step Logs |
