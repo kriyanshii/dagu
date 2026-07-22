@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./assets/images/hero-logo.webp" width="480" alt="Dagu Logo">
+  <img src="./assets/images/hero-logo.webp" width="900" alt="Dagu local-first workflow engine for ops automation and AI-assisted workflows">
   <p>
     <a href="https://discord.gg/gpahPUjGRk">Community</a>
   </p>
