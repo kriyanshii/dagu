@@ -791,6 +791,9 @@
         },
         "gcp": {
           "$ref": "#/definitions/GCPSecretsDef"
+        },
+        "azure": {
+          "$ref": "#/definitions/AzureSecretsDef"
         }
       }
     },
@@ -817,6 +820,17 @@
         "location": {
           "type": "string",
           "description": "Default location for regional Secret Manager lookups."
+        }
+      }
+    },
+    "AzureSecretsDef": {
+      "type": "object",
+      "description": "Global Azure Key Vault client defaults.",
+      "additionalProperties": false,
+      "properties": {
+        "vault_url": {
+          "type": "string",
+          "description": "Default Azure Key Vault URL."
         }
       }
     },

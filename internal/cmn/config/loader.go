@@ -476,6 +476,12 @@ func (l *ConfigLoader) loadSecretsConfig(cfg *Config, def Definition) {
 			Location:  def.Secrets.GCP.Location,
 		}
 	}
+
+	if def.Secrets.Azure != nil {
+		cfg.Secrets.Azure = AzureSecretsConfig{
+			VaultURL: def.Secrets.Azure.VaultURL,
+		}
+	}
 }
 
 func (l *ConfigLoader) loadEventStoreConfig(cfg *Config, def Definition) {
@@ -1972,6 +1978,7 @@ var envBindings = []envBinding{
 	{key: "secrets.aws.region", env: "SECRETS_AWS_REGION"},
 	{key: "secrets.gcp.project_id", env: "SECRETS_GCP_PROJECT_ID"},
 	{key: "secrets.gcp.location", env: "SECRETS_GCP_LOCATION"},
+	{key: "secrets.azure.vault_url", env: "SECRETS_AZURE_VAULT_URL"},
 
 	// Scheduler
 	{key: "scheduler.port", env: "SCHEDULER_PORT"},

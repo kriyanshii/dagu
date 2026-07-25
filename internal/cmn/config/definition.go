@@ -241,6 +241,7 @@ type SecretsDef struct {
 	Kubernetes *KubernetesSecretsDef `mapstructure:"kubernetes"`
 	AWS        *AWSSecretsDef        `mapstructure:"aws"`
 	GCP        *GCPSecretsDef        `mapstructure:"gcp"`
+	Azure      *AzureSecretsDef      `mapstructure:"azure"`
 }
 
 // AWSSecretsDef configures global AWS Secrets Manager client defaults.
@@ -252,6 +253,11 @@ type AWSSecretsDef struct {
 type GCPSecretsDef struct {
 	ProjectID string `mapstructure:"project_id"`
 	Location  string `mapstructure:"location"`
+}
+
+// AzureSecretsDef configures global Azure Key Vault client defaults.
+type AzureSecretsDef struct {
+	VaultURL string `mapstructure:"vault_url"`
 }
 
 // VaultSecretsDef configures global HashiCorp Vault client defaults.

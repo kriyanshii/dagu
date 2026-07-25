@@ -1475,6 +1475,8 @@ secrets:
   gcp:
     project_id: "yaml-project"
     location: "us-central1"
+  azure:
+    vault_url: "https://yaml.vault.azure.net"
 `)
 
 		assert.Equal(t, "https://vault.example.com", cfg.Secrets.Vault.Address)
@@ -1485,6 +1487,7 @@ secrets:
 		assert.Equal(t, "us-west-2", cfg.Secrets.AWS.Region)
 		assert.Equal(t, "yaml-project", cfg.Secrets.GCP.ProjectID)
 		assert.Equal(t, "us-central1", cfg.Secrets.GCP.Location)
+		assert.Equal(t, "https://yaml.vault.azure.net", cfg.Secrets.Azure.VaultURL)
 	})
 
 	t.Run("FromEnv", func(t *testing.T) {
@@ -1498,6 +1501,7 @@ secrets:
 			"DAGU_SECRETS_AWS_REGION":            "eu-west-1",
 			"DAGU_SECRETS_GCP_PROJECT_ID":        "env-project",
 			"DAGU_SECRETS_GCP_LOCATION":          "europe-west1",
+			"DAGU_SECRETS_AZURE_VAULT_URL":       "https://env.vault.azure.net",
 		})
 
 		assert.Equal(t, "https://vault.example.com", cfg.Secrets.Vault.Address)
@@ -1508,6 +1512,7 @@ secrets:
 		assert.Equal(t, "eu-west-1", cfg.Secrets.AWS.Region)
 		assert.Equal(t, "env-project", cfg.Secrets.GCP.ProjectID)
 		assert.Equal(t, "europe-west1", cfg.Secrets.GCP.Location)
+		assert.Equal(t, "https://env.vault.azure.net", cfg.Secrets.Azure.VaultURL)
 	})
 
 	t.Run("OldEnvNamesIgnored", func(t *testing.T) {
@@ -1549,6 +1554,8 @@ secrets:
   gcp:
     project_id: "scoped-project"
     location: "asia-northeast1"
+  azure:
+    vault_url: "https://scoped.vault.azure.net"
 `), 0600)
 				require.NoError(t, err)
 
@@ -1562,6 +1569,7 @@ secrets:
 				assert.Equal(t, "ap-northeast-1", cfg.Secrets.AWS.Region)
 				assert.Equal(t, "scoped-project", cfg.Secrets.GCP.ProjectID)
 				assert.Equal(t, "asia-northeast1", cfg.Secrets.GCP.Location)
+				assert.Equal(t, "https://scoped.vault.azure.net", cfg.Secrets.Azure.VaultURL)
 			})
 		}
 	})

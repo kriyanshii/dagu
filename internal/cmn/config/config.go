@@ -397,6 +397,7 @@ type SecretsConfig struct {
 	Kubernetes KubernetesSecretsConfig
 	AWS        AWSSecretsConfig
 	GCP        GCPSecretsConfig
+	Azure      AzureSecretsConfig
 }
 
 // AWSSecretsConfig holds shared AWS Secrets Manager client defaults.
@@ -408,6 +409,11 @@ type AWSSecretsConfig struct {
 type GCPSecretsConfig struct {
 	ProjectID string
 	Location  string
+}
+
+// AzureSecretsConfig holds shared Azure Key Vault client defaults.
+type AzureSecretsConfig struct {
+	VaultURL string
 }
 
 // VaultSecretsConfig holds shared HashiCorp Vault client defaults.
