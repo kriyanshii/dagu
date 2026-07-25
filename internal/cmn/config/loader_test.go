@@ -1472,6 +1472,9 @@ secrets:
     context: "prod"
   aws:
     region: "us-west-2"
+  gcp:
+    project_id: "yaml-project"
+    location: "us-central1"
 `)
 
 		assert.Equal(t, "https://vault.example.com", cfg.Secrets.Vault.Address)
@@ -1480,6 +1483,8 @@ secrets:
 		assert.Equal(t, resolvedTestPath(t, "relative/kubeconfig"), cfg.Secrets.Kubernetes.Kubeconfig)
 		assert.Equal(t, "prod", cfg.Secrets.Kubernetes.Context)
 		assert.Equal(t, "us-west-2", cfg.Secrets.AWS.Region)
+		assert.Equal(t, "yaml-project", cfg.Secrets.GCP.ProjectID)
+		assert.Equal(t, "us-central1", cfg.Secrets.GCP.Location)
 	})
 
 	t.Run("FromEnv", func(t *testing.T) {
@@ -1491,6 +1496,8 @@ secrets:
 			"DAGU_SECRETS_KUBERNETES_KUBECONFIG": kubeconfig,
 			"DAGU_SECRETS_KUBERNETES_CONTEXT":    "env-context",
 			"DAGU_SECRETS_AWS_REGION":            "eu-west-1",
+			"DAGU_SECRETS_GCP_PROJECT_ID":        "env-project",
+			"DAGU_SECRETS_GCP_LOCATION":          "europe-west1",
 		})
 
 		assert.Equal(t, "https://vault.example.com", cfg.Secrets.Vault.Address)
@@ -1499,6 +1506,8 @@ secrets:
 		assert.Equal(t, kubeconfig, cfg.Secrets.Kubernetes.Kubeconfig)
 		assert.Equal(t, "env-context", cfg.Secrets.Kubernetes.Context)
 		assert.Equal(t, "eu-west-1", cfg.Secrets.AWS.Region)
+		assert.Equal(t, "env-project", cfg.Secrets.GCP.ProjectID)
+		assert.Equal(t, "europe-west1", cfg.Secrets.GCP.Location)
 	})
 
 	t.Run("OldEnvNamesIgnored", func(t *testing.T) {
@@ -1537,6 +1546,9 @@ secrets:
     context: "scoped-context"
   aws:
     region: "ap-northeast-1"
+  gcp:
+    project_id: "scoped-project"
+    location: "asia-northeast1"
 `), 0600)
 				require.NoError(t, err)
 
@@ -1548,6 +1560,8 @@ secrets:
 				assert.Equal(t, resolvedTestPath(t, "relative/scoped-kubeconfig"), cfg.Secrets.Kubernetes.Kubeconfig)
 				assert.Equal(t, "scoped-context", cfg.Secrets.Kubernetes.Context)
 				assert.Equal(t, "ap-northeast-1", cfg.Secrets.AWS.Region)
+				assert.Equal(t, "scoped-project", cfg.Secrets.GCP.ProjectID)
+				assert.Equal(t, "asia-northeast1", cfg.Secrets.GCP.Location)
 			})
 		}
 	})

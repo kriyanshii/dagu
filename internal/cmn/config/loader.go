@@ -469,6 +469,13 @@ func (l *ConfigLoader) loadSecretsConfig(cfg *Config, def Definition) {
 			Region: def.Secrets.AWS.Region,
 		}
 	}
+
+	if def.Secrets.GCP != nil {
+		cfg.Secrets.GCP = GCPSecretsConfig{
+			ProjectID: def.Secrets.GCP.ProjectID,
+			Location:  def.Secrets.GCP.Location,
+		}
+	}
 }
 
 func (l *ConfigLoader) loadEventStoreConfig(cfg *Config, def Definition) {
@@ -1963,6 +1970,8 @@ var envBindings = []envBinding{
 	{key: "secrets.kubernetes.kubeconfig", env: "SECRETS_KUBERNETES_KUBECONFIG", isPath: true},
 	{key: "secrets.kubernetes.context", env: "SECRETS_KUBERNETES_CONTEXT"},
 	{key: "secrets.aws.region", env: "SECRETS_AWS_REGION"},
+	{key: "secrets.gcp.project_id", env: "SECRETS_GCP_PROJECT_ID"},
+	{key: "secrets.gcp.location", env: "SECRETS_GCP_LOCATION"},
 
 	// Scheduler
 	{key: "scheduler.port", env: "SCHEDULER_PORT"},
