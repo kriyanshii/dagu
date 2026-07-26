@@ -39,9 +39,9 @@ type dagExecutor struct {
 }
 
 // declaredChildOutputs returns the outputs a child run published explicitly,
-// through `outputs.write`, `stdout.outputs`, or a step `outputs:` declaration.
-// It returns nil when the child declared nothing, so a step that publishes
-// only flat `output:` variables keeps reporting through the child run itself.
+// through `outputs.write` or `stdout.outputs`. It returns nil when the child
+// published nothing that way, so a step whose child only sets flat `output:`
+// variables keeps reporting through the child run itself.
 func declaredChildOutputs(result *exec.RunStatus) map[string]any {
 	if result == nil || len(result.OutputValues) == 0 {
 		return nil
