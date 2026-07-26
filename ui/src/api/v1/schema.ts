@@ -4354,6 +4354,13 @@ export interface components {
         /** @description Detailed DAG configuration information */
         DAGDetails: {
             /**
+             * @description Execution type. 'graph' resolves dependencies, 'chain' runs steps in order, 'controller' lets an LLM choose each step.
+             * @enum {string}
+             */
+            type?: DAGDetailsType;
+            /** @description Goals a controller DAG must satisfy. Present only for type controller. */
+            tasks?: components["schemas"]["ControllerTask"][];
+            /**
              * Format: date-time
              * @description Scheduler-aware next planned run time. Pending overdue one-offs remain visible until consumed.
              */
@@ -4613,6 +4620,10 @@ export interface components {
             onWait?: components["schemas"]["Node"];
             /** @description List of preconditions that must be met before the DAG-run can start */
             preconditions?: components["schemas"]["Condition"][];
+            /** @description Goal progress of a controller DAG-run. Absent for other DAG types. */
+            controllerTasks?: components["schemas"]["ControllerTask"][];
+            /** @description Ordered decision timeline of a controller DAG-run: what the controller ran, in what order, and when each task was satisfied. Absent for other DAG types. */
+            controllerEvents?: components["schemas"]["ControllerEvent"][];
             /** @description Whether this DAG-run still has a usable source file on disk, so reschedule can load the current spec from that file instead of the stored historical YAML snapshot. */
             specFromFile?: boolean;
             /** @description File name of the source DAG definition, derived from the DAG-run's source file path. Only set when the source file still exists on disk. Can be used to navigate to the DAG definition page. */
@@ -4699,6 +4710,46 @@ export interface components {
             completedAt: string;
             /** @description JSON-serialized parameters passed to the DAG */
             params?: string;
+        };
+        /** @description One entry on a controller DAG-run's decision timeline */
+        ControllerEvent: {
+            /** @description Controller turn this event belongs to, starting at 1 */
+            turn: number;
+            /**
+             * @description What the controller did on this turn
+             * @enum {string}
+             */
+            kind: ControllerEventKind;
+            /** @description Step or task the event concerns */
+            name?: string;
+            /** @description Resulting step status for an action event, or the new task status for a task_status event */
+            status?: string;
+            /** @description Which run of this step it was, starting at 1 */
+            attempt?: number;
+            /** @description Controller's justification, or why the call was rejected */
+            reason?: string;
+            /** @description RFC3339 timestamp when the step started */
+            startedAt?: string;
+            /** @description RFC3339 timestamp when the step finished */
+            finishedAt?: string;
+            /** @description Child DAG-run this action produced, for linking to its run page. Absent for steps that run no child DAG. */
+            childDagRunId?: string;
+            /** @description Name of the child DAG that ran */
+            childDagName?: string;
+        };
+        /** @description A goal a controller DAG must satisfy before the run concludes */
+        ControllerTask: {
+            /** @description Unique task name */
+            name: string;
+            /** @description Completion criteria the controller decides against */
+            description?: string;
+            /**
+             * @description Where the task stands. The run ends once none is open, and fails if any is failed. A skipped task does not fail the run.
+             * @enum {string}
+             */
+            status: ControllerTaskStatus;
+            /** @description Justification the controller gave for the current status */
+            reason?: string;
         };
         /** @description Status of an individual step within a DAG-run */
         Node: {
@@ -16800,6 +16851,11 @@ export enum WorkerHealthStatus {
     warning = "warning",
     unhealthy = "unhealthy"
 }
+export enum DAGDetailsType {
+    graph = "graph",
+    chain = "chain",
+    controller = "controller"
+}
 export enum ValueReferenceNoticeReason {
     unknown_step_id = "unknown_step_id",
     unknown_output_name = "unknown_output_name",
@@ -16829,6 +16885,19 @@ export enum ArtifactPreviewKind {
     text = "text",
     image = "image",
     binary = "binary"
+}
+export enum ControllerEventKind {
+    action = "action",
+    task_status = "task_status",
+    ask_user = "ask_user",
+    rejected = "rejected",
+    stalled = "stalled"
+}
+export enum ControllerTaskStatus {
+    open = "open",
+    completed = "completed",
+    skipped = "skipped",
+    failed = "failed"
 }
 export enum StepOutputDeclarationType {
     string = "string",

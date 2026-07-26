@@ -188,45 +188,6 @@ func TestExecutor_GetMessages(t *testing.T) {
 	})
 }
 
-func TestNormalizeEnvVarExpr(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "EmptyString",
-			input:    "",
-			expected: "",
-		},
-		{
-			name:     "PlainVariableName",
-			input:    "OPENAI_API_KEY",
-			expected: "${OPENAI_API_KEY}",
-		},
-		{
-			name:     "DollarPrefix",
-			input:    "$ANTHROPIC_KEY",
-			expected: "${ANTHROPIC_KEY}",
-		},
-		{
-			name:     "BracedFormat",
-			input:    "${MY_API_KEY}",
-			expected: "${MY_API_KEY}",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			result := normalizeEnvVarExpr(tc.input)
-			assert.Equal(t, tc.expected, result)
-		})
-	}
-}
-
 func TestNewChatExecutor(t *testing.T) {
 	t.Parallel()
 
@@ -373,7 +334,7 @@ func TestResolveModels(t *testing.T) {
 	t.Run("ResolvesProviderAndModelReferences", func(t *testing.T) {
 		t.Parallel()
 
-		models, err := resolveModels(ctx, []core.ModelEntry{
+		models, err := runtime.ResolveModels(ctx, []core.ModelEntry{
 			{Provider: "${params.PROVIDER}", Name: "${params.MODEL}", BaseURL: "https://${params.PROVIDER}.example"},
 		})
 		require.NoError(t, err)
@@ -387,7 +348,7 @@ func TestResolveModels(t *testing.T) {
 	t.Run("LeavesLiteralEntriesUnchanged", func(t *testing.T) {
 		t.Parallel()
 
-		models, err := resolveModels(ctx, []core.ModelEntry{
+		models, err := runtime.ResolveModels(ctx, []core.ModelEntry{
 			{Provider: "openai", Name: "gpt-4o"},
 			{Provider: "${params.PROVIDER}", Name: "${params.MODEL}"},
 		})
@@ -444,7 +405,7 @@ func TestResolveModelsRejectsEmptyValues(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := resolveModels(ctx, tt.llm.GetModels())
+			_, err := runtime.ResolveModels(ctx, tt.llm.GetModels())
 			require.EqualError(t, err, tt.wantErr)
 		})
 	}
