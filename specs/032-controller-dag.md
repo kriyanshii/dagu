@@ -126,6 +126,16 @@ Each declared step is advertised to the model as one function-calling tool.
 - Only a step that launches a child DAG accepts arguments. Its schema is derived
   from the target's parameter definitions, falling back to its default-params
   string. Every other step is a nullary action.
+- A parameter the step supplies a value for MUST NOT appear in that schema. A
+  value written in the workflow is the author's decision, not one the controller
+  restates, and a step that supplies every parameter is a nullary action.
+- Parameters supplied by a child-DAG step MUST use named form. Positional
+  parameters are rejected because tool arguments are identified by name.
+
+The parameters a child DAG run receives are the ones the step supplies, plus an
+argument for each parameter the step left open. An argument naming a parameter
+the step supplies MUST be discarded rather than override it: the model was never
+offered that choice.
 
 Two additional tools are always offered.
 
