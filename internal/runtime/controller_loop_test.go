@@ -42,10 +42,11 @@ type turn struct {
 // fakeModel serves the OpenAI-compatible chat completions API, replying with a
 // fixed script of decisions so the controller loop can be driven deterministically.
 type fakeModel struct {
-	mu     sync.Mutex
-	turns  []turn
-	calls  int
-	system string
+	mu          sync.Mutex
+	turns       []turn
+	calls       int
+	system      string
+	toolResults []string
 }
 
 // lastSystemPrompt returns the system message of the most recent request.
@@ -53,6 +54,14 @@ func (m *fakeModel) lastSystemPrompt() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.system
+}
+
+// observations returns the tool results carried by the most recent request,
+// which is the whole transcript the controller had built by that point.
+func (m *fakeModel) observations() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.toolResults...)
 }
 
 // captureSystem records the system message so tests can assert on the prompt.
@@ -72,9 +81,13 @@ func (m *fakeModel) captureSystem(r *http.Request) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.toolResults = m.toolResults[:0]
 	for _, msg := range req.Messages {
-		if msg.Role == "system" {
+		switch msg.Role {
+		case "system":
 			m.system = msg.Content
+		case "tool":
+			m.toolResults = append(m.toolResults, msg.Content)
 		}
 	}
 }
@@ -275,6 +288,30 @@ func TestControllerLoop_RerunsAnActionWithFreshArguments(t *testing.T) {
 	alpha := ch.node(t, "alpha")
 	assert.Equal(t, core.NodeSucceeded, alpha.State().Status)
 	assert.True(t, alpha.State().Repeated, "a re-run action is marked repeated")
+}
+
+func TestControllerLoop_ObservesTheOutputOfARerunAction(t *testing.T) {
+	t.Parallel()
+
+	ch := setupController(t, controllerDAG,
+		turn{tool: "alpha"},
+		turn{tool: "alpha"},
+		turn{tool: controller.SetTaskStatusTool, args: map[string]any{"task": "first", "status": "completed", "reason": "alpha ran twice"}},
+		turn{tool: controller.SetTaskStatusTool, args: map[string]any{"task": "second", "status": "completed", "reason": "not needed"}},
+	)
+
+	require.Equal(t, core.Succeeded, ch.run(t))
+
+	// The controller decides what to do next from what an action reported, so
+	// every attempt has to come back with its output. An attempt that reports
+	// nothing reads as one that ran fine and had nothing to say.
+	reported := 0
+	for _, observation := range ch.model.observations() {
+		if strings.Contains(observation, "alpha") {
+			reported++
+		}
+	}
+	assert.Equal(t, 2, reported, "both attempts report their output")
 }
 
 func TestControllerLoop_RejectsUnknownToolAndTask(t *testing.T) {
