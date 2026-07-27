@@ -3220,6 +3220,145 @@ steps:
 		assert.Equal(t, "harness", dag.Steps[1].ExecutorConfig.Type)
 	})
 
+	t.Run("PromptShapedCommandStepIsRejected", func(t *testing.T) {
+		yaml := `
+harness:
+  provider: claude
+  model: sonnet
+steps:
+  - name: run_agent
+    command: "Explain the main function in this project"
+`
+		_, err := spec.LoadYAML(context.Background(), []byte(yaml))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "action: harness.run")
+		assert.Contains(t, err.Error(), "run:")
+	})
+
+	t.Run("PromptShapedCommandWithScriptIsRejected", func(t *testing.T) {
+		yaml := `
+harness:
+  provider: claude
+steps:
+  - command: "Review the repository"
+    script: |
+      summarize the current branch
+`
+		_, err := spec.LoadYAML(context.Background(), []byte(yaml))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "with.stdin")
+	})
+
+	t.Run("HarnessRunStdinMatchesTheLegacyScriptForm", func(t *testing.T) {
+		legacy := `
+harness:
+  provider: claude
+steps:
+  - type: harness
+    command: "Review the repository"
+    script: |
+      summarize the current branch
+`
+		migrated := `
+harness:
+  provider: claude
+steps:
+  - action: harness.run
+    with:
+      prompt: "Review the repository"
+      stdin: |
+        summarize the current branch
+`
+		legacyDAG, err := spec.LoadYAML(context.Background(), []byte(legacy))
+		require.NoError(t, err)
+		migratedDAG, err := spec.LoadYAML(context.Background(), []byte(migrated))
+		require.NoError(t, err)
+
+		require.Len(t, legacyDAG.Steps, 1)
+		require.Len(t, migratedDAG.Steps, 1)
+		assert.Equal(t, "harness", migratedDAG.Steps[0].ExecutorConfig.Type)
+		assert.Equal(t, legacyDAG.Steps[0].Script, migratedDAG.Steps[0].Script)
+		assert.Equal(t, legacyDAG.Steps[0].Commands, migratedDAG.Steps[0].Commands)
+	})
+
+	t.Run("ScriptOnlyStepKeepsLocalExecutor", func(t *testing.T) {
+		yaml := `
+harness:
+  provider: claude
+steps:
+  - script: |
+      echo hello
+`
+		dag, err := spec.LoadYAML(context.Background(), []byte(yaml))
+		require.NoError(t, err)
+		require.Len(t, dag.Steps, 1)
+		assert.Empty(t, dag.Steps[0].ExecutorConfig.Type)
+	})
+
+	t.Run("PromptShapedCommandIsRejectedInMapFormAndHandlers", func(t *testing.T) {
+		for name, yaml := range map[string]string{
+			"map form": `
+harness:
+  provider: claude
+steps:
+  review:
+    command: "Explain this codebase"
+`,
+			"handler": `
+harness:
+  provider: claude
+handler_on:
+  success:
+    command: "Explain this codebase"
+steps:
+  - action: harness.run
+    with:
+      prompt: "Write tests"
+`,
+		} {
+			t.Run(name, func(t *testing.T) {
+				_, err := spec.LoadYAML(context.Background(), []byte(yaml))
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "action: harness.run")
+			})
+		}
+	})
+
+	t.Run("RunStepIsAcceptedInMapFormAndHandlers", func(t *testing.T) {
+		yaml := `
+harness:
+  provider: claude
+handler_on:
+  success:
+    run: echo done
+steps:
+  review:
+    run: echo hello
+`
+		dag, err := spec.LoadYAML(context.Background(), []byte(yaml))
+		require.NoError(t, err)
+		require.Len(t, dag.Steps, 1)
+		assert.Empty(t, dag.Steps[0].ExecutorConfig.Type)
+		require.NotNil(t, dag.HandlerOn.Success)
+		assert.Empty(t, dag.HandlerOn.Success.ExecutorConfig.Type)
+	})
+
+	t.Run("CommandStepKeepsDAGLevelTransport", func(t *testing.T) {
+		yaml := `
+container:
+  image: alpine
+harness:
+  provider: claude
+steps:
+  - name: prepare
+    command: echo hi
+`
+		dag, err := spec.LoadYAML(context.Background(), []byte(yaml))
+		require.NoError(t, err)
+		require.Len(t, dag.Steps, 1)
+		assert.Equal(t, "container", dag.Steps[0].ExecutorConfig.Type)
+	})
+
 	t.Run("ExecStepKeepsLocalExecutor", func(t *testing.T) {
 		yaml := `
 harness:
