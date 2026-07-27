@@ -2008,9 +2008,11 @@ func buildStepExecutor(ctx StepBuildContext, s *step, result *core.Step) error {
 			result.ExecutorConfig.Type = "ssh"
 		} else if ctx.dag.Redis != nil {
 			result.ExecutorConfig.Type = "redis"
-		} else if ctx.dag.Harness != nil {
-			result.ExecutorConfig.Type = "harness"
 		}
+		// A DAG-level harness: block is not inferred as a step type. Unlike
+		// container and ssh it is not a transport: it reads the step's command
+		// as a prompt, so inferring it turns a command into agent input. A
+		// harness step names itself with action: harness.run.
 	}
 
 	// Merge DAG-level Redis config into step config (step takes precedence)
