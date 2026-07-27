@@ -72,10 +72,11 @@ func ReportValueReferenceNotices(dag *DAG, sink cmnvalue.ValueReferenceNoticeSin
 		}
 		fieldRuntimeScope := runtimeScope
 		fieldRuntimeScope.BuiltinContext = noticeBuiltinContext(dag.Name, field.OwnerStepName, field.OwnerStepID)
-		// A step's own env is in scope for its other fields, so resolve against
-		// the step scope rather than the DAG-level one.
-		if scope, ok := stepEnvScopes[field.OwnerStepPath]; ok && scope != nil {
-			fieldRuntimeScope.Env = scope
+		// A step's working directory is resolved before its env is added.
+		if field.Path != field.OwnerStepPath+".working_dir" {
+			if scope, ok := stepEnvScopes[field.OwnerStepPath]; ok && scope != nil {
+				fieldRuntimeScope.Env = scope
+			}
 		}
 		resolver := cmnvalue.NewResolver(
 			staticScope,
@@ -214,7 +215,12 @@ func reportEnvValueReferenceNotices(
 		key, value, _ := strings.Cut(entry, "=")
 		fieldPath := fmt.Sprintf("%s[%d]", path, i)
 		stepOutputNotices.report(fieldPath, value, ownerStepName, ownerStepID, sink)
-		fieldSink := valueReferenceNoticeFieldSink{sink: sink, fieldPath: fieldPath, suppressStepOutputReferences: true}
+		fieldSink := valueReferenceNoticeFieldSink{
+			sink:                         sink,
+			fieldPath:                    fieldPath,
+			suppressStepOutputReferences: true,
+			suppressForeachReferences:    isForeachItemScopeFieldPath(fieldPath),
+		}
 		runtimeScope.Env = scope
 		runtimeScope.BuiltinContext = noticeBuiltinContext(dagName, ownerStepName, ownerStepID)
 		resolver := cmnvalue.NewResolver(
@@ -397,6 +403,10 @@ func (s valueReferenceNoticeFieldSink) Report(notice cmnvalue.ValueReferenceNoti
 	}
 	if s.suppressForeachReferences && strings.HasPrefix(notice.Token, "${foreach.") {
 		return
+	}
+	if notice.Reason == cmnvalue.ValueReferenceReasonNamespaceUnavailable &&
+		strings.HasPrefix(notice.Token, "${foreach.") {
+		notice.Class = cmnvalue.NoticeClassDefect
 	}
 	if s.fieldPath != "" {
 		notice.FieldPath = s.fieldPath

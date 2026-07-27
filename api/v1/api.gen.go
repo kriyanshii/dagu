@@ -3831,7 +3831,7 @@ type UsersListResponse struct {
 
 // ValueReferenceNotice A passive notice for a supported value reference left unresolved while loading a spec.
 type ValueReferenceNotice struct {
-	// Class Whether the reference names something the spec does not define, or is well-formed and only lacks a value until a run supplies one.
+	// Class Whether the reference is a defect in the spec or its availability depends on runtime values or lifecycle scope.
 	Class *ValueReferenceNoticeClass `json:"class,omitempty"`
 
 	// FieldPath DAG field path associated with the unresolved reference.
@@ -3847,7 +3847,7 @@ type ValueReferenceNotice struct {
 	Token *string `json:"token,omitempty"`
 }
 
-// ValueReferenceNoticeClass Whether the reference names something the spec does not define, or is well-formed and only lacks a value until a run supplies one.
+// ValueReferenceNoticeClass Whether the reference is a defect in the spec or its availability depends on runtime values or lifecycle scope.
 type ValueReferenceNoticeClass string
 
 // ValueReferenceNoticeReason Machine-readable reason why the reference was preserved.

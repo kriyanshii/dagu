@@ -4432,7 +4432,7 @@ export interface components {
              */
             reason?: ValueReferenceNoticeReason;
             /**
-             * @description Whether the reference names something the spec does not define, or is well-formed and only lacks a value until a run supplies one.
+             * @description Whether the reference is a defect in the spec or its availability depends on runtime values or lifecycle scope.
              * @enum {string}
              */
             class?: ValueReferenceNoticeClass;

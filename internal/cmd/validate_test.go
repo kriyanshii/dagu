@@ -127,6 +127,19 @@ steps:
 		})
 	})
 
+	t.Run("ForeachReferenceOutsideItemScopeIsReported", func(t *testing.T) {
+		th.LoggingOutput.Reset()
+		dagFile := th.CreateDAGFile(t, "foreach_reference_outside_item_scope.yaml", `
+steps:
+  - run: echo ${foreach.item}
+`)
+
+		th.RunCommand(t, cmd.Validate(), test.CmdTest{
+			Args:        []string{"validate", dagFile},
+			ExpectedOut: []string{"${foreach.item}", "reason=namespace_unavailable"},
+		})
+	})
+
 	t.Run("StepEnvIsInScopeForOtherStepFields", func(t *testing.T) {
 		th.LoggingOutput.Reset()
 		dagFile := th.CreateDAGFile(t, "step_env_scope.yaml", `

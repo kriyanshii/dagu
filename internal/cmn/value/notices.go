@@ -37,11 +37,11 @@ const (
 type ValueReferenceNoticeClass string
 
 const (
-	// NoticeClassDefect marks a reference that names something the spec does
-	// not define, so no run can resolve it.
+	// NoticeClassDefect marks a reference the spec cannot resolve in its
+	// declared scope, so no run can resolve it.
 	NoticeClassDefect ValueReferenceNoticeClass = "defect"
-	// NoticeClassRuntimeOnly marks a well-formed reference whose value only
-	// exists once a run supplies it.
+	// NoticeClassRuntimeOnly marks a well-formed reference whose availability
+	// depends on runtime values or lifecycle scope.
 	NoticeClassRuntimeOnly ValueReferenceNoticeClass = "runtime_only"
 )
 

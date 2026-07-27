@@ -118,8 +118,8 @@ func TestValidate(t *testing.T) {
 			t.Parallel()
 
 			dagu := harness.NewRunner(t)
-			// The operator supplies these when the workflow runs, so
-			// validation stays quiet about them by default.
+			// Their availability depends on runtime values or lifecycle scope,
+			// so validation stays quiet about them by default.
 			result := dagu.Run("validate", "--show-unresolved", tc.file)
 			result.ExpectExitCode(0)
 			result.ExpectStdout("")

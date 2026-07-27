@@ -61,6 +61,8 @@ steps:
       key: ${foreach.episode.slug}
       steps:
         - id: write
+          env:
+            - EPISODE_URL=${foreach.episode.url}
           run: echo ${foreach.episode.url}
       collect:
         slug: ${foreach.episode.slug}
