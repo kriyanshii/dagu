@@ -72,6 +72,11 @@ func maskStepSecrets(masker *masking.Masker, step core.Step) core.Step {
 	step.Script = masker.MaskString(step.Script)
 	step.Args = maskStrings(masker, step.Args)
 	step.Env = maskStrings(masker, step.Env)
+	if step.HumanTask != nil {
+		humanTask := *step.HumanTask
+		humanTask.Prompt = masker.MaskString(humanTask.Prompt)
+		step.HumanTask = &humanTask
+	}
 
 	if len(step.Commands) > 0 {
 		commands := append([]core.CommandEntry(nil), step.Commands...)

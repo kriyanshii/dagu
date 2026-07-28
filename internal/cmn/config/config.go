@@ -9,6 +9,11 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/dagucloud/dagu/internal/auth"
+	"github.com/dagucloud/dagu/internal/workspace"
 )
 
 // Config holds the overall configuration for the application.
@@ -150,9 +155,9 @@ type Server struct {
 	RemoteNodes       []RemoteNode
 	Permissions       map[Permission]bool
 	StrictValidation  bool
-	// CORSAllowedOrigins lists explicit origins for CORS. When empty, all
-	// origins are allowed but AllowCredentials is disabled (spec-compliant).
-	// When set, only listed origins are allowed and AllowCredentials is enabled.
+	// CORSAllowedOrigins lists origins allowed to make cross-origin requests.
+	// An empty list disables CORS. A literal wildcard explicitly allows every
+	// origin without credentials; exact origins enable credentials.
 	CORSAllowedOrigins []string
 	Metrics            MetricsAccess // "private" or "public"
 	Terminal           TerminalConfig
@@ -231,6 +236,7 @@ type Auth struct {
 	Mode    AuthMode
 	Basic   AuthBasic
 	OIDC    AuthOIDC
+	Proxy   AuthTrustedProxy
 	Builtin AuthBuiltin
 }
 
@@ -290,13 +296,72 @@ func (o AuthOIDC) IsConfigured() bool {
 
 // OIDCRoleMapping defines how OIDC claims are mapped to Dagu roles.
 type OIDCRoleMapping struct {
-	DefaultRole         string            // Default: "viewer"
-	GroupsClaim         string            // Default: "groups"
-	GroupMappings       map[string]string // IdP group -> Dagu role
-	RoleAttributePath   string            // jq expression for role extraction
-	RoleAttributeStrict bool              // Deny login if no valid role found
-	SkipOrgRoleSync     bool              // Only assign roles on first login
+	DefaultRole            string                          // Default: "viewer"
+	GroupsClaim            string                          // Default: "groups"
+	GroupMappings          map[string]string               // IdP group -> Dagu role
+	WorkspaceMappings      map[string][]OIDCWorkspaceGrant // IdP group -> workspace grants
+	DefaultWorkspaceAccess string                          // Default: "all"; required with workspace mappings
+	RoleAttributePath      string                          // jq expression for role extraction
+	RoleAttributeStrict    bool                            // Deny login if no global or workspace mapping matches
+	SkipOrgRoleSync        bool                            // Keep first-login role and workspace access assignments
 }
+
+// OIDCWorkspaceGrant assigns an OIDC group member a role in one workspace.
+type OIDCWorkspaceGrant struct {
+	Workspace string `mapstructure:"workspace" json:"workspace"`
+	Role      string `mapstructure:"role" json:"role"`
+}
+
+const (
+	// OIDCDefaultWorkspaceAccessAll grants unmatched users access to every workspace.
+	OIDCDefaultWorkspaceAccessAll = "all"
+	// OIDCDefaultWorkspaceAccessNone denies unmatched users access to named workspaces.
+	OIDCDefaultWorkspaceAccessNone = "none"
+)
+
+// WorkspaceAccessPolicyActive reports whether OIDC login manages workspace access.
+func (m OIDCRoleMapping) WorkspaceAccessPolicyActive() bool {
+	return len(m.WorkspaceMappings) > 0 || m.DefaultWorkspaceAccess == OIDCDefaultWorkspaceAccessNone
+}
+
+// AuthTrustedProxy configures authentication delegated to an authenticating reverse proxy.
+type AuthTrustedProxy struct {
+	Enabled     bool
+	Source      string
+	ButtonLabel string
+	Headers     TrustedProxyHeaders
+	AutoSignup  bool
+	RoleMapping TrustedProxyRoleMapping
+}
+
+// TrustedProxyHeaders identifies the headers populated by the authenticating proxy.
+type TrustedProxyHeaders struct {
+	User   string
+	Groups string
+}
+
+// TrustedProxyRoleMapping defines how proxy groups map to Dagu authorization.
+type TrustedProxyRoleMapping struct {
+	DefaultRole            string
+	GroupMappings          map[string]string
+	WorkspaceMappings      map[string][]TrustedProxyWorkspaceGrant
+	DefaultWorkspaceAccess string
+	RequireMapping         bool
+	SkipOrgRoleSync        bool
+}
+
+// TrustedProxyWorkspaceGrant assigns a proxy group member a role in one workspace.
+type TrustedProxyWorkspaceGrant struct {
+	Workspace string `mapstructure:"workspace" json:"workspace" yaml:"workspace"`
+	Role      string `mapstructure:"role" json:"role" yaml:"role"`
+}
+
+const (
+	// TrustedProxyDefaultWorkspaceAccessAll grants unmatched users access to every workspace.
+	TrustedProxyDefaultWorkspaceAccessAll = "all"
+	// TrustedProxyDefaultWorkspaceAccessNone denies unmatched users access to named workspaces.
+	TrustedProxyDefaultWorkspaceAccessNone = "none"
+)
 
 // PathsConfig represents the file system paths configuration.
 type PathsConfig struct {
@@ -330,6 +395,33 @@ type PathsConfig struct {
 type SecretsConfig struct {
 	Vault      VaultSecretsConfig
 	Kubernetes KubernetesSecretsConfig
+	AWS        AWSSecretsConfig
+	GCP        GCPSecretsConfig
+	Azure      AzureSecretsConfig
+	Alibaba    AlibabaSecretsConfig
+}
+
+// AWSSecretsConfig holds shared AWS Secrets Manager client defaults.
+type AWSSecretsConfig struct {
+	Region string
+}
+
+// GCPSecretsConfig holds shared GCP Secret Manager client defaults.
+type GCPSecretsConfig struct {
+	ProjectID string
+	Location  string
+}
+
+// AzureSecretsConfig holds shared Azure Key Vault client defaults.
+type AzureSecretsConfig struct {
+	VaultURL string
+}
+
+// AlibabaSecretsConfig holds shared Alibaba Cloud KMS client defaults.
+type AlibabaSecretsConfig struct {
+	Region   string
+	Endpoint string
+	CAFile   string
 }
 
 // VaultSecretsConfig holds shared HashiCorp Vault client defaults.
@@ -481,6 +573,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.validateBasicAuth(); err != nil {
+		return err
+	}
+	if err := c.validateTrustedProxyAuth(); err != nil {
 		return err
 	}
 	if err := c.validateBuiltinAuth(); err != nil {
@@ -706,6 +801,9 @@ func (c *Config) validateBuiltinAuth() error {
 	if (ia.Username == "") != (ia.Password == "") {
 		return fmt.Errorf("auth.builtin.initial_admin requires both username and password to be set, or neither")
 	}
+	if err := validateOIDCWorkspaceMappings(c.Server.Auth.OIDC.RoleMapping); err != nil {
+		return err
+	}
 
 	if c.Server.Auth.OIDC.IsConfigured() {
 		return c.validateOIDCForBuiltin()
@@ -717,11 +815,8 @@ func (c *Config) validateBuiltinAuth() error {
 func (c *Config) validateOIDCForBuiltin() error {
 	oidc := c.Server.Auth.OIDC
 
-	switch oidc.RoleMapping.DefaultRole {
-	case "admin", "manager", "developer", "operator", "viewer":
-		// Valid roles
-	default:
-		return fmt.Errorf("OIDC roleMapping.defaultRole must be one of: admin, manager, developer, operator, viewer (got: %q)", oidc.RoleMapping.DefaultRole)
+	if _, err := auth.ParseRole(oidc.RoleMapping.DefaultRole); err != nil {
+		return fmt.Errorf("OIDC roleMapping.defaultRole: %w", err)
 	}
 
 	if !slices.Contains(oidc.Scopes, "email") {
@@ -731,6 +826,279 @@ func (c *Config) validateOIDCForBuiltin() error {
 		c.Warnings = append(c.Warnings, "OIDC scopes do not include 'email'; access control features will not work if added later")
 	}
 
+	return nil
+}
+
+func validateOIDCWorkspaceMappings(mapping OIDCRoleMapping) error {
+	if mapping.DefaultWorkspaceAccess == "" && len(mapping.WorkspaceMappings) > 0 {
+		return fmt.Errorf(
+			"OIDC roleMapping.defaultWorkspaceAccess must be explicitly set to all or none when workspaceMappings is configured",
+		)
+	}
+
+	switch mapping.DefaultWorkspaceAccess {
+	case "", OIDCDefaultWorkspaceAccessAll, OIDCDefaultWorkspaceAccessNone:
+	default:
+		return fmt.Errorf(
+			"OIDC roleMapping.defaultWorkspaceAccess must be one of: all, none (got: %q)",
+			mapping.DefaultWorkspaceAccess,
+		)
+	}
+
+	groups := make([]string, 0, len(mapping.WorkspaceMappings))
+	for group := range mapping.WorkspaceMappings {
+		groups = append(groups, group)
+	}
+	slices.Sort(groups)
+
+	for _, group := range groups {
+		if strings.TrimSpace(group) == "" {
+			return fmt.Errorf("OIDC roleMapping.workspaceMappings contains a blank group name")
+		}
+
+		grants := mapping.WorkspaceMappings[group]
+		if len(grants) == 0 {
+			return fmt.Errorf("OIDC roleMapping.workspaceMappings[%q] must contain at least one grant", group)
+		}
+
+		seenWorkspaces := make(map[string]struct{}, len(grants))
+		for i, grant := range grants {
+			if err := workspace.ValidateName(grant.Workspace); err != nil {
+				return fmt.Errorf(
+					"OIDC roleMapping.workspaceMappings[%q][%d].workspace %q is invalid: %w",
+					group, i, grant.Workspace, err,
+				)
+			}
+			if _, exists := seenWorkspaces[grant.Workspace]; exists {
+				return fmt.Errorf(
+					"OIDC roleMapping.workspaceMappings[%q] contains duplicate workspace %q",
+					group, grant.Workspace,
+				)
+			}
+			seenWorkspaces[grant.Workspace] = struct{}{}
+
+			role, err := auth.ParseRole(grant.Role)
+			if err != nil {
+				return fmt.Errorf(
+					"OIDC roleMapping.workspaceMappings[%q][%d].role: %w",
+					group, i, err,
+				)
+			}
+			if role == auth.RoleAdmin {
+				return fmt.Errorf(
+					"OIDC roleMapping.workspaceMappings[%q][%d].role must not be admin",
+					group, i,
+				)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (c *Config) validateTrustedProxyAuth() error {
+	trustedProxy := c.Server.Auth.Proxy
+	if err := validateTrustedProxySource(trustedProxy.Source); err != nil {
+		return err
+	}
+	if !trustedProxy.Enabled {
+		return nil
+	}
+	if c.Server.Auth.Mode != AuthModeBuiltin {
+		return fmt.Errorf("auth.proxy.enabled requires auth.mode to be builtin")
+	}
+	if c.Server.Headless {
+		return fmt.Errorf("auth.proxy.enabled is not supported when headless is true")
+	}
+	if c.Tunnel.Enabled {
+		return fmt.Errorf("auth.proxy.enabled is not supported when tunnel.enabled is true")
+	}
+	if err := validateTrustedProxyHeaderName("auth.proxy.headers.user", trustedProxy.Headers.User); err != nil {
+		return err
+	}
+	hasMappings := len(trustedProxy.RoleMapping.GroupMappings) > 0 || len(trustedProxy.RoleMapping.WorkspaceMappings) > 0
+	if trustedProxy.RoleMapping.RequireMapping && !hasMappings {
+		return fmt.Errorf("auth.proxy.role_mapping.require_mapping requires at least one group_mappings or workspace_mappings entry")
+	}
+	if hasMappings {
+		if trustedProxy.Headers.Groups == "" {
+			return fmt.Errorf("auth.proxy.headers.groups is required when role mappings are configured")
+		}
+	}
+	if trustedProxy.Headers.Groups != "" {
+		if err := validateTrustedProxyHeaderName("auth.proxy.headers.groups", trustedProxy.Headers.Groups); err != nil {
+			return err
+		}
+		if strings.EqualFold(trustedProxy.Headers.User, trustedProxy.Headers.Groups) {
+			return fmt.Errorf("auth.proxy.headers.user and auth.proxy.headers.groups must be different")
+		}
+	}
+	if err := validateProxyButtonLabel(trustedProxy.ButtonLabel); err != nil {
+		return err
+	}
+	return validateTrustedProxyRoleMapping(trustedProxy.RoleMapping)
+}
+
+func validateTrustedProxySource(source string) error {
+	const maxSourceRunes = 128
+	if source == "" {
+		return nil
+	}
+	if !utf8.ValidString(source) {
+		return fmt.Errorf("auth.proxy.source must be valid UTF-8")
+	}
+	if strings.TrimSpace(source) != source {
+		return fmt.Errorf("auth.proxy.source must not have surrounding whitespace")
+	}
+	if utf8.RuneCountInString(source) > maxSourceRunes {
+		return fmt.Errorf("auth.proxy.source must not exceed %d characters", maxSourceRunes)
+	}
+	for _, r := range source {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("auth.proxy.source must not contain control characters")
+		}
+	}
+	return nil
+}
+
+func validateTrustedProxyHeaderName(path, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s is required", path)
+	}
+	if !isHTTPFieldName(name) {
+		return fmt.Errorf("%s must be a valid HTTP header field name", path)
+	}
+	switch {
+	case strings.EqualFold(name, "Authorization"),
+		strings.EqualFold(name, "Cookie"),
+		strings.EqualFold(name, "Host"):
+		return fmt.Errorf("%s must not use the reserved header %q", path, name)
+	default:
+		return nil
+	}
+}
+
+func isHTTPFieldName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := range len(name) {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			continue
+		}
+		switch c {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validateProxyButtonLabel(label string) error {
+	const maxButtonLabelRunes = 128
+	if strings.TrimSpace(label) == "" {
+		return fmt.Errorf("auth.proxy.button_label must not be empty")
+	}
+	if !utf8.ValidString(label) {
+		return fmt.Errorf("auth.proxy.button_label must be valid UTF-8")
+	}
+	if utf8.RuneCountInString(label) > maxButtonLabelRunes {
+		return fmt.Errorf("auth.proxy.button_label must not exceed %d characters", maxButtonLabelRunes)
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("auth.proxy.button_label must not contain control characters")
+		}
+	}
+	return nil
+}
+
+func validateTrustedProxyRoleMapping(mapping TrustedProxyRoleMapping) error {
+	if _, err := auth.ParseRole(mapping.DefaultRole); err != nil {
+		return fmt.Errorf("auth.proxy.role_mapping.default_role: %w", err)
+	}
+	switch mapping.DefaultWorkspaceAccess {
+	case TrustedProxyDefaultWorkspaceAccessAll, TrustedProxyDefaultWorkspaceAccessNone:
+	default:
+		return fmt.Errorf(
+			"auth.proxy.role_mapping.default_workspace_access must be one of: all, none (got: %q)",
+			mapping.DefaultWorkspaceAccess,
+		)
+	}
+
+	groups := make([]string, 0, len(mapping.GroupMappings))
+	for group := range mapping.GroupMappings {
+		groups = append(groups, group)
+	}
+	slices.Sort(groups)
+	for _, group := range groups {
+		path := fmt.Sprintf("auth.proxy.role_mapping.group_mappings[%q]", group)
+		if err := validateTrustedProxyMappingGroup(path, group); err != nil {
+			return err
+		}
+		if _, err := auth.ParseRole(mapping.GroupMappings[group]); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	}
+
+	groups = groups[:0]
+	for group := range mapping.WorkspaceMappings {
+		groups = append(groups, group)
+	}
+	slices.Sort(groups)
+	for _, group := range groups {
+		path := fmt.Sprintf("auth.proxy.role_mapping.workspace_mappings[%q]", group)
+		if err := validateTrustedProxyMappingGroup(path, group); err != nil {
+			return err
+		}
+		grants := mapping.WorkspaceMappings[group]
+		if len(grants) == 0 {
+			return fmt.Errorf("%s must contain at least one grant", path)
+		}
+		seenWorkspaces := make(map[string]struct{}, len(grants))
+		for i, grant := range grants {
+			grantPath := fmt.Sprintf("%s[%d]", path, i)
+			if err := workspace.ValidateName(grant.Workspace); err != nil {
+				return fmt.Errorf("%s.workspace %q is invalid: %w", grantPath, grant.Workspace, err)
+			}
+			if _, exists := seenWorkspaces[grant.Workspace]; exists {
+				return fmt.Errorf("%s contains duplicate workspace %q", path, grant.Workspace)
+			}
+			seenWorkspaces[grant.Workspace] = struct{}{}
+			role, err := auth.ParseRole(grant.Role)
+			if err != nil {
+				return fmt.Errorf("%s.role: %w", grantPath, err)
+			}
+			if role == auth.RoleAdmin {
+				return fmt.Errorf("%s.role must not be admin", grantPath)
+			}
+		}
+	}
+
+	return nil
+}
+
+func validateTrustedProxyMappingGroup(path, group string) error {
+	if group == "" {
+		return fmt.Errorf("%s must not use an empty group name", path)
+	}
+	if strings.Trim(group, " \t") != group {
+		return fmt.Errorf("%s group name must not have surrounding whitespace", path)
+	}
+	if !utf8.ValidString(group) {
+		return fmt.Errorf("%s group name must be valid UTF-8", path)
+	}
+	if len(group) > 512 {
+		return fmt.Errorf("%s group name must not exceed 512 bytes", path)
+	}
+	for _, r := range group {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%s group name must not contain control characters", path)
+		}
+	}
 	return nil
 }
 

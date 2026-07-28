@@ -274,7 +274,7 @@ function ShellCodeBlock({ value }: { value: string }) {
 
   return (
     <BorderedBox className="max-h-72 overflow-auto bg-muted/30 p-0 dark:border-slate-700 dark:bg-slate-950">
-      <pre className="m-0 min-w-max text-xs leading-5 text-foreground selection:bg-primary/20 dark:text-slate-100 dark:selection:bg-sky-500/40 dark:selection:text-white">
+      <pre className="m-0 min-w-max text-xs leading-5 text-foreground selection:bg-primary/20 dark:text-slate-100 dark:selection:bg-violet-500/40 dark:selection:text-white">
         {lines.map((line, index) => (
           <div
             key={`${index}-${line}`}
@@ -283,7 +283,7 @@ function ShellCodeBlock({ value }: { value: string }) {
             <span className="select-none bg-muted px-2 py-0.5 text-right text-muted-foreground dark:bg-slate-900 dark:text-slate-500">
               {index + 1}
             </span>
-            <code className="whitespace-pre px-3 py-0.5 font-mono text-foreground selection:bg-primary/20 dark:text-slate-100 dark:selection:bg-sky-500/40 dark:selection:text-white">
+            <code className="whitespace-pre px-3 py-0.5 font-mono text-foreground selection:bg-primary/20 dark:text-slate-100 dark:selection:bg-violet-500/40 dark:selection:text-white">
               {line ? highlightShellLine(line) : '\u00a0'}
             </code>
           </div>
@@ -425,10 +425,10 @@ function highlightShellPlainSegment(
 }
 
 function getShellTokenClassName(token: string): string {
-  if (token.startsWith('$')) return 'text-cyan-700 dark:text-cyan-300';
+  if (token.startsWith('$')) return 'text-violet-700 dark:text-violet-300';
   if (SHELL_KEYWORDS.has(token))
     return 'font-medium text-purple-700 dark:text-purple-300';
-  if (/^--?/.test(token)) return 'text-sky-700 dark:text-sky-300';
+  if (/^--?/.test(token)) return 'text-amber-700 dark:text-amber-300';
   if (/^[|&;()<>]/.test(token)) return 'text-orange-700 dark:text-orange-300';
   if (/^\d+$/.test(token)) return 'text-amber-700 dark:text-amber-300';
   return 'text-foreground dark:text-slate-100';

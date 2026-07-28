@@ -185,133 +185,11 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 		}
 	}
 
-	// Channels for event loop
-	// Buffer size = total nodes to avoid blocking
-	readyCh := make(chan *Node, len(nodes))
-	doneCh := make(chan *Node, len(nodes))
-
-	// Find initial ready nodes
-	for _, node := range nodes {
-		if node.State().Status == core.NodeNotStarted && isReady(ctx, plan, node) {
-			logger.Debug(ctx, "Initial node ready", tag.Step(node.Name()))
-			readyCh <- node
-		}
+	if rCtx.DAG.IsController() {
+		r.runControllerLoop(ctx, plan, progressCh)
+	} else {
+		r.runGraphLoop(ctx, plan, nodes, progressCh)
 	}
-
-	var wg sync.WaitGroup
-	running := 0
-
-	// Event loop
-	ctxDoneCh := ctx.Done()
-	for !plan.CheckFinished() {
-		// If canceled and no running nodes, we are done
-		if r.isCanceled() && running == 0 {
-			break
-		}
-
-		var activeReadyCh chan *Node
-		// Only accept new nodes if:
-		// 1. Not canceled
-		// 2. maxActiveRuns is 0 (unlimited) OR running < maxActiveRuns
-		if !r.isCanceled() && (r.maxActiveRuns == 0 || running < r.maxActiveRuns) {
-			activeReadyCh = readyCh
-		}
-
-		// Check for Wait condition: no running nodes, no ready nodes, and waiting for approval.
-		nodeStates := plan.NodeStates()
-		if running == 0 && len(readyCh) == 0 && nodeStates.HasWaiting {
-			logger.Info(ctx, "DAG entering wait status - waiting for human approval")
-			break
-		}
-		if running == 0 && len(readyCh) == 0 && nodeStates.HasRetrying {
-			logger.Info(ctx, "DAG pending step retry - returning control to parent scheduler")
-			break
-		}
-
-		// Deadlock detection: if no nodes are running, no nodes are ready, and the graph is not finished,
-		// then we are stuck (nodes are waiting for dependencies that will never be satisfied).
-		if running == 0 && len(activeReadyCh) == 0 && !plan.CheckFinished() {
-			r.setLastError(ErrDeadlockDetected)
-			logger.Error(ctx, "Deadlock detected: no runnable nodes remaining")
-			break
-		}
-
-		select {
-		case node := <-activeReadyCh:
-			logger.Debug(ctx, "Processing ready node", tag.Step(node.Name()))
-			// Double check status - must be NotStarted to proceed
-			if node.State().Status != core.NodeNotStarted {
-				continue
-			}
-
-			// Immediately mark as running to prevent duplicate execution
-			// when multiple parents complete simultaneously
-			node.SetStatus(core.NodeRunning)
-
-			running++
-			wg.Add(1)
-
-			logger.Info(ctx, "Step started", tag.Step(node.Name()))
-
-			go func(n *Node) {
-				// Set step context for all logs in this goroutine
-				ctx := logger.WithValues(ctx, tag.Step(n.Name()))
-
-				// Ensure node is finished and wg is decremented
-				defer r.finishNode(n, &wg)
-				// Recover from panics and signal progress for status updates
-				defer r.recoverNodePanic(ctx, n, progressCh)
-				// Signal completion to runner loop
-				defer func() {
-					doneCh <- n
-				}()
-
-				// Anything evaluated during Prepare must see the node's real pre-execution env.
-				var err error
-				ctx, err = r.setupVariables(ctx, plan, n)
-				if err != nil {
-					r.setLastError(err)
-					n.MarkError(err)
-					n.SetStatus(core.NodeFailed)
-					return
-				}
-
-				if err := r.prepareNode(ctx, n); err != nil {
-					r.setLastError(err)
-					n.MarkError(err)
-					n.SetStatus(core.NodeFailed)
-					return
-				}
-
-				// Status already set to Running before goroutine spawn
-				// Send progress notification after successful preparation
-				if progressCh != nil {
-					progressCh <- n
-				}
-
-				r.runNodeExecution(ctx, plan, n, progressCh)
-			}(node)
-
-			if r.delay > 0 {
-				time.Sleep(r.delay)
-			}
-
-		case node := <-doneCh:
-			logger.Debug(ctx, "Node execution finished", tag.Step(node.Name()))
-			running--
-			r.processCompletedNode(ctx, plan, node, readyCh)
-
-		case <-ctxDoneCh:
-			r.mu.Lock()
-			if r.lastError == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				r.lastError = ctx.Err()
-			}
-			r.mu.Unlock()
-			ctxDoneCh = nil
-		}
-	}
-
-	wg.Wait()
 
 	// Collect final metrics
 	r.metrics.totalExecutionTime = time.Since(r.metrics.startTime)
@@ -369,7 +247,7 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 			}
 		}
 
-		logger.Info(ctx, "DAG waiting for approval")
+		logger.Info(ctx, "DAG waiting for human input")
 		return r.lastError
 
 	case core.Queued:
@@ -409,6 +287,142 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 	)
 
 	return r.lastError
+}
+
+// runGraphLoop runs dependency-ordered execution: every node whose dependencies
+// are satisfied is dispatched, up to the active-run limit.
+func (r *Runner) runGraphLoop(ctx context.Context, plan *Plan, nodes []*Node, progressCh chan *Node) {
+	// Channels for event loop
+	// Buffer size = total nodes to avoid blocking
+	readyCh := make(chan *Node, len(nodes))
+	doneCh := make(chan *Node, len(nodes))
+
+	// Find initial ready nodes
+	for _, node := range nodes {
+		if node.State().Status == core.NodeNotStarted && isReady(ctx, plan, node) {
+			logger.Debug(ctx, "Initial node ready", tag.Step(node.Name()))
+			readyCh <- node
+		}
+	}
+
+	var wg sync.WaitGroup
+	running := 0
+
+	// Event loop
+	ctxDoneCh := ctx.Done()
+	for !plan.CheckFinished() {
+		// If canceled and no running nodes, we are done
+		if r.isCanceled() && running == 0 {
+			break
+		}
+
+		var activeReadyCh chan *Node
+		// Only accept new nodes if:
+		// 1. Not canceled
+		// 2. maxActiveRuns is 0 (unlimited) OR running < maxActiveRuns
+		if !r.isCanceled() && (r.maxActiveRuns == 0 || running < r.maxActiveRuns) {
+			activeReadyCh = readyCh
+		}
+
+		// Check for Wait condition: no running nodes, no ready nodes, and waiting for manual completion.
+		nodeStates := plan.NodeStates()
+		if running == 0 && len(readyCh) == 0 && nodeStates.HasWaiting {
+			logger.Info(ctx, "DAG entering wait status - waiting for human input")
+			break
+		}
+		if running == 0 && len(readyCh) == 0 && nodeStates.HasRetrying {
+			logger.Info(ctx, "DAG pending step retry - returning control to parent scheduler")
+			break
+		}
+
+		// Deadlock detection: if no nodes are running, no nodes are ready, and the graph is not finished,
+		// then we are stuck (nodes are waiting for dependencies that will never be satisfied).
+		if running == 0 && len(activeReadyCh) == 0 && !plan.CheckFinished() {
+			r.setLastError(ErrDeadlockDetected)
+			logger.Error(ctx, "Deadlock detected: no runnable nodes remaining")
+			break
+		}
+
+		select {
+		case node := <-activeReadyCh:
+			logger.Debug(ctx, "Processing ready node", tag.Step(node.Name()))
+			// Double check status - must be NotStarted to proceed
+			if node.State().Status != core.NodeNotStarted {
+				continue
+			}
+
+			// Immediately mark as running to prevent duplicate execution
+			// when multiple parents complete simultaneously
+			node.SetStatus(core.NodeRunning)
+
+			running++
+			wg.Add(1)
+
+			logger.Info(ctx, "Step started", tag.Step(node.Name()))
+
+			go func(n *Node) {
+				// Set step context for all logs in this goroutine
+				ctx := logger.WithValues(ctx, tag.Step(n.Name()))
+
+				// Ensure node is finished and wg is decremented
+				defer r.finishNode(n, &wg)
+				// Recover from panics and signal progress for status updates
+				defer r.recoverNodePanic(ctx, n, progressCh)
+				// Signal completion to runner loop
+				defer func() {
+					doneCh <- n
+				}()
+
+				// Anything evaluated during Prepare must see the node's real pre-execution env.
+				var err error
+				ctx, err = r.setupVariables(ctx, plan, n)
+				if err != nil {
+					r.setLastError(err)
+					n.MarkError(err)
+					n.SetStatus(core.NodeFailed)
+					return
+				}
+				if n.Step().HumanTask != nil {
+					r.runHumanTask(ctx, plan, n, progressCh)
+					return
+				}
+
+				if err := r.prepareNode(ctx, n); err != nil {
+					r.setLastError(err)
+					n.MarkError(err)
+					n.SetStatus(core.NodeFailed)
+					return
+				}
+
+				// Status already set to Running before goroutine spawn
+				// Send progress notification after successful preparation
+				if progressCh != nil {
+					progressCh <- n
+				}
+
+				r.runNodeExecution(ctx, plan, n, progressCh)
+			}(node)
+
+			if r.delay > 0 {
+				time.Sleep(r.delay)
+			}
+
+		case node := <-doneCh:
+			logger.Debug(ctx, "Node execution finished", tag.Step(node.Name()))
+			running--
+			r.processCompletedNode(ctx, plan, node, readyCh)
+
+		case <-ctxDoneCh:
+			r.mu.Lock()
+			if r.lastError == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				r.lastError = ctx.Err()
+			}
+			r.mu.Unlock()
+			ctxDoneCh = nil
+		}
+	}
+
+	wg.Wait()
 }
 
 func (r *Runner) shouldRunFailureHandler(status core.Status) bool {
@@ -642,6 +656,41 @@ func (r *Runner) prepareNode(ctx context.Context, node *Node) error {
 		return nil
 	}
 	return node.Prepare(ctx, r.logDir, r.dagRunID)
+}
+
+func (r *Runner) runHumanTask(ctx context.Context, plan *Plan, node *Node, progressCh chan *Node) {
+	ctx = r.setupNodeExecutionEnv(ctx, node)
+	met, err := meetsPreconditions(ctx, node, progressCh)
+	if err != nil {
+		r.setLastError(err)
+		r.Cancel(plan)
+		return
+	}
+	if !met {
+		return
+	}
+
+	task := node.Step().HumanTask
+	prompt, err := resolveRuntimeString(ctx, task.Prompt, cmnvalue.WorkflowField("with.prompt"))
+	if err != nil {
+		err = fmt.Errorf("failed to evaluate human task prompt: %w", err)
+		r.setLastError(err)
+		node.MarkError(err)
+		node.SetStatus(core.NodeFailed)
+		if progressCh != nil {
+			progressCh <- node
+		}
+		return
+	}
+
+	if r.dry {
+		node.CompleteHumanTaskDryRun(prompt)
+	} else {
+		node.OpenHumanTask(prompt, time.Now())
+	}
+	if progressCh != nil {
+		progressCh <- node
+	}
 }
 
 func (r *Runner) teardownNode(node *Node) error {
@@ -1007,6 +1056,43 @@ func (r *Runner) HandlerNode(name core.HandlerType) *Node {
 	return nil
 }
 
+// handlersBeforeSteps and handlersAfterSteps list the lifecycle handlers by
+// when they run relative to the DAG's steps.
+var (
+	handlersBeforeSteps = []core.HandlerType{core.HandlerOnInit}
+	handlersAfterSteps  = []core.HandlerType{
+		core.HandlerOnWait,
+		core.HandlerOnSuccess,
+		core.HandlerOnFailure,
+		core.HandlerOnAbort,
+		core.HandlerOnExit,
+	}
+)
+
+// NodesInRunOrder returns the plan's step nodes together with the lifecycle
+// handler nodes that were configured, ordered by when they run. Handlers that
+// the DAG does not declare are omitted.
+func (r *Runner) NodesInRunOrder(plan *Plan) []*Node {
+	var steps []*Node
+	if plan != nil {
+		steps = plan.Nodes()
+	}
+
+	nodes := make([]*Node, 0, len(steps)+len(handlersBeforeSteps)+len(handlersAfterSteps))
+	for _, handler := range handlersBeforeSteps {
+		if node := r.HandlerNode(handler); node != nil {
+			nodes = append(nodes, node)
+		}
+	}
+	nodes = append(nodes, steps...)
+	for _, handler := range handlersAfterSteps {
+		if node := r.HandlerNode(handler); node != nil {
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes
+}
+
 // isCanceled returns true if the runner is canceled.
 func (r *Runner) isCanceled() bool {
 	r.mu.RLock()
@@ -1083,7 +1169,7 @@ func isReady(ctx context.Context, plan *Plan, node *Node) bool {
 			return false
 
 		case core.NodeWaiting:
-			logger.Debug(ctx, "Dependency waiting for approval",
+			logger.Debug(ctx, "Dependency waiting for manual completion",
 				tag.Step(node.Name()), tag.Dependency(dep.Name()))
 			return false
 
@@ -1383,12 +1469,16 @@ func (r *Runner) finishNode(node *Node, wg *sync.WaitGroup) {
 	case core.NodeAborted:
 		r.metrics.canceledNodes++
 	case core.NodeWaiting, core.NodeNotStarted, core.NodeRunning, core.NodeRetrying:
-		// Waiting nodes are counted when they complete after approval.
+		// Waiting nodes are counted when they complete after manual input.
 		// NotStarted/Running should not happen at this point.
 	}
 
-	node.Finish()
-	wg.Done()
+	if node.State().Status != core.NodeWaiting || node.Step().HumanTask == nil {
+		node.Finish()
+	}
+	if wg != nil {
+		wg.Done()
+	}
 }
 
 func externalStepRetryEnabled(ctx context.Context) bool {
@@ -1655,6 +1745,21 @@ func addPlanPredecessorStepsToEnv(env *Env, plan *Plan, node *Node) {
 func planPredecessorNodes(plan *Plan, node *Node) []*Node {
 	if plan == nil || node == nil {
 		return nil
+	}
+
+	// A controller plan has no edges: the controller picks the order, so every
+	// action it has already run is upstream of the one starting now.
+	if plan.IsController() {
+		var nodes []*Node
+		for _, candidate := range plan.Nodes() {
+			if candidate.ID() == node.ID() || candidate.Name() == core.ControllerStepName {
+				continue
+			}
+			if candidate.State().Status.IsDone() {
+				nodes = append(nodes, candidate)
+			}
+		}
+		return nodes
 	}
 
 	visited := make(map[int]struct{})

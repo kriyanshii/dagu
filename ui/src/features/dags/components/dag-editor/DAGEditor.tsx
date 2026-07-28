@@ -6,6 +6,11 @@
  *
  * @module features/dags/components/dag-editor
  */
+import {
+  KILN_DARK,
+  KILN_LIGHT,
+  registerKilnThemes,
+} from '@/lib/monaco-theme';
 import type { JSONSchema } from '@/lib/schema-utils';
 import { cn } from '@/lib/utils';
 import MonacoEditor, { loader } from '@monaco-editor/react';
@@ -38,6 +43,8 @@ const monacoYaml = configureMonacoYaml(monaco, {
 });
 
 loader.config({ monaco });
+
+registerKilnThemes();
 
 async function refreshRegisteredSchemas() {
   await monacoYaml.update({
@@ -161,8 +168,8 @@ function DAGEditor({
   useEffect(() => {
     if (editorRef.current) {
       const newTheme = document.documentElement.classList.contains('dark')
-        ? 'vs-dark'
-        : 'vs';
+        ? KILN_DARK
+        : KILN_LIGHT;
       monaco.editor.setTheme(newTheme);
     }
   }, []);
@@ -177,8 +184,8 @@ function DAGEditor({
         ) {
           if (editorRef.current) {
             const newTheme = document.documentElement.classList.contains('dark')
-              ? 'vs-dark'
-              : 'vs';
+              ? KILN_DARK
+              : KILN_LIGHT;
             monaco.editor.setTheme(newTheme);
           }
         }
@@ -263,7 +270,7 @@ function DAGEditor({
         height="100%"
         language="yaml"
         path={effectiveModelUri}
-        theme={isDarkMode ? 'vs-dark' : 'vs'}
+        theme={isDarkMode ? KILN_DARK : KILN_LIGHT}
         value={value}
         onChange={readOnly ? undefined : onChange}
         onMount={editorDidMount}

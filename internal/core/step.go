@@ -119,6 +119,8 @@ type Step struct {
 	// Approval configures a human approval gate after step execution.
 	// When set, the step pauses in Waiting state after execution completes.
 	Approval *ApprovalConfig `json:"approval,omitempty"`
+	// HumanTask configures a processless step completed by a local operator.
+	HumanTask *HumanTaskConfig `json:"humanTask,omitempty"`
 }
 
 const (
@@ -427,6 +429,12 @@ type ApprovalConfig struct {
 	RewindTo string `json:"rewindTo,omitempty"`
 }
 
+// HumanTaskConfig defines the prompt and input form for a human task step.
+type HumanTaskConfig struct {
+	Prompt string          `json:"prompt,omitempty"`
+	Form   json.RawMessage `json:"form,omitempty"`
+}
+
 const (
 	// ExecutorTypeDAG is the executor type for a sub DAG.
 	ExecutorTypeDAG = "dag"
@@ -442,6 +450,10 @@ const (
 
 	// ExecutorTypeRouter is the executor type for router steps.
 	ExecutorTypeRouter = "router"
+
+	// ExecutorTypeController is the executor type for the synthesized step that
+	// drives a controller DAG.
+	ExecutorTypeController = "controller"
 
 	// ExecutorTypeAction is the executor type for external Dagu actions.
 	ExecutorTypeAction = "action"

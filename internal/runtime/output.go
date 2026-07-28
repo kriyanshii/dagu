@@ -101,6 +101,13 @@ func (oc *OutputCoordinator) setupMasker(ctx context.Context, _ NodeData) error 
 }
 
 func (oc *OutputCoordinator) setup(ctx context.Context, data NodeData) error {
+	// This attempt gets its own writers, so the closed latch from the previous
+	// one must not survive: it guards every flush path, and a set latch would
+	// drop this attempt's buffered output on teardown.
+	oc.mu.Lock()
+	oc.closed = false
+	oc.mu.Unlock()
+
 	if err := oc.setupMasker(ctx, data); err != nil {
 		return fmt.Errorf("failed to setup masker: %w", err)
 	}
@@ -189,6 +196,14 @@ func (oc *OutputCoordinator) setupExecutorIO(ctx context.Context, cmd executor.E
 }
 
 func (oc *OutputCoordinator) flushWriters() error {
+	return oc.flushWritersWithMode(false)
+}
+
+func (oc *OutputCoordinator) flushWritersIfDue() error {
+	return oc.flushWritersWithMode(true)
+}
+
+func (oc *OutputCoordinator) flushWritersWithMode(ifDue bool) error {
 	oc.mu.Lock()
 	defer oc.mu.Unlock()
 
@@ -200,6 +215,14 @@ func (oc *OutputCoordinator) flushWriters() error {
 	for _, w := range []io.Writer{oc.stdoutWriter, oc.stderrWriter, oc.stdoutRedirectWriter, oc.stderrRedirectWriter} {
 		if w == nil {
 			continue
+		}
+		if ifDue {
+			if v, ok := w.(interface{ FlushIfDue() error }); ok {
+				if err := v.FlushIfDue(); err != nil {
+					lastErr = err
+				}
+				continue
+			}
 		}
 		switch v := w.(type) {
 		case interface{ Flush() error }:

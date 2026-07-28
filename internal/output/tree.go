@@ -99,16 +99,18 @@ func (r *Renderer) RenderDAGStatus(dag *core.DAG, status *exec.DAGRunStatus) str
 	buf.WriteString(r.renderDAGLine(dag, status))
 	buf.WriteString("\n")
 
+	nodes := status.NodesInRunOrder()
+
 	if status.Log != "" {
-		buf.WriteString(r.renderSchedulerLog(status.Log, len(status.Nodes) > 0))
+		buf.WriteString(r.renderSchedulerLog(status.Log, len(nodes) > 0))
 	}
 
-	if len(status.Nodes) > 0 {
+	if len(nodes) > 0 {
 		buf.WriteString("│\n")
 	}
 
-	for i, node := range status.Nodes {
-		buf.WriteString(r.renderStep(node, i == len(status.Nodes)-1, ""))
+	for i, node := range nodes {
+		buf.WriteString(r.renderStep(node, i == len(nodes)-1, ""))
 	}
 
 	buf.WriteString(r.renderFinalStatus(status))
@@ -182,8 +184,16 @@ func (r *Renderer) renderStepContent(node *exec.Node, isLast bool, prefix string
 	hasOutput := r.hasOutput(node)
 	hasError := node.Error != "" && node.Status == core.NodeFailed
 	hasSubRuns := len(node.SubRuns) > 0
+	hasHumanTask := node.Status == core.NodeWaiting && node.Step.HumanTask != nil
 
-	wroteField := r.renderCommands(&buf, node, cPrefix, hasOutput, hasError, hasSubRuns)
+	hasFollowingContent := hasOutput || hasError || hasSubRuns || hasHumanTask
+	wroteField := r.renderCommands(&buf, node, cPrefix, hasFollowingContent)
+
+	if hasHumanTask {
+		r.addFieldSpacing(&buf, wroteField, cPrefix)
+		buf.WriteString(r.renderHumanTask(node, !hasOutput && !hasError && !hasSubRuns, cPrefix))
+		wroteField = true
+	}
 
 	if hasOutput {
 		r.addFieldSpacing(&buf, wroteField, cPrefix)
@@ -206,9 +216,7 @@ func (r *Renderer) renderStepContent(node *exec.Node, isLast bool, prefix string
 }
 
 // renderCommands renders step commands and returns true if any were written.
-func (r *Renderer) renderCommands(buf *strings.Builder, node *exec.Node, cPrefix string, hasOutput, hasError, hasSubRuns bool) bool {
-	hasFollowingContent := hasOutput || hasError || hasSubRuns
-
+func (r *Renderer) renderCommands(buf *strings.Builder, node *exec.Node, cPrefix string, hasFollowingContent bool) bool {
 	if len(node.Step.Commands) > 0 {
 		for i, cmd := range node.Step.Commands {
 			isLastCmd := i == len(node.Step.Commands)-1 && !hasFollowingContent
@@ -224,6 +232,33 @@ func (r *Renderer) renderCommands(buf *strings.Builder, node *exec.Node, cPrefix
 	}
 
 	return false
+}
+
+func (r *Renderer) renderHumanTask(node *exec.Node, isLastSection bool, prefix string) string {
+	details := []string{
+		"step id: " + node.Step.ID,
+		"prompt: " + node.Step.HumanTask.Prompt,
+	}
+	if len(node.Step.HumanTask.Form) > 0 {
+		details = append(details, "form: "+string(node.Step.HumanTask.Form))
+	}
+
+	var buf strings.Builder
+	var lines []string
+	for _, detail := range details {
+		detail = strings.ReplaceAll(detail, "\r\n", "\n")
+		detail = strings.ReplaceAll(detail, "\r", "\n")
+		lines = append(lines, strings.Split(detail, "\n")...)
+	}
+	for i, line := range lines {
+		isLast := isLastSection && i == len(lines)-1
+		if len(line) != len([]rune(line)) {
+			buf.WriteString(prefix + branchChar(isLast) + r.text(line) + "\n")
+			continue
+		}
+		buf.WriteString(r.renderCommandLine(line, isLast, prefix))
+	}
+	return buf.String()
 }
 
 // addFieldSpacing adds vertical spacing between fields if needed.

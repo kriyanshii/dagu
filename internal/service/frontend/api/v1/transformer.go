@@ -4,7 +4,9 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"os"
 	"time"
@@ -13,6 +15,8 @@ import (
 	"github.com/dagucloud/dagu/internal/cmn/fileutil"
 	"github.com/dagucloud/dagu/internal/core"
 	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/internal/humantask"
+	"github.com/dagucloud/dagu/internal/runtime/controller"
 )
 
 const maxIntValue = int(^uint(0) >> 1)
@@ -174,6 +178,22 @@ func toStep(obj core.Step) api.Step {
 		}
 	}
 
+	if obj.HumanTask != nil {
+		humanTask := &api.HumanTaskConfig{Prompt: obj.HumanTask.Prompt}
+		if len(obj.HumanTask.Form) > 0 {
+			var form map[string]any
+			decoder := json.NewDecoder(bytes.NewReader(obj.HumanTask.Form))
+			decoder.UseNumber()
+			if err := decoder.Decode(&form); err == nil && form != nil {
+				var extra any
+				if err := decoder.Decode(&extra); err == io.EOF {
+					humanTask.Form = &form
+				}
+			}
+		}
+		step.HumanTask = humanTask
+	}
+
 	if obj.Router != nil {
 		routes := make([]struct {
 			Pattern string   `json:"pattern"`
@@ -301,6 +321,7 @@ func toDAGRunSummary(s exec.DAGRunStatus) api.DAGRunSummary {
 		StatusLabel:        api.StatusLabel(s.Status.String()),
 		WorkerId:           ptrOf(s.WorkerID),
 		TriggerType:        toTriggerType(s.TriggerType),
+		TriggerActor:       ptrOf(s.TriggerActor),
 		Labels:             &s.Labels,
 		Tags:               &s.Labels,
 	}
@@ -341,38 +362,48 @@ func ToDAGRunDetails(s exec.DAGRunStatus) api.DAGRunDetails {
 		autoRetryLimit = ptrOf(s.AutoRetryLimit)
 	}
 	artifactsAvailable := hasArtifactEntries(s.ArchiveDir)
+	var humanTaskResumePending *bool
+	if humantask.ResumePending(&s) {
+		humanTaskResumePending = ptrOf(true)
+	}
 
 	return api.DAGRunDetails{
-		RootDAGRunName:     s.Root.Name,
-		RootDAGRunId:       s.Root.ID,
-		ParentDAGRunName:   ptrOf(s.Parent.Name),
-		ParentDAGRunId:     ptrOf(s.Parent.ID),
-		ArtifactsAvailable: artifactsAvailable,
-		Log:                s.Log,
-		Name:               s.Name,
-		Params:             ptrOf(s.Params),
-		DagRunId:           s.DAGRunID,
-		Workspace:          workspaceResponseNameFromLabelStrings(s.Labels),
-		ProfileName:        toRuntimeProfileName(s.ProfileName),
-		QueuedAt:           ptrOf(s.QueuedAt),
-		AutoRetryCount:     s.AutoRetryCount,
-		AutoRetryLimit:     autoRetryLimit,
-		Conditions:         toDAGRunConditions(s.Status, s.Conditions),
-		ScheduleTime:       ptrOf(s.ScheduleTime),
-		StartedAt:          s.StartedAt,
-		FinishedAt:         s.FinishedAt,
-		Status:             api.Status(s.Status),
-		StatusLabel:        api.StatusLabel(s.Status.String()),
-		WorkerId:           ptrOf(s.WorkerID),
-		TriggerType:        toTriggerType(s.TriggerType),
-		Preconditions:      ptrOf(preconditions),
-		Nodes:              nodes,
-		OnSuccess:          ptrOf(toNode(s.OnSuccess)),
-		OnFailure:          ptrOf(toNode(s.OnFailure)),
-		OnAbort:            ptrOf(toNode(s.OnAbort)),
-		OnExit:             ptrOf(toNode(s.OnExit)),
-		Labels:             &s.Labels,
-		Tags:               &s.Labels,
+		ControllerTasks:        controllerTaskProgress(s.Nodes),
+		ControllerEvents:       controllerTimeline(s.Nodes),
+		RootDAGRunName:         s.Root.Name,
+		RootDAGRunId:           s.Root.ID,
+		ParentDAGRunName:       ptrOf(s.Parent.Name),
+		ParentDAGRunId:         ptrOf(s.Parent.ID),
+		ArtifactsAvailable:     artifactsAvailable,
+		Log:                    s.Log,
+		Name:                   s.Name,
+		Params:                 ptrOf(s.Params),
+		DagRunId:               s.DAGRunID,
+		Workspace:              workspaceResponseNameFromLabelStrings(s.Labels),
+		ProfileName:            toRuntimeProfileName(s.ProfileName),
+		QueuedAt:               ptrOf(s.QueuedAt),
+		AutoRetryCount:         s.AutoRetryCount,
+		AutoRetryLimit:         autoRetryLimit,
+		Conditions:             toDAGRunConditions(s.Status, s.Conditions),
+		ScheduleTime:           ptrOf(s.ScheduleTime),
+		StartedAt:              s.StartedAt,
+		FinishedAt:             s.FinishedAt,
+		Status:                 api.Status(s.Status),
+		StatusLabel:            api.StatusLabel(s.Status.String()),
+		WorkerId:               ptrOf(s.WorkerID),
+		HumanTaskResumePending: humanTaskResumePending,
+		TriggerType:            toTriggerType(s.TriggerType),
+		TriggerActor:           ptrOf(s.TriggerActor),
+		Preconditions:          ptrOf(preconditions),
+		Nodes:                  nodes,
+		OnInit:                 ptrOf(toNode(s.OnInit)),
+		OnSuccess:              ptrOf(toNode(s.OnSuccess)),
+		OnFailure:              ptrOf(toNode(s.OnFailure)),
+		OnAbort:                ptrOf(toNode(s.OnAbort)),
+		OnExit:                 ptrOf(toNode(s.OnExit)),
+		OnWait:                 ptrOf(toNode(s.OnWait)),
+		Labels:                 &s.Labels,
+		Tags:                   &s.Labels,
 	}
 }
 
@@ -404,27 +435,31 @@ func toNode(node *exec.Node) api.Node {
 		return api.Node{}
 	}
 	return api.Node{
-		DoneCount:         node.DoneCount,
-		FinishedAt:        node.FinishedAt,
-		Stdout:            node.Stdout,
-		Stderr:            node.Stderr,
-		RetryCount:        node.RetryCount,
-		StartedAt:         node.StartedAt,
-		Status:            api.NodeStatus(node.Status),
-		StatusLabel:       api.NodeStatusLabel(node.Status.String()),
-		Step:              toStep(node.Step),
-		Error:             ptrOf(node.Error),
-		SubRuns:           ptrOf(toSubDAGRuns(node.SubRuns)),
-		SubRunsRepeated:   ptrOf(toSubDAGRuns(node.SubRunsRepeated)),
-		ApprovedAt:        ptrOf(node.ApprovedAt),
-		ApprovedBy:        ptrOf(node.ApprovedBy),
-		ApprovalInputs:    ptrOf(node.ApprovalInputs),
-		PushBackInputs:    ptrOf(node.PushBackInputs),
-		PushBackHistory:   ptrOf(toPushBackHistory(node)),
-		RejectedAt:        ptrOf(node.RejectedAt),
-		RejectedBy:        ptrOf(node.RejectedBy),
-		RejectionReason:   ptrOf(node.RejectionReason),
-		ApprovalIteration: ptrOf(node.ApprovalIteration),
+		DoneCount:              node.DoneCount,
+		FinishedAt:             node.FinishedAt,
+		Stdout:                 node.Stdout,
+		Stderr:                 node.Stderr,
+		RetryCount:             node.RetryCount,
+		StartedAt:              node.StartedAt,
+		Status:                 api.NodeStatus(node.Status),
+		StatusLabel:            api.NodeStatusLabel(node.Status.String()),
+		Step:                   toStep(node.Step),
+		Error:                  ptrOf(node.Error),
+		SubRuns:                ptrOf(toSubDAGRuns(node.SubRuns)),
+		SubRunsRepeated:        ptrOf(toSubDAGRuns(node.SubRunsRepeated)),
+		HumanTaskCompletedBy:   ptrOf(node.HumanTaskCompletedBy),
+		HumanTaskCompletedById: ptrOf(node.HumanTaskCompletedByID),
+		ApprovedAt:             ptrOf(node.ApprovedAt),
+		ApprovedBy:             ptrOf(node.ApprovedBy),
+		ApprovedById:           ptrOf(node.ApprovedByID),
+		ApprovalInputs:         ptrOf(node.ApprovalInputs),
+		PushBackInputs:         ptrOf(node.PushBackInputs),
+		PushBackHistory:        ptrOf(toPushBackHistory(node)),
+		RejectedAt:             ptrOf(node.RejectedAt),
+		RejectedBy:             ptrOf(node.RejectedBy),
+		RejectedById:           ptrOf(node.RejectedByID),
+		RejectionReason:        ptrOf(node.RejectionReason),
+		ApprovalIteration:      ptrOf(node.ApprovalIteration),
 	}
 }
 
@@ -452,6 +487,7 @@ func toPushBackHistory(node *exec.Node) []api.PushBackHistoryEntry {
 		items[i] = api.PushBackHistoryEntry{
 			Iteration: entry.Iteration,
 			By:        ptrOf(entry.By),
+			ById:      ptrOf(entry.ByID),
 			Inputs:    ptrOf(entry.Inputs),
 		}
 		if entry.At != "" {
@@ -530,6 +566,8 @@ func toDAGDetails(dag *core.DAG) *api.DAGDetails {
 	}
 
 	return &api.DAGDetails{
+		Type:              controllerDAGType(dag.Type),
+		Tasks:             declaredControllerTasks(dag),
 		Artifacts:         artifacts,
 		Name:              dag.Name,
 		Description:       ptrOf(dag.Description),
@@ -554,6 +592,91 @@ func toDAGDetails(dag *core.DAG) *api.DAGDetails {
 		Tags:              ptrOf(dag.Labels.Strings()),
 		RunConfig:         runConfig,
 	}
+}
+
+// controllerDAGType exposes the DAG execution type, which the UI uses to decide
+// whether controller-specific views apply.
+func controllerDAGType(dagType string) *api.DAGDetailsType {
+	if dagType == "" {
+		return nil
+	}
+	return ptrOf(api.DAGDetailsType(dagType))
+}
+
+// declaredControllerTasks lists the goals a controller DAG declares, before any
+// run has made progress against them.
+func declaredControllerTasks(dag *core.DAG) *[]api.ControllerTask {
+	if len(dag.Tasks) == 0 {
+		return nil
+	}
+	tasks := make([]api.ControllerTask, 0, len(dag.Tasks))
+	for _, task := range dag.Tasks {
+		tasks = append(tasks, api.ControllerTask{
+			Name:        task.Name,
+			Description: ptrOf(task.Description),
+			Status:      api.ControllerTaskStatusOpen,
+		})
+	}
+	return &tasks
+}
+
+// controllerTimeline reports the ordered decisions a controller DAG-run made.
+func controllerTimeline(nodes []*exec.Node) *[]api.ControllerEvent {
+	for _, node := range nodes {
+		if node == nil || node.Step.Name != core.ControllerStepName {
+			continue
+		}
+		recorded := controller.EventsFromState(node.ControllerState)
+		if len(recorded) == 0 {
+			return nil
+		}
+		events := make([]api.ControllerEvent, 0, len(recorded))
+		for _, e := range recorded {
+			events = append(events, api.ControllerEvent{
+				Turn:          e.Turn,
+				Kind:          api.ControllerEventKind(e.Kind),
+				Name:          ptrOf(e.Name),
+				Status:        ptrOf(e.Status),
+				Attempt:       ptrOf(e.Attempt),
+				Reason:        ptrOf(e.Reason),
+				StartedAt:     ptrOf(e.StartedAt),
+				FinishedAt:    ptrOf(e.FinishedAt),
+				ChildDagRunId: ptrOf(e.ChildDAGRunID),
+				ChildDagName:  ptrOf(e.ChildDAGName),
+			})
+		}
+		return &events
+	}
+	return nil
+}
+
+// controllerTaskProgress reports goal progress recorded by the controller step
+// of a controller DAG-run.
+func controllerTaskProgress(nodes []*exec.Node) *[]api.ControllerTask {
+	for _, node := range nodes {
+		if node == nil || node.Step.Name != core.ControllerStepName {
+			continue
+		}
+		states := controller.TasksFromState(node.ControllerState)
+		if len(states) == 0 {
+			return nil
+		}
+		tasks := make([]api.ControllerTask, 0, len(states))
+		for _, state := range states {
+			status := state.Status
+			if status == "" {
+				status = controller.TaskOpen
+			}
+			tasks = append(tasks, api.ControllerTask{
+				Name:        state.Name,
+				Description: ptrOf(state.Description),
+				Status:      api.ControllerTaskStatus(status),
+				Reason:      ptrOf(state.Reason),
+			})
+		}
+		return &tasks
+	}
+	return nil
 }
 
 func toJSONObject(raw json.RawMessage) *map[string]any {

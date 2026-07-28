@@ -77,6 +77,91 @@ steps:
 
 Dagu can drive Docker or Podman through a Docker-compatible API. Runtime selection is service-level, not a DAG YAML field. Set `DAGU_CONTAINER_RUNTIME=podman` for Podman. Set `DAGU_PODMAN_HOST` only when the Podman socket is not the default.
 
+## git.worktree.add / git.worktree.remove
+
+Create isolated working directories for branches in an existing local Git repository. The actions discover the repository from the step `working_dir`; they do not clone, fetch, or push.
+
+This example creates a generated branch, runs tests inside its worktree, and then removes the worktree explicitly:
+
+```yaml
+working_dir: ./repo
+
+steps:
+  - id: worktree
+    action: git.worktree.add
+
+  - id: test
+    depends: worktree
+    working_dir: "${steps.worktree.outputs.path}"
+    run: go test ./...
+
+  - id: remove_worktree
+    depends: test
+    action: git.worktree.remove
+    with:
+      path: "${steps.worktree.outputs.path}"
+```
+
+When `branch` is omitted, Dagu generates a stable branch name for that step and DAG run. The default path is `<repository-root>.worktrees/<branch>`.
+
+To create an explicit branch from a local commit, branch, `origin` remote-tracking branch, or tag:
+
+```yaml
+working_dir: ./repo
+
+steps:
+  - id: worktree
+    action: git.worktree.add
+    with:
+      branch: feature/api
+      create_branch: true
+      base: main
+      path: ../worktrees/feature-api
+```
+
+`git.worktree.add` fields:
+
+- `branch` - local branch to check out. Omit it to let Dagu generate one.
+- `path` - worktree directory. Relative paths resolve from the repository root.
+- `create_branch` - allow creation of an explicitly named branch. Defaults to `false`.
+- `base` - local commit, branch, remote-tracking branch, or tag used when creating the branch. Defaults to repository `HEAD`.
+
+The add action is idempotent. It reuses a matching registered worktree without resetting its branch or discarding local changes. Worktrees remain registered until an explicit remove action or an external Git command removes them.
+
+Use `git.worktree.remove` for explicit removal:
+
+```yaml
+working_dir: ./repo
+
+steps:
+  - id: worktree
+    action: git.worktree.add
+
+  - id: remove_worktree
+    depends: worktree
+    action: git.worktree.remove
+    with:
+      path: "${steps.worktree.outputs.path}"
+      branch: "${steps.worktree.outputs.branch}"
+      delete_branch: true
+```
+
+`git.worktree.remove` fields:
+
+- `branch` and `path` - provide either selector or both. When both resolve to a worktree, they must identify the same registration.
+- `force` - remove a dirty worktree. Defaults to `false`.
+- `delete_branch` - delete the local branch after removing the worktree. Requires `branch`.
+- `force_delete_branch` - allow deletion of an unmerged branch. Requires `delete_branch: true`.
+
+`force` and `force_delete_branch` protect different data: `force` permits removal of local worktree changes, while `force_delete_branch` permits deletion of unmerged commits.
+
+Both actions publish fixed outputs. Do not add `output`, `outputs`, or `stdout.outputs` to these steps. Read results through `${steps.<id>.outputs.<field>}`.
+
+- Add outputs: `path`, `branch`, `commit`, `worktree_created`, `branch_created`.
+- Remove outputs: `path`, `branch`, `worktree_removed`, `branch_deleted`.
+
+Dagu refuses to remove the primary working tree. Worktree mutations against the same repository are serialized, but Git changes made outside Dagu are not covered by that lock.
+
 ## dag.run
 
 Execute another DAG as a child DAG.
@@ -92,6 +177,63 @@ steps:
 ```
 
 Sub-DAGs do not inherit parent env vars. Pass values explicitly via `with.params`.
+
+## human.task
+
+Pause a root DAG run until an operator completes a processless step. A human task does not execute a command and is distinct from an approval gate: completion always succeeds the step, with no reject or rewind operation.
+
+```yaml
+params:
+  RELEASE: v1.2.3
+
+steps:
+  - id: review
+    action: human.task
+    with:
+      prompt: Select a deployment window for ${params.RELEASE}
+      form:
+        type: object
+        title: Deployment review
+        properties:
+          window:
+            type: string
+            enum: [morning, evening]
+          ticket:
+            type: string
+            pattern: '^CHG-[0-9]+$'
+          notify:
+            type: boolean
+            default: true
+        required: [window, ticket]
+
+  - id: deploy
+    depends: [review]
+    run: ./deploy --window '${steps.review.outputs.window}' --ticket '${steps.review.outputs.ticket}'
+```
+
+`with.prompt` is required and supports normal Dagu value references. `with.form` is optional; omit it for an acknowledgement-only task that accepts no input.
+
+The form is a flat object JSON Schema:
+
+- `type` must be `object`.
+- Property names must start with a letter and contain only letters, digits, or `_`.
+- Property types are `string`, `integer`, `number`, and `boolean`.
+- Supported property constraints include `default`, `enum`, `oneOf` choices, `minimum`, `maximum`, `minLength`, `maxLength`, and `pattern`.
+- `additionalProperties` defaults to `false`. Set it explicitly to `true` only when undeclared completion fields are intended.
+
+Dagu derives outputs from form properties; do not add an `outputs:` field to the human task. Every declared property is a step output, published when submitted or defaulted, and available as `${steps.<step_id>.outputs.<name>}`.
+
+Human tasks require an explicit `id` and cannot be used in sub-DAGs, lifecycle handlers, or `foreach.steps`. A root DAG containing human tasks can run locally or on a distributed worker selected by its DAG-level `worker_selector`. Executor, retry, repeat, timeout, container, step-level worker selector, output capture, and approval fields are not supported on the same step.
+
+Complete a waiting task from a local CLI context:
+
+```sh
+dagu human-task complete --run-id=<run-id> --step=review --input window=morning --input ticket=CHG-123 <dag-name>
+```
+
+Use `--inputs-json` instead of repeated `--input` flags when input types must be preserved exactly.
+
+Completing the last waiting human task resumes a local run directly. A distributed run is re-queued, so its scheduler must be running.
 
 ## Declared Step Outputs
 
@@ -330,7 +472,7 @@ steps:
     output: RESULT
 ```
 
-`with.template` is required and is rendered as a template, not executed as shell. `with.output` writes rendered content to a file; top-level `output:` captures or publishes step output.
+Set exactly one of `with.template` or `with.template_ref`. `with.template` is literal template text. `with.template_ref` must be one complete canonical Dagu reference such as `${env.TEMPLATE}` or `${steps.fetch.outputs.template}`; it resolves once to a non-empty string, and references inside the resulting template remain literal. The selected text is rendered as a template, not executed as shell. `with.output` writes rendered content to a file; top-level `output:` captures or publishes step output.
 
 ## file.stat / file.read / file.write / file.copy / file.move / file.delete / file.mkdir / file.list
 
@@ -498,7 +640,7 @@ Harness behavior:
 - Built-in provider adapters and custom providers pass non-reserved `with` keys as CLI flags. Built-in adapters normalize `snake_case` keys to kebab-case flags.
 - `fallback` is an ordered list of provider configs. Nested fallback is not supported.
 - Provider value references must resolve to a concrete provider string before execution. Unresolved `${...}` provider values fail at runtime.
-- Prefer `action: harness.run` for new workflows. A top-level `harness:` config still causes steps without an explicit executor type to infer the harness executor for compatibility.
+- A harness step is named with `action: harness.run`. A top-level `harness:` config supplies defaults to those steps and does not set the type of any other step, so a step written with `run:`, `exec:`, or `script:` under one stays a local command.
 
 Container support:
 

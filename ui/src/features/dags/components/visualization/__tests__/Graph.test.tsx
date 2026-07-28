@@ -71,10 +71,10 @@ describe('Graph', () => {
     }
     const definition = firstCall[1] as string;
     expect(definition).toContain(
-      'classDef done color:#0f1129,fill:#ffffff,stroke:#166534'
+      'classDef done color:#14161b,fill:#fbfaf6,stroke:#22c55e'
     );
     expect(definition).toContain(
-      'linkStyle 0 stroke:#5f8f64,stroke-width:1.8px'
+      'linkStyle 0 stroke:#3fa76b,stroke-width:1.8px'
     );
     expect(definition).not.toContain('#1e8e3e');
     expect(definition).not.toContain('#7da87d');
@@ -104,7 +104,7 @@ describe('Graph', () => {
     }
     const definition = firstCall[1] as string;
     expect(definition).toContain(
-      'classDef running color:#0f1129,fill:#ffffff,stroke:#43a047'
+      'classDef running color:#14161b,fill:#fbfaf6,stroke:#7c6ef4'
     );
     expect(definition).not.toContain('#81c784');
   });
@@ -134,9 +134,9 @@ describe('Graph', () => {
     const doneNode = await screen.findByTestId('done-node');
     const runningNode = await screen.findByTestId('running-node');
 
-    expect(doneNode).toHaveAttribute('stroke', '#166534');
+    expect(doneNode).toHaveAttribute('stroke', '#22c55e');
     expect(doneNode).toHaveAttribute('stroke-width', '2.5px');
-    expect(runningNode).toHaveAttribute('stroke', '#43a047');
+    expect(runningNode).toHaveAttribute('stroke', '#7c6ef4');
     expect(runningNode).toHaveAttribute('stroke-width', '2.5px');
   });
 

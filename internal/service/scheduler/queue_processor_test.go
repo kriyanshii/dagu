@@ -230,16 +230,36 @@ func TestQueueProcessor_GlobalQueue(t *testing.T) {
 	assert.Contains(t, f.logs(), "count=3")
 }
 
-func TestQueueProcessor_ItemsRemainOnFailure(t *testing.T) {
-	f := newQueueFixture(t).withDAG("fifo-dag", 1).enqueueRuns(2).
-		withProcessor(config.Queues{Enabled: true, Config: []config.QueueConfig{{Name: "fifo-dag", MaxActiveRuns: 1}}}).
-		simulateQueue(1, false)
+func TestQueueProcessor_PermanentStartupFailureIsFailedAndDequeued(t *testing.T) {
+	f := newQueueFixture(t).withDAG("fifo-dag", 1)
+	f.enqueueRunWithTrigger("run-1", core.TriggerTypeManual)
+	f.enqueueRunWithTrigger("run-2", core.TriggerTypeManual)
+	f.withProcessor(config.Queues{
+		Enabled: true,
+		Config:  []config.QueueConfig{{Name: "fifo-dag", MaxActiveRuns: 1}},
+	}).simulateQueue(1, false)
+	f.processor.dagExecutor = NewDAGExecutor(
+		nil,
+		launcher.NewSubCmdBuilder(&config.Config{
+			Paths: config.PathsConfig{Executable: filepath.Join(t.TempDir(), "missing-dagu")},
+		}),
+		config.ExecutionModeLocal,
+		"",
+	)
 
 	f.processor.ProcessQueueItems(f.ctx, "fifo-dag")
 
 	items, err := f.queueStore.List(f.ctx, "fifo-dag")
 	require.NoError(t, err)
-	require.Len(t, items, 2, "Both items should still be in queue")
+	require.Len(t, items, 1)
+
+	attempt, err := f.dagRunStore.FindAttempt(f.ctx, exec.NewDAGRunRef("fifo-dag", "run-1"))
+	require.NoError(t, err)
+	status, err := attempt.ReadStatus(f.ctx)
+	require.NoError(t, err)
+	assert.Equal(t, core.Failed, status.Status)
+	assert.NotEmpty(t, status.Error)
+	assert.NotEmpty(t, status.FinishedAt)
 }
 
 func TestQueueProcessor_PriorityOrdering(t *testing.T) {
@@ -273,6 +293,43 @@ func TestQueueProcessor_ConcurrencyLimit(t *testing.T) {
 	items, err := f.queueStore.List(f.ctx, "conc-dag")
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(items), 2, "Concurrency limit should prevent processing all at once")
+}
+
+func TestQueueProcessor_PreservesSameRunItemEnqueuedDuringDispatch(t *testing.T) {
+	f := newQueueFixture(t).withDAG("same-run-redispatch", 1).enqueueRuns(1).
+		withProcessor(config.Queues{}).simulateQueue(1, false)
+
+	initialItems, err := f.queueStore.List(f.ctx, f.dag.Name)
+	require.NoError(t, err)
+	require.Len(t, initialItems, 1)
+	initialItemID := initialItems[0].ID()
+	runRef := exec.NewDAGRunRef(f.dag.Name, "run-1")
+
+	procStore := &mockProcStore{}
+	procStore.On("CountAlive", mock.Anything, f.dag.Name).Return(0, nil).Once()
+	procStore.On("IsRunAlive", mock.Anything, f.dag.Name, runRef).Return(false, nil).Once()
+	var enqueueErr error
+	procStore.On("IsRunAlive", mock.Anything, f.dag.Name, runRef).
+		Run(func(mock.Arguments) {
+			enqueueErr = f.queueStore.Enqueue(f.ctx, f.dag.Name, exec.QueuePriorityLow, runRef)
+		}).
+		Return(true, nil).
+		Once()
+
+	f.processor.procStore = procStore
+	f.processor.dagExecutor = NewDAGExecutor(&mockDispatcher{}, nil, config.ExecutionModeDistributed, "")
+
+	f.processor.ProcessQueueItems(f.ctx, f.dag.Name)
+
+	require.NoError(t, enqueueErr)
+	items, err := f.queueStore.List(f.ctx, f.dag.Name)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.NotEqual(t, initialItemID, items[0].ID())
+	remainingRef, err := items[0].Data()
+	require.NoError(t, err)
+	assert.Equal(t, runRef, *remainingRef)
+	procStore.AssertExpectations(t)
 }
 
 func TestQueueProcessor_CountsFreshDistributedRunsAgainstQueueConcurrency(t *testing.T) {
@@ -478,7 +535,7 @@ func TestQueueProcessor_StaleOutstandingDispatchReservationsExpire(t *testing.T)
 	assert.Empty(t, pendingEntries)
 }
 
-func TestQueueDispatcher_DistributedDispatchReservesAdmissionToken(t *testing.T) {
+func TestQueueDispatcher_DistributedDispatchHandsOffWithAdmissionToken(t *testing.T) {
 	f := newQueueFixture(t).withDAG("distributed-admission-dag", 1)
 	f.enqueueRuns(1)
 
@@ -495,7 +552,6 @@ func TestQueueDispatcher_DistributedDispatchReservesAdmissionToken(t *testing.T)
 	runRef := exec.NewDAGRunRef(f.dag.Name, "run-1")
 	procStore := &mockProcStore{}
 	procStore.On("IsRunAlive", mock.Anything, f.dag.Name, runRef).Return(false, nil).Once()
-	procStore.On("IsRunAlive", mock.Anything, f.dag.Name, runRef).Return(true, nil).Once()
 	dispatcher := &mockDispatcher{}
 
 	queueDispatcher := newQueueDispatcher(queueDispatchDeps{

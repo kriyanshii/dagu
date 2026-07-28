@@ -109,6 +109,13 @@ func collectNamesAndIDs(dag *DAG, errs *ErrorList) (stepNames, stepIDs map[strin
 			continue
 		}
 
+		// Reserved in every DAG type, not only controllers: the execution plan
+		// recognises a controller by these names.
+		if !dag.IsController() && IsSynthesizedControllerStep(step.Name) {
+			*errs = append(*errs, NewValidationError("steps", step.Name,
+				fmt.Errorf("%q is reserved by type: controller", step.Name)))
+		}
+
 		if _, exists := stepNames[step.Name]; exists {
 			*errs = append(*errs, NewValidationError("steps", step.Name, ErrStepNameDuplicate))
 		} else {
@@ -296,6 +303,10 @@ func validateForeachConfig(step Step, visibleNames, visibleIDs map[string]struct
 	validateApprovalRewindTargets(bodyDAG, bodyNames, errs)
 
 	for _, bodyStep := range bodyDAG.Steps {
+		if bodyStep.HumanTask != nil {
+			*errs = append(*errs, NewValidationError("foreach.steps", bodyStep.ID,
+				fmt.Errorf("human.task cannot be used inside foreach.steps")))
+		}
 		*errs = append(*errs, validateStep(bodyStep)...)
 		validateForeachConfig(bodyStep, bodyNames, bodyIDs, errs)
 	}
@@ -345,6 +356,9 @@ func validateForeachBodyDependencies(parent Step, bodySteps []Step, bodyNames, v
 }
 
 func validateStepWithValidator(step Step) error {
+	if step.HumanTask != nil {
+		return validateHumanTaskStep(step)
+	}
 	validator := stepValidator(step.ExecutorConfig.Type)
 	if validator == nil {
 		return nil
@@ -355,6 +369,17 @@ func validateStepWithValidator(step Step) error {
 			return err
 		}
 		return NewValidationError("type", nil, err)
+	}
+	return nil
+}
+
+func validateHumanTaskStep(step Step) error {
+	if step.ExecutorConfig.Type != "" || len(step.ExecutorConfig.Config) > 0 || len(step.ExecutorConfig.Metadata) > 0 {
+		return NewValidationError("type", step.ExecutorConfig.Type, fmt.Errorf("human task cannot use an executor"))
+	}
+	if len(step.Commands) > 0 || step.Command != "" || step.CmdWithArgs != "" || step.CmdArgsSys != "" ||
+		step.ShellCmdArgs != "" || step.Script != "" || len(step.Args) > 0 {
+		return NewValidationError("command", nil, fmt.Errorf("human task cannot execute commands"))
 	}
 	return nil
 }

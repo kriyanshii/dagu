@@ -4,6 +4,8 @@
 package exec
 
 import (
+	"encoding/json"
+
 	"github.com/dagucloud/dagu/internal/cmn/collections"
 	"github.com/dagucloud/dagu/internal/core"
 )
@@ -12,6 +14,7 @@ import (
 type PushBackEntry struct {
 	Iteration int               `json:"iteration"`
 	By        string            `json:"by,omitempty"`
+	ByID      string            `json:"byId,omitempty"`
 	At        string            `json:"at,omitempty"`
 	Inputs    map[string]string `json:"inputs,omitempty"`
 }
@@ -37,16 +40,28 @@ type Node struct {
 	OutputValue      *string              `json:"outputValue,omitempty"`
 	OutputsValue     *string              `json:"outputsValue,omitempty"`
 	StepOutputsValue *string              `json:"stepOutputsValue,omitempty"`
+	HumanTaskInput   json.RawMessage      `json:"humanTaskInput,omitempty"`
+	// ControllerState stores the goal progress of a controller DAG's controller
+	// step, so a suspended run resumes with its task list intact.
+	ControllerState json.RawMessage `json:"controllerState,omitempty"`
+	// HumanTaskCompletedBy records who completed this human task.
+	HumanTaskCompletedBy string `json:"humanTaskCompletedBy,omitempty"`
+	// HumanTaskCompletedByID records the subject ID that completed this human task.
+	HumanTaskCompletedByID string `json:"humanTaskCompletedById,omitempty"`
 	// ApprovedAt records when this wait step was approved
 	ApprovedAt string `json:"approvedAt,omitempty"`
 	// ApprovalInputs stores key-value parameters provided during approval
 	ApprovalInputs map[string]string `json:"approvalInputs,omitempty"`
 	// ApprovedBy records who approved this wait step (username)
 	ApprovedBy string `json:"approvedBy,omitempty"`
+	// ApprovedByID records the subject ID that approved this wait step.
+	ApprovedByID string `json:"approvedById,omitempty"`
 	// RejectedAt records when this wait step was rejected
 	RejectedAt string `json:"rejectedAt,omitempty"`
 	// RejectedBy records who rejected this wait step (username)
 	RejectedBy string `json:"rejectedBy,omitempty"`
+	// RejectedByID records the subject ID that rejected this wait step.
+	RejectedByID string `json:"rejectedById,omitempty"`
 	// RejectionReason stores the optional reason for rejection
 	RejectionReason string `json:"rejectionReason,omitempty"`
 	// ApprovalIteration tracks how many times this step has been pushed back.

@@ -287,7 +287,7 @@ export default function RemoteNodesPage() {
                       <span
                         className={`text-xs px-1.5 py-0.5 rounded ${
                           isStoreNode(node)
-                            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                            ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400'
                             : 'bg-muted text-muted-foreground'
                         }`}
                       >

@@ -4,12 +4,15 @@
 package coordinator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -74,12 +77,14 @@ const (
 	remoteAttemptRejectedLeaseInactive = "stale attempt: lease no longer active"
 	remoteAttemptRejectedSuperseded    = "stale attempt: superseded by newer attempt"
 	remoteAttemptRejectedTerminal      = "stale attempt: run already terminal"
+	remoteAttemptRejectedManualAction  = "stale attempt: completed manual action changed"
 )
 
 var (
-	errNoAvailableWorkers        = errors.New("no available workers")
-	errNoMatchingWorkers         = errors.New("no workers match the required selector")
-	errRunHeartbeatRepairSkipped = errors.New("run heartbeat repair skipped")
+	errNoAvailableWorkers           = errors.New("no available workers")
+	errNoMatchingWorkers            = errors.New("no workers match the required selector")
+	errRunHeartbeatRepairSkipped    = errors.New("run heartbeat repair skipped")
+	errManualActionCheckpointChange = errors.New("completed manual action checkpoint changed")
 )
 
 type preparedDispatchAttempt struct {
@@ -558,7 +563,8 @@ func (h *Handler) releaseAdmissionToken(ctx context.Context, token string) {
 }
 
 func (h *Handler) finalizeAdmissionForStatus(ctx context.Context, status *exec.DAGRunStatus, attemptID string) {
-	if h.dispatchAdmissionStore == nil || status == nil || !isTerminalRunStatus(status.Status) {
+	if h.dispatchAdmissionStore == nil || status == nil ||
+		(status.Status != core.Waiting && !isTerminalRunStatus(status.Status)) {
 		return
 	}
 	attemptKey := exec.AttemptKeyForStatus(status, attemptID)
@@ -701,7 +707,7 @@ func (h *Handler) createAttemptForTask(ctx context.Context, task *coordinatorv1.
 		return nil, fmt.Errorf("failed to open attempt: %w", err)
 	}
 
-	if err := h.writeInitialStatus(ctx, attempt, dag.Name, task.DagRunId, task.AttemptKey, task.ScheduleTime, exec.DAGRunRef{}, labelsForInitialStatus(task, dag)); err != nil {
+	if err := h.writeInitialStatus(ctx, attempt, task, dag.Name, exec.DAGRunRef{}, labelsForInitialStatus(task, dag)); err != nil {
 		return nil, fmt.Errorf("failed to write initial status: %w", err)
 	}
 
@@ -787,7 +793,7 @@ func (h *Handler) createSubAttemptForTask(ctx context.Context, task *coordinator
 		return nil, fmt.Errorf("failed to open sub-attempt: %w", err)
 	}
 
-	if err := h.writeInitialStatus(ctx, attempt, task.Target, task.DagRunId, task.AttemptKey, task.ScheduleTime, rootRef, labelsForInitialStatus(task, dag)); err != nil {
+	if err := h.writeInitialStatus(ctx, attempt, task, task.Target, rootRef, labelsForInitialStatus(task, dag)); err != nil {
 		return nil, fmt.Errorf("failed to write initial status: %w", err)
 	}
 
@@ -807,17 +813,18 @@ func (h *Handler) createSubAttemptForTask(ctx context.Context, task *coordinator
 
 // writeInitialStatus writes an initial NotStarted status to the attempt.
 // This ensures the status file is not empty when read before the worker reports its first status.
-func (h *Handler) writeInitialStatus(ctx context.Context, attempt exec.DAGRunAttempt, dagName, dagRunID, attemptKey, scheduleTime string, root exec.DAGRunRef, labels []string) error {
+func (h *Handler) writeInitialStatus(ctx context.Context, attempt exec.DAGRunAttempt, task *coordinatorv1.Task, dagName string, root exec.DAGRunRef, labels []string) error {
 	initialStatus := exec.DAGRunStatus{
 		Name:         dagName,
-		DAGRunID:     dagRunID,
+		DAGRunID:     task.DagRunId,
 		AttemptID:    attempt.ID(),
-		AttemptKey:   attemptKey,
+		AttemptKey:   task.AttemptKey,
 		Status:       core.NotStarted,
 		StartedAt:    time.Now().UTC().Format(time.RFC3339),
 		Root:         root,
 		Labels:       labels,
-		ScheduleTime: scheduleTime,
+		TriggerActor: task.TriggerActor,
+		ScheduleTime: task.ScheduleTime,
 	}
 	return attempt.Write(ctx, initialStatus)
 }
@@ -1629,6 +1636,7 @@ func (h *Handler) ReportStatus(ctx context.Context, req *coordinatorv1.ReportSta
 			// reporting worker disconnects.
 			ownership.syncFromStatus(context.WithoutCancel(ctx), req.WorkerId, dagRunStatus, bootstrappedAttempt.ID())
 			h.finalizeAdmissionForStatus(ctx, dagRunStatus, bootstrappedAttempt.ID())
+			h.closeCachedWaitingAttempt(ctx, dagRunStatus, bootstrappedAttempt)
 
 			return &coordinatorv1.ReportStatusResponse{Accepted: true}, nil
 		}
@@ -1658,13 +1666,50 @@ func (h *Handler) ReportStatus(ctx context.Context, req *coordinatorv1.ReportSta
 		return nil, status.Error(codes.Internal, "failed to resolve artifact path: "+err.Error())
 	}
 
-	attempt, err := h.replaceOpenAttempt(ctx, dagRunStatus.DAGRunID, latestAttempt, latestStatus.AttemptID)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "failed to get/open latest attempt: "+err.Error())
-	}
-	// Write the status
-	if err := attempt.Write(ctx, *dagRunStatus); err != nil {
-		return nil, status.Error(codes.Internal, "failed to write status: "+err.Error())
+	attempt := latestAttempt
+	if dagRunStatus.Status == core.Waiting {
+		h.closeCachedAttemptForRun(ctx, context.WithoutCancel(ctx), dagRunStatus.DAGRunID, latestAttempt.ID())
+		persisted, swapped, err := h.dagRunStore.CompareAndSwapLatestAttemptStatus(
+			ctx,
+			dagRunStatus.DAGRun(),
+			latestAttempt.ID(),
+			latestStatus.Status,
+			func(current *exec.DAGRunStatus) error {
+				if !preservesCompletedManualActions(current, dagRunStatus) {
+					return errManualActionCheckpointChange
+				}
+				*current = *dagRunStatus
+				return nil
+			},
+			exec.WithCompareAndSwapRootDAGRun(dagRunStatus.Root),
+			exec.WithCompareAndSwapExpectedAttemptKey(dagRunStatus.AttemptKey),
+		)
+		if errors.Is(err, errManualActionCheckpointChange) {
+			logRejectedRemoteStatusUpdate(ctx, req.WorkerId, dagRunStatus, latestStatus, remoteAttemptRejectedManualAction)
+			return &coordinatorv1.ReportStatusResponse{
+				Accepted: false,
+				Error:    remoteAttemptRejectedManualAction,
+			}, nil
+		}
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to write waiting status: "+err.Error())
+		}
+		if !swapped {
+			logRejectedRemoteStatusUpdate(ctx, req.WorkerId, dagRunStatus, persisted, remoteAttemptRejectedSuperseded)
+			return &coordinatorv1.ReportStatusResponse{
+				Accepted: false,
+				Error:    remoteAttemptRejectedSuperseded,
+			}, nil
+		}
+		dagRunStatus = persisted
+	} else {
+		attempt, err = h.replaceOpenAttempt(ctx, dagRunStatus.DAGRunID, latestAttempt, latestStatus.AttemptID)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to get/open latest attempt: "+err.Error())
+		}
+		if err := attempt.Write(ctx, *dagRunStatus); err != nil {
+			return nil, status.Error(codes.Internal, "failed to write status: "+err.Error())
+		}
 	}
 
 	// Persist chat messages for each node.
@@ -1674,11 +1719,92 @@ func (h *Handler) ReportStatus(ctx context.Context, req *coordinatorv1.ReportSta
 	// worker disconnects.
 	ownership.syncFromStatus(context.WithoutCancel(ctx), req.WorkerId, dagRunStatus, attempt.ID())
 	h.finalizeAdmissionForStatus(ctx, dagRunStatus, attempt.ID())
+	h.closeCachedWaitingAttempt(ctx, dagRunStatus, attempt)
 
 	// Note: We don't close the attempt immediately on terminal status because
 	// the agent may push the same terminal status multiple times from different
 	// code paths. Attempts are cleaned up during coordinator shutdown.
 	return &coordinatorv1.ReportStatusResponse{Accepted: true}, nil
+}
+
+func preservesCompletedManualActions(current, incoming *exec.DAGRunStatus) bool {
+	if current == nil || incoming == nil {
+		return false
+	}
+	incomingNodes := make(map[string]*exec.Node, len(incoming.Nodes))
+	for _, node := range incoming.Nodes {
+		if node != nil {
+			incomingNodes[manualActionNodeKey(node.Step)] = node
+		}
+	}
+	for _, node := range current.Nodes {
+		if node == nil {
+			continue
+		}
+		completedHumanTask := node.Step.HumanTask != nil && len(node.HumanTaskInput) > 0
+		completedApproval := node.Step.Approval != nil && node.ApprovedAt != ""
+		pushedBack := node.ApprovalIteration > 0
+		if !completedHumanTask && !completedApproval && !pushedBack {
+			continue
+		}
+		next := incomingNodes[manualActionNodeKey(node.Step)]
+		if next == nil {
+			return false
+		}
+		if (completedHumanTask || completedApproval) &&
+			(next.Status != node.Status || next.FinishedAt != node.FinishedAt) {
+			return false
+		}
+		if completedHumanTask &&
+			(next.Step.HumanTask == nil ||
+				!bytes.Equal(next.HumanTaskInput, node.HumanTaskInput) ||
+				next.HumanTaskCompletedBy != node.HumanTaskCompletedBy ||
+				next.HumanTaskCompletedByID != node.HumanTaskCompletedByID ||
+				!equalOptionalString(next.StepOutputsValue, node.StepOutputsValue)) {
+			return false
+		}
+		if completedApproval &&
+			(next.Step.Approval == nil ||
+				next.ApprovedAt != node.ApprovedAt ||
+				next.ApprovedBy != node.ApprovedBy ||
+				next.ApprovedByID != node.ApprovedByID ||
+				!maps.Equal(next.ApprovalInputs, node.ApprovalInputs)) {
+			return false
+		}
+		if pushedBack &&
+			(next.ApprovalIteration != node.ApprovalIteration ||
+				!maps.Equal(next.PushBackInputs, node.PushBackInputs) ||
+				!reflect.DeepEqual(next.PushBackHistory, node.PushBackHistory) ||
+				next.PushBackPreviousStdout != node.PushBackPreviousStdout) {
+			return false
+		}
+	}
+	return true
+}
+
+func manualActionNodeKey(step core.Step) string {
+	if step.ID != "" {
+		return "id:" + step.ID
+	}
+	return "name:" + step.Name
+}
+
+func equalOptionalString(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+func (h *Handler) closeCachedWaitingAttempt(
+	ctx context.Context,
+	status *exec.DAGRunStatus,
+	attempt exec.DAGRunAttempt,
+) {
+	if status == nil || attempt == nil || status.Status != core.Waiting {
+		return
+	}
+	h.closeCachedAttemptForRun(ctx, context.WithoutCancel(ctx), status.DAGRunID, attempt.ID())
 }
 
 func (h *Handler) bootstrapMissingSubAttempt(
@@ -2860,7 +2986,7 @@ func (h *Handler) closeCachedAttemptForRun(ctx, closeCtx context.Context, dagRun
 	}
 
 	if err := cachedAttempt.Close(closeCtx); err != nil {
-		logger.Warn(ctx, "Failed to close cached attempt before distributed stale-run repair",
+		logger.Warn(ctx, "Failed to close cached distributed attempt",
 			tag.RunID(dagRunID),
 			tag.AttemptID(cachedAttempt.ID()),
 			tag.Error(err),

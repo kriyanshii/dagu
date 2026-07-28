@@ -15,16 +15,15 @@ import (
 	"os"
 	"os/signal"
 	"path"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
 	"github.com/go-chi/httplog/v2"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -45,6 +44,7 @@ import (
 	"github.com/dagucloud/dagu/internal/runtime"
 	"github.com/dagucloud/dagu/internal/service/audit"
 	authservice "github.com/dagucloud/dagu/internal/service/auth"
+	"github.com/dagucloud/dagu/internal/service/authmapping"
 	"github.com/dagucloud/dagu/internal/service/chatbridge"
 	"github.com/dagucloud/dagu/internal/service/coordinator"
 	"github.com/dagucloud/dagu/internal/service/eventstore"
@@ -59,6 +59,7 @@ import (
 	notificationservice "github.com/dagucloud/dagu/internal/service/notification"
 	"github.com/dagucloud/dagu/internal/service/oidcprovision"
 	"github.com/dagucloud/dagu/internal/service/resource"
+	"github.com/dagucloud/dagu/internal/service/trustedproxyprovision"
 	"github.com/dagucloud/dagu/internal/tunnel"
 	"github.com/dagucloud/dagu/internal/upgrade"
 	workspacepkg "github.com/dagucloud/dagu/internal/workspace"
@@ -90,6 +91,7 @@ type Server struct {
 	httpServer            *http.Server
 	funcsConfig           funcsConfig
 	builtinOIDCCfg        *auth.BuiltinOIDCConfig
+	trustedProxyCfg       *auth.TrustedProxyLoginConfig
 	authService           *authservice.Service
 	auditService          *audit.Service
 	auditStore            AuditStore
@@ -152,6 +154,53 @@ func WithAPIOption(opt apiv1.APIOption) ServerOption {
 	}
 }
 
+func toOIDCWorkspaceMappings(mappings map[string][]config.OIDCWorkspaceGrant) map[string][]oidcprovision.WorkspaceGrantConfig {
+	if len(mappings) == 0 {
+		return nil
+	}
+	result := make(map[string][]oidcprovision.WorkspaceGrantConfig, len(mappings))
+	for group, grants := range mappings {
+		converted := make([]oidcprovision.WorkspaceGrantConfig, len(grants))
+		for i, grant := range grants {
+			converted[i] = oidcprovision.WorkspaceGrantConfig{
+				Workspace: grant.Workspace,
+				Role:      grant.Role,
+			}
+		}
+		result[group] = converted
+	}
+	return result
+}
+
+func toTrustedProxyGroupMappings(mappings map[string]string) map[string]authmodel.Role {
+	if len(mappings) == 0 {
+		return nil
+	}
+	result := make(map[string]authmodel.Role, len(mappings))
+	for group, role := range mappings {
+		result[group] = authmodel.Role(role)
+	}
+	return result
+}
+
+func toTrustedProxyWorkspaceMappings(mappings map[string][]config.TrustedProxyWorkspaceGrant) map[string][]authmapping.WorkspaceGrantConfig {
+	if len(mappings) == 0 {
+		return nil
+	}
+	result := make(map[string][]authmapping.WorkspaceGrantConfig, len(mappings))
+	for group, grants := range mappings {
+		converted := make([]authmapping.WorkspaceGrantConfig, len(grants))
+		for i, grant := range grants {
+			converted[i] = authmapping.WorkspaceGrantConfig{
+				Workspace: grant.Workspace,
+				Role:      authmodel.Role(grant.Role),
+			}
+		}
+		result[group] = converted
+	}
+	return result
+}
+
 // RegisterRoutes appends a route registrar that is applied before API routes
 // are mounted.
 func (srv *Server) RegisterRoutes(fn RouteRegistrar) {
@@ -171,10 +220,15 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 	for _, n := range cfg.Server.RemoteNodes {
 		remoteNodes = append(remoteNodes, n.Name)
 	}
+	evaluatedBasePath, err := evaluateConfiguredBasePath(ctx, cfg.Server.BasePath)
+	if err != nil {
+		return nil, err
+	}
 
 	var (
 		apiOpts         []apiv1.APIOption
 		builtinOIDCCfg  *auth.BuiltinOIDCConfig
+		trustedProxyCfg = &auth.TrustedProxyLoginConfig{LoginBasePath: evaluatedBasePath}
 		oidcEnabled     bool
 		oidcButtonLabel string
 		setupRequired   bool
@@ -182,7 +236,6 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 	if stores.WorkspaceBaseConfigStoreFactory != nil {
 		apiOpts = append(apiOpts, apiv1.WithWorkspaceBaseConfigStoreFactory(stores.WorkspaceBaseConfigStoreFactory))
 	}
-	evaluatedBasePath := evaluateConfiguredBasePath(ctx, cfg.Server.BasePath)
 
 	auditSvc, auditStore, err := initAuditService(cfg, stores.AuditStoreFactory)
 	if err != nil {
@@ -206,6 +259,32 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		}
 	}
 
+	// Initialize the workspace store before OIDC provisioning so login-time
+	// mapping can report dormant grants without making workspace existence a
+	// prerequisite for authentication.
+	var wsStore workspacepkg.Store
+	var workspaceExists func(context.Context, string) (bool, error)
+	if stores.WorkspaceStoreFactory != nil {
+		var wsErr error
+		wsStore, wsErr = stores.WorkspaceStoreFactory(cfg)
+		if wsErr != nil {
+			logger.Warn(ctx, "Failed to create workspace store", tag.Error(wsErr))
+		} else {
+			apiOpts = append(apiOpts, apiv1.WithWorkspaceStore(wsStore))
+			workspaceExists = func(ctx context.Context, name string) (bool, error) {
+				_, err := wsStore.GetByName(ctx, name)
+				switch {
+				case err == nil:
+					return true, nil
+				case errors.Is(err, workspacepkg.ErrWorkspaceNotFound):
+					return false, nil
+				default:
+					return false, err
+				}
+			}
+		}
+	}
+
 	var authSvc *authservice.Service
 	if cfg.Server.Auth.Mode == config.AuthModeBuiltin {
 		if stores.BuiltinAuthFactory == nil {
@@ -219,6 +298,44 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		setupRequired = isSetupRequired
 		apiOpts = append(apiOpts, apiv1.WithAuthService(result.AuthService))
 
+		trustedProxy := cfg.Server.Auth.Proxy
+		if trustedProxy.Enabled {
+			trustedProvisionSvc, err := trustedproxyprovision.New(result.UserStore, trustedproxyprovision.Config{
+				UsersDir:        cfg.Paths.UsersDir,
+				Source:          trustedProxy.Source,
+				AutoSignup:      trustedProxy.AutoSignup,
+				SkipOrgRoleSync: trustedProxy.RoleMapping.SkipOrgRoleSync,
+				WorkspaceExists: workspaceExists,
+				RoleMapping: authmapping.Config{
+					DefaultRole:            authmodel.Role(trustedProxy.RoleMapping.DefaultRole),
+					GroupMappings:          toTrustedProxyGroupMappings(trustedProxy.RoleMapping.GroupMappings),
+					WorkspaceMappings:      toTrustedProxyWorkspaceMappings(trustedProxy.RoleMapping.WorkspaceMappings),
+					DefaultWorkspaceAccess: trustedProxy.RoleMapping.DefaultWorkspaceAccess,
+					Strict:                 trustedProxy.RoleMapping.RequireMapping,
+				},
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to create proxy authentication provisioning service: %w", err)
+			}
+			trustedProxyCfg = &auth.TrustedProxyLoginConfig{
+				Enabled:        true,
+				UserHeader:     trustedProxy.Headers.User,
+				GroupsHeader:   trustedProxy.Headers.Groups,
+				GroupsRequired: len(trustedProxy.RoleMapping.GroupMappings) > 0 || len(trustedProxy.RoleMapping.WorkspaceMappings) > 0,
+				Provision:      trustedProvisionSvc,
+				AuthService:    result.AuthService,
+				InitialSetupComplete: func(ctx context.Context) (bool, error) {
+					count, err := result.AuthService.CountUsers(ctx)
+					return count > 0, err
+				},
+				LoginBasePath: evaluatedBasePath,
+			}
+			logger.Info(ctx, "Proxy authentication enabled",
+				slog.Bool("autoSignup", trustedProxy.AutoSignup),
+				slog.String("defaultRole", trustedProxy.RoleMapping.DefaultRole),
+				slog.Bool("skipOrgRoleSync", trustedProxy.RoleMapping.SkipOrgRoleSync))
+		}
+
 		oidcCfg := cfg.Server.Auth.OIDC
 		if oidcCfg.IsConfigured() {
 			oidcEnabled = true
@@ -231,14 +348,17 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 				AllowedDomains: oidcCfg.AllowedDomains,
 				Whitelist:      oidcCfg.Whitelist,
 				RoleMapping: oidcprovision.RoleMapperConfig{
-					GroupsClaim:         oidcCfg.RoleMapping.GroupsClaim,
-					GroupMappings:       oidcCfg.RoleMapping.GroupMappings,
-					RoleAttributePath:   oidcCfg.RoleMapping.RoleAttributePath,
-					RoleAttributeStrict: oidcCfg.RoleMapping.RoleAttributeStrict,
-					SkipOrgRoleSync:     oidcCfg.RoleMapping.SkipOrgRoleSync,
-					DefaultRole:         authmodel.Role(oidcCfg.RoleMapping.DefaultRole),
+					GroupsClaim:            oidcCfg.RoleMapping.GroupsClaim,
+					GroupMappings:          oidcCfg.RoleMapping.GroupMappings,
+					WorkspaceMappings:      toOIDCWorkspaceMappings(oidcCfg.RoleMapping.WorkspaceMappings),
+					DefaultWorkspaceAccess: oidcCfg.RoleMapping.DefaultWorkspaceAccess,
+					RoleAttributePath:      oidcCfg.RoleMapping.RoleAttributePath,
+					RoleAttributeStrict:    oidcCfg.RoleMapping.RoleAttributeStrict,
+					SkipOrgRoleSync:        oidcCfg.RoleMapping.SkipOrgRoleSync,
+					DefaultRole:            authmodel.Role(oidcCfg.RoleMapping.DefaultRole),
 				},
 			}
+			provisionCfg.WorkspaceExists = workspaceExists
 			provisionSvc, err := oidcprovision.New(result.UserStore, provisionCfg)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create OIDC provisioning service: %w", err)
@@ -365,18 +485,6 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		logger.Warn(ctx, "Incident settings store is disabled because encrypted storage is not available")
 	}
 
-	// Initialize workspace store
-	var wsStore workspacepkg.Store
-	if stores.WorkspaceStoreFactory != nil {
-		var wsErr error
-		wsStore, wsErr = stores.WorkspaceStoreFactory(cfg)
-		if wsErr != nil {
-			logger.Warn(ctx, "Failed to create workspace store", tag.Error(wsErr))
-		} else {
-			apiOpts = append(apiOpts, apiv1.WithWorkspaceStore(wsStore))
-		}
-	}
-
 	var (
 		upgradeStore      upgrade.CacheStore
 		updateInfoChecker UpdateChecker
@@ -395,6 +503,7 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 	srv := &Server{
 		config:                cfg,
 		builtinOIDCCfg:        builtinOIDCCfg,
+		trustedProxyCfg:       trustedProxyCfg,
 		authService:           authSvc,
 		auditService:          auditSvc,
 		auditStore:            auditStore,
@@ -422,6 +531,8 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 			AuthMode:              cfg.Server.Auth.Mode,
 			OIDCEnabled:           oidcEnabled,
 			OIDCButtonLabel:       oidcButtonLabel,
+			ProxyEnabled:          cfg.Server.Auth.Proxy.Enabled,
+			ProxyButtonLabel:      cfg.Server.Auth.Proxy.ButtonLabel,
 			TerminalEnabled:       cfg.Server.Terminal.Enabled && authSvc != nil,
 			GitSyncEnabled:        cfg.GitSync.Enabled,
 			WorkspaceStore:        wsStore,
@@ -466,10 +577,16 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		if srv.builtinOIDCCfg != nil {
 			srv.builtinOIDCCfg.LicenseChecker = licenseChecker
 		}
+		if srv.trustedProxyCfg != nil {
+			srv.trustedProxyCfg.LicenseChecker = licenseChecker
+		}
 	}
 
 	if srv.licenseManager != nil && srv.builtinOIDCCfg != nil && !srv.licenseManager.Checker().IsFeatureEnabled(license.FeatureSSO) {
 		logger.Warn(ctx, "SSO (OIDC) is configured but currently unavailable because the active license does not enable it")
+	}
+	if srv.licenseManager != nil && srv.trustedProxyCfg != nil && srv.trustedProxyCfg.Enabled && !srv.licenseManager.Checker().IsFeatureEnabled(license.FeatureSSO) {
+		logger.Warn(ctx, "Proxy authentication is configured but currently unavailable because the active license does not enable it")
 	}
 
 	if srv.auditService != nil {
@@ -562,7 +679,7 @@ func initSyncService(ctx context.Context, cfg *config.Config) gitsync.Service {
 	}
 
 	syncCfg := gitsync.NewConfigFromGlobal(cfg.GitSync)
-	svc := gitsync.NewService(syncCfg, cfg.Paths.DAGsDir, cfg.Paths.DataDir, cfg.Paths.BaseConfig)
+	svc := gitsync.NewService(syncCfg, cfg.Paths.DAGsDir, cfg.Paths.DataDir)
 
 	if syncCfg.AutoSync.Enabled {
 		if err := svc.Start(ctx); err != nil {
@@ -672,7 +789,6 @@ func (srv *Server) Serve(ctx context.Context) error {
 	r := chi.NewMux()
 	apiV1BasePath := srv.configureAPIPath(ctx)
 	r.Use(auth.PreserveRawRemoteAddr)
-	r.Use(middleware.RealIP)
 	r.Use(middleware.Compress(5))
 	if srv.config.Server.AccessLog != config.AccessLogNone {
 		logLevel := slog.LevelInfo
@@ -680,10 +796,13 @@ func (srv *Server) Serve(ctx context.Context) error {
 			logLevel = slog.LevelDebug
 		}
 		requestLogger := httplog.NewLogger("http", httplog.Options{
-			LogLevel:         logLevel,
-			JSON:             srv.config.Core.LogFormat == "json",
-			Concise:          true,
-			RequestHeaders:   srv.config.Core.Debug,
+			LogLevel:       logLevel,
+			JSON:           srv.config.Core.LogFormat == "json",
+			Concise:        true,
+			RequestHeaders: srv.config.Core.Debug,
+			HideRequestHeaders: trustedProxyRequestHeaders(
+				srv.config.Server.Auth.Proxy,
+			),
 			MessageFieldName: "msg",
 			ResponseHeaders:  false,
 			QuietDownRoutes: []string{
@@ -701,19 +820,11 @@ func (srv *Server) Serve(ctx context.Context) error {
 	}
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeadersMiddleware(srv.config.Server.TLS != nil))
-	corsOrigins := srv.config.Server.CORSAllowedOrigins
-	allowCredentials := len(corsOrigins) > 0 && !slices.Contains(corsOrigins, "*")
-	if !allowCredentials {
-		corsOrigins = []string{"*"}
-	}
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   corsOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization", "Content-Encoding", "Accept", "MCP-Protocol-Version", "Mcp-Session-Id", "Last-Event-ID"},
-		ExposedHeaders:   []string{"Mcp-Session-Id"},
-		AllowCredentials: allowCredentials,
-		MaxAge:           300,
-	}))
+	r.Use(corsPolicy{
+		allowedOrigins: srv.config.Server.CORSAllowedOrigins,
+		publicURL:      srv.config.Server.PublicURL,
+		setupPath:      path.Join(apiV1BasePath, "auth/setup"),
+	}.middleware)
 	r.Use(middleware.RedirectSlashes)
 
 	if err := srv.setupRoutes(ctx, r); err != nil {
@@ -756,6 +867,20 @@ func (srv *Server) Serve(ctx context.Context) error {
 	srv.setupGracefulShutdown(ctx)
 
 	return nil
+}
+
+func trustedProxyRequestHeaders(cfg config.AuthTrustedProxy) []string {
+	if !cfg.Enabled {
+		return nil
+	}
+	headers := make([]string, 0, 2)
+	if cfg.Headers.User != "" {
+		headers = append(headers, cfg.Headers.User)
+	}
+	if cfg.Headers.Groups != "" {
+		headers = append(headers, cfg.Headers.Groups)
+	}
+	return headers
 }
 
 func (srv *Server) startNotificationMonitor(ctx context.Context) {
@@ -853,12 +978,13 @@ func ensureLeadingSlash(p string) string {
 }
 
 func (srv *Server) setupRoutes(ctx context.Context, r *chi.Mux) error {
+	basePath := srv.funcsConfig.BasePath
+	srv.setupTrustedProxyRoute(r, basePath)
 	if srv.config.Server.Headless {
 		logger.Info(ctx, "Headless mode enabled: UI is disabled, but API remains active")
 		return nil
 	}
 
-	basePath := srv.funcsConfig.BasePath
 	srv.setupAssetRoutes(r, basePath)
 	srv.setupOIDCRoutes(r, basePath)
 
@@ -873,14 +999,21 @@ func (srv *Server) setupRoutes(ctx context.Context, r *chi.Mux) error {
 	return nil
 }
 
-func evaluateConfiguredBasePath(ctx context.Context, basePath string) string {
+func evaluateConfiguredBasePath(ctx context.Context, basePath string) (string, error) {
 	resolver := cmnvalue.NewResolver(cmnvalue.StaticScope{}, cmnvalue.RuntimeScope{})
 	evaluated, err := resolver.String(ctx, basePath, cmnvalue.ServerBasePathField("server.base_path"))
 	if err != nil {
-		logger.Warn(ctx, "Failed to evaluate server base path", tag.Path(basePath), tag.Error(err))
-		return basePath
+		return "", fmt.Errorf("evaluate server base path: %w", err)
 	}
-	return evaluated
+	if strings.ContainsAny(evaluated, "?#\\") || strings.IndexFunc(evaluated, unicode.IsControl) >= 0 {
+		return "", fmt.Errorf("evaluate server base path: result must be a local URL path")
+	}
+
+	cleaned := path.Clean("/" + strings.TrimLeft(strings.TrimSpace(evaluated), "/"))
+	if cleaned == "/" {
+		return "", nil
+	}
+	return cleaned, nil
 }
 
 func publicURLWithBasePath(publicURL, basePath string) string {
@@ -967,6 +1100,13 @@ func hasContentHashSuffix(base, suffix string) bool {
 		}
 	}
 	return true
+}
+
+func (srv *Server) setupTrustedProxyRoute(r *chi.Mux, basePath string) {
+	r.Handle(
+		pathutil.BuildPublicEndpointPath(basePath, "proxy-login"),
+		auth.TrustedProxyLoginHandler(srv.trustedProxyCfg),
+	)
 }
 
 func (srv *Server) setupOIDCRoutes(r *chi.Mux, basePath string) {

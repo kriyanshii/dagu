@@ -221,16 +221,16 @@ function getStatusColor(row: TimelineRow): { bg: string; border: string } {
   if (row.statusSource === 'dagrun') {
     return (
       dagRunStatusColors[row.status as Status] || {
-        bg: '#6b7280',
-        border: '#6b7280',
+        bg: 'var(--status-neutral)',
+        border: 'var(--status-neutral)',
       }
     );
   }
 
   return (
     statusColors[row.status as NodeStatus] || {
-      bg: '#6b7280',
-      border: '#6b7280',
+      bg: 'var(--status-neutral)',
+      border: 'var(--status-neutral)',
     }
   );
 }

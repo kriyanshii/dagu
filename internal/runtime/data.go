@@ -84,6 +84,15 @@ type NodeState struct {
 	OutputsValue *string
 	// StepOutputsValue stores declared file-based outputs for ${steps.<id>.outputs.<name>} references.
 	StepOutputsValue *string
+	// HumanTaskInput stores the validated input submitted to complete a human task.
+	HumanTaskInput json.RawMessage
+	// ControllerState stores the goal progress of a controller DAG. It is carried
+	// across attempts so a suspended controller resumes where it left off.
+	ControllerState json.RawMessage
+	// HumanTaskCompletedBy is the name of the subject that completed the human task.
+	HumanTaskCompletedBy string
+	// HumanTaskCompletedByID is the ID of the subject that completed the human task.
+	HumanTaskCompletedByID string
 	// ChatMessages stores the chat session messages for message passing between steps.
 	ChatMessages []exec.LLMMessage
 	// ToolDefinitions stores the tool definitions that were available to the LLM during execution.
@@ -96,10 +105,14 @@ type NodeState struct {
 	ApprovedAt string
 	// ApprovedBy is the username of the user who approved the step.
 	ApprovedBy string
+	// ApprovedByID is the ID of the subject that approved the step.
+	ApprovedByID string
 	// RejectedAt is the time when the step was rejected.
 	RejectedAt string
 	// RejectedBy is the username of the user who rejected the step.
 	RejectedBy string
+	// RejectedByID is the ID of the subject that rejected the step.
+	RejectedByID string
 	// RejectionReason stores the optional reason for rejection.
 	RejectionReason string
 	// ApprovalIteration tracks how many times this step has been pushed back.
@@ -331,6 +344,33 @@ func (d *Data) SetStatus(s core.NodeStatus) {
 	defer d.mu.Unlock()
 
 	d.inner.State.Status = s
+}
+
+// OpenHumanTask records the resolved prompt and transitions the node to waiting.
+func (d *Data) OpenHumanTask(prompt string, startedAt time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.setHumanTaskPrompt(prompt)
+	d.inner.State.StartedAt = startedAt
+	d.inner.State.DoneCount++
+	d.inner.State.Status = core.NodeWaiting
+}
+
+// CompleteHumanTaskDryRun records the resolved prompt and completes a dry-run task.
+func (d *Data) CompleteHumanTaskDryRun(prompt string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.setHumanTaskPrompt(prompt)
+	d.inner.State.DoneCount++
+	d.inner.State.Status = core.NodeSucceeded
+}
+
+func (d *Data) setHumanTaskPrompt(prompt string) {
+	task := *d.inner.Step.HumanTask
+	task.Prompt = prompt
+	d.inner.Step.HumanTask = &task
 }
 
 func (d *Data) StepInfo() cmnvalue.StepInfo {
@@ -716,6 +756,13 @@ func (d *Data) MarkError(err error) {
 
 	d.inner.State.Error = err
 	d.inner.State.Status = core.NodeFailed
+}
+
+// SetControllerState stores the controller's goal progress on the node.
+func (d *Data) SetControllerState(raw json.RawMessage) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.inner.State.ControllerState = raw
 }
 
 // SetChatMessages sets the chat session messages for the node.

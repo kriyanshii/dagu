@@ -10,15 +10,18 @@ Load only the reference file that matches the task.
 ## Default Approach
 
 - Prefer `type: graph` for new DAGs. It supports both sequential flow via `depends:` and parallel flow.
+- Use `type: controller` only when the step order cannot be written down in advance and an LLM must choose it. It requires `llm:` and a `tasks:` list stating when the run is finished.
 - Prefer `id` on every step. Omit `name` unless the display label must differ from the step ID.
 - Prefer `dagu schema ...` and `dagu validate ...` over guessing field names or shapes.
 - Prefer `action: template.render` when generating text files, prompts, or artifacts instead of assembling them with shell `echo` or heredocs.
 - Prefer `file.*` actions for local file operations such as stat, read, write, copy, move, delete, mkdir, and list instead of shelling out to `cp`, `mv`, `rm`, or `mkdir`.
+- Prefer `git.worktree.add` and `git.worktree.remove` when steps need isolated branches inside an existing local Git repository. Add an explicit remove step when the workflow should delete the worktree.
 - Prefer `stdout.artifact` / `stderr.artifact` when a command stream should become a DAG-run artifact, especially for large reports, JSON, Markdown, logs, or generated files.
 - Prefer `artifact.*` actions for explicit artifact reads/writes/lists. Use `DAG_RUN_ARTIFACTS_DIR` only when a tool truly needs a filesystem path inside the step.
 - Prefer string-form `output: VAR_NAME` for capturing small stdout values into flat variables.
 - Prefer object-form `output:` when downstream steps need structured values via `${step_id.output.*}`.
 - Prefer declared step `outputs:` with `$DAGU_OUTPUT_FILE` when a step must publish explicit values for `${steps.<step_id>.outputs.<name>}`.
+- Use `action: human.task` when an operator must provide typed input before downstream steps continue. Human task form outputs use `${steps.<step_id>.outputs.<name>}` without an authored `outputs:` field.
 - Prefer `stdout.outputs` or `action: outputs.write` when a DAG or remote action needs to return caller-visible values via `${step_id.outputs.*}`.
 - Prefer `state.*` actions for small persistent JSON state across DAG runs, such as cursors, checkpoints, and previous-value comparisons.
 - Prefer temporary files in the artifacts dir only when downstream steps need file paths; otherwise let commands write large artifact content to stdout and attach it with `stdout.artifact`.
@@ -33,6 +36,7 @@ Load only the reference file that matches the task.
   - string form captures trimmed stdout into an env-scope variable such as `${env.VERSION}`
   - object form publishes structured step-scoped output for `${step_id.output.*}` access
 - Declared step `outputs:` publish explicit values through `${steps.<step_id>.outputs.<name>}`. Write values inside the running step to `$DAGU_OUTPUT_FILE`; Dagu captures them only after the command succeeds.
+- `human.task` is a processless root-DAG step with an explicit `id`, a required `with.prompt`, and an optional flat scalar form. A root DAG containing one can run locally or on a distributed worker. Every declared form property is a step output, published when submitted or defaulted, and available as `${steps.<step_id>.outputs.<name>}`.
 - `stdout.artifact` / `stderr.artifact` store command stdout/stderr directly as relative artifact paths, for example `stdout: {artifact: reports/report.md}`. Artifact outputs auto-enable artifacts unless `artifacts.enabled: false` is explicitly set, which is invalid.
 - `${step_id.stdout}` is a log file path, not stdout content.
 - Use `${context.*}` for run metadata in DAG YAML, for example `${context.dag.name}`, `${context.run.id}`, or `${context.paths.artifacts_dir}`. Unavailable context values remain unresolved text instead of becoming empty strings.
@@ -49,6 +53,7 @@ Load only the reference file that matches the task.
 - Container runtime selection is service-level, not a DAG YAML field. Set `DAGU_CONTAINER_RUNTIME=podman` to use Podman, and set `DAGU_PODMAN_HOST` only when the Podman Docker-compatible socket is not the default.
 - DAG/action outputs are collected from string-form `output: VAR_NAME`, `stdout.outputs`, and `action: outputs.write`. Object-form `output:` stays step-scoped for `${step_id.output.*}` unless the workflow explicitly republishes values through `stdout.outputs` or `outputs.write`.
 - `state.get`, `state.set`, `state.delete`, `state.list`, and `state.diff` persist small JSON values across DAG runs. State scopes are `dag`, `root_dag`, `global`, and `custom`; use artifacts or external storage for large payloads.
+- Git worktree actions discover the repository from the step `working_dir`. Relative worktree paths resolve from the repository root, and the actions never fetch or push.
 - Remote action packages define `dagu-action.yaml` with `apiVersion: v1alpha1`, `name`, `dag`, and optional `inputs`/`outputs` JSON Schemas. `inputs` validates caller `with:` before the action DAG starts; `outputs` validates the final action output object after the action DAG returns.
 - Remote action manifests do not support `tools`. Declare external CLI tools in the action DAG itself so local and distributed workers prepare the right binaries for that action run.
 - In remote action examples, prefer `dag: workflow.yaml` for the action DAG filename. The `dag` field accepts any safe relative file path, but `workflow.yaml` avoids confusing the executable DAG with the `dagu-action.yaml` manifest.
@@ -163,11 +168,37 @@ steps:
         reviewed: false
 ```
 
+## Example of Human Input
+
+```yaml
+steps:
+  - id: review
+    action: human.task
+    with:
+      prompt: Choose the deployment target
+      form:
+        type: object
+        properties:
+          environment:
+            type: string
+            enum: [staging, production]
+          note:
+            type: string
+            default: ""
+        required: [environment]
+
+  - id: deploy
+    depends: [review]
+    run: ./deploy --environment '${steps.review.outputs.environment}' --note '${steps.review.outputs.note}'
+```
+
+Complete the task from a local CLI context with `dagu human-task complete --run-id=<run-id> --step=review --input environment=production <dag-name>`. A form is optional for acknowledgement-only tasks. Human tasks cannot be used in sub-DAGs; a distributed root run is re-queued through the scheduler after completion.
+
 ## Reference Guide
 
 Load only the file you need:
 
-- `references/steptypes.md` when choosing an action or checking executor-specific caveats such as `dag.run`, `parallel`, `jq.filter`, `file.*`, `state.*`, or `template.render`
+- `references/steptypes.md` when choosing an action or checking action-specific behavior such as `human.task`, `dag.run`, `parallel`, `git.worktree.*`, `jq.filter`, `file.*`, `state.*`, or `template.render`
 - `references/dagu-action.md` when creating a reusable `dagu-action.yaml` package or checking action input/output schema behavior
 - `references/cli.md` when you need command flags or lookup commands such as `dagu schema`, `dagu config`, or `dagu history`
 - `references/context.md` when using `${context.*}` metadata references or declared step `outputs:`

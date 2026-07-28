@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dagucloud/dagu/internal/auth"
@@ -29,6 +30,7 @@ var (
 	ErrMissingSecret                     = errors.New("token secret is not configured")
 	ErrPasswordMismatch                  = errors.New("current password is incorrect")
 	ErrWeakPassword                      = errors.New("password does not meet requirements")
+	ErrExternalAuthPasswordManagement    = errors.New("passwords for externally authenticated users are managed by their authentication provider")
 	ErrCannotDeleteSelf                  = errors.New("cannot delete your own account")
 	ErrInvalidAPIKey                     = errors.New("invalid API key")
 	ErrAPIKeyNotConfigured               = errors.New("API key management is not configured")
@@ -42,7 +44,7 @@ var (
 	ErrMissingWebhookHMACSignature       = errors.New("missing webhook HMAC signature")
 	ErrInvalidWebhookHMACSignature       = errors.New("invalid webhook HMAC signature")
 	ErrWebhookHMACNotConfigured          = errors.New("webhook HMAC is not configured")
-	ErrUserDisabled                      = errors.New("your account has been disabled, contact administrator")
+	ErrUserDisabled                      = auth.ErrUserDisabled
 )
 
 const (
@@ -58,6 +60,12 @@ const (
 	apiKeyRandomBytes = 32
 	// apiKeyPrefixLength is the length of the key prefix stored for identification.
 	apiKeyPrefixLength = 8
+	// apiKeyDigestPrefix identifies the digest format stored with API keys.
+	apiKeyDigestPrefix = "sha256:v1:"
+	// apiKeyDigestDomain separates API key digests from other SHA-256 uses.
+	apiKeyDigestDomain = "dagu-api-key:v1\x00" //nolint:gosec // Domain separator, not a credential.
+	// apiKeyLastUsedUpdateInterval limits persistence writes for active API keys.
+	apiKeyLastUsedUpdateInterval = time.Minute
 	// webhookTokenPrefix is the fixed prefix for all webhook tokens.
 	webhookTokenPrefix = "dagu_wh_" //nolint:gosec // Not a credential, just a token prefix
 	// webhookTokenRandomBytes is the number of random bytes for webhook token generation.
@@ -93,10 +101,11 @@ type Claims struct {
 
 // Service provides authentication and user management functionality.
 type Service struct {
-	store        auth.UserStore
-	apiKeyStore  auth.APIKeyStore
-	webhookStore auth.WebhookStore
-	config       Config
+	store             auth.UserStore
+	apiKeyStore       auth.APIKeyStore
+	webhookStore      auth.WebhookStore
+	config            Config
+	apiKeyMigrationMu sync.Mutex
 }
 
 // Option is a functional option for configuring the Service.
@@ -153,6 +162,14 @@ func (s *Service) Authenticate(ctx context.Context, username, password string) (
 			return nil, ErrInvalidCredentials
 		}
 		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	if !user.CanUsePassword() {
+		// Externally authenticated users must use their identity provider. Use the
+		// dummy hash so this path has the same shape as an unknown username and
+		// never accepts a legacy password hash that may still be persisted.
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+		return nil, ErrInvalidCredentials
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
@@ -334,27 +351,37 @@ func (s *Service) UpdateUser(ctx context.Context, id string, input UpdateUserInp
 	if err != nil {
 		return nil, err
 	}
-
-	if input.Username != nil && *input.Username != "" {
-		user.Username = *input.Username
+	if input.Password != nil && !user.CanUsePassword() {
+		return nil, ErrExternalAuthPasswordManagement
 	}
 
+	patch := auth.UserPatch{}
+	if input.Username != nil && *input.Username != "" {
+		username := *input.Username
+		patch.Username = &username
+	}
+
+	effectiveRole := user.Role
 	if input.Role != nil {
 		if !input.Role.Valid() {
 			return nil, fmt.Errorf("invalid role: %s", *input.Role)
 		}
-		user.Role = *input.Role
+		role := *input.Role
+		patch.Role = &role
+		effectiveRole = role
 	}
 
+	effectiveWorkspaceAccess := auth.CloneWorkspaceAccess(user.WorkspaceAccess)
 	if input.WorkspaceAccess != nil {
-		user.WorkspaceAccess = auth.CloneWorkspaceAccess(input.WorkspaceAccess)
+		patch.WorkspaceAccess = auth.CloneWorkspaceAccess(input.WorkspaceAccess)
+		effectiveWorkspaceAccess = patch.WorkspaceAccess
 	}
 
-	if err := auth.ValidateWorkspaceAccess(user.Role, user.WorkspaceAccess, nil); err != nil {
-		return nil, err
+	if input.Role != nil || input.WorkspaceAccess != nil {
+		if err := auth.ValidateWorkspaceAccess(effectiveRole, effectiveWorkspaceAccess, nil); err != nil {
+			return nil, err
+		}
 	}
-
-	now := time.Now().UTC()
 
 	if input.Password != nil && *input.Password != "" {
 		if err := s.validatePassword(*input.Password); err != nil {
@@ -364,21 +391,16 @@ func (s *Service) UpdateUser(ctx context.Context, id string, input UpdateUserInp
 		if err != nil {
 			return nil, fmt.Errorf("failed to hash password: %w", err)
 		}
-		user.PasswordHash = string(passwordHash)
-		user.PasswordChangedAt = &now
+		hash := string(passwordHash)
+		patch.PasswordHash = &hash
 	}
 
 	if input.IsDisabled != nil {
-		user.IsDisabled = *input.IsDisabled
+		disabled := *input.IsDisabled
+		patch.IsDisabled = &disabled
 	}
 
-	user.UpdatedAt = now
-
-	if err := s.store.Update(ctx, user); err != nil {
-		return nil, err
-	}
-
-	return user, nil
+	return s.store.Patch(ctx, id, patch)
 }
 
 // DeleteUser deletes a user by ID.
@@ -395,6 +417,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPa
 	user, err := s.store.GetByID(ctx, userID)
 	if err != nil {
 		return err
+	}
+	if !user.CanUsePassword() {
+		return ErrExternalAuthPasswordManagement
 	}
 
 	// Verify old password
@@ -413,12 +438,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPa
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
 
-	now := time.Now().UTC()
-	user.PasswordHash = string(passwordHash)
-	user.PasswordChangedAt = &now
-	user.UpdatedAt = now
-
-	return s.store.Update(ctx, user)
+	hash := string(passwordHash)
+	_, err = s.store.Patch(ctx, userID, auth.UserPatch{PasswordHash: &hash})
+	return err
 }
 
 // ResetPassword allows an admin to reset a user's password without knowing the old password.
@@ -426,6 +448,9 @@ func (s *Service) ResetPassword(ctx context.Context, userID, newPassword string)
 	user, err := s.store.GetByID(ctx, userID)
 	if err != nil {
 		return err
+	}
+	if !user.CanUsePassword() {
+		return ErrExternalAuthPasswordManagement
 	}
 
 	// Validate new password
@@ -439,12 +464,9 @@ func (s *Service) ResetPassword(ctx context.Context, userID, newPassword string)
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
 
-	now := time.Now().UTC()
-	user.PasswordHash = string(passwordHash)
-	user.PasswordChangedAt = &now
-	user.UpdatedAt = now
-
-	return s.store.Update(ctx, user)
+	hash := string(passwordHash)
+	_, err = s.store.Patch(ctx, userID, auth.UserPatch{PasswordHash: &hash})
+	return err
 }
 
 // CountUsers returns the total number of users in the store.
@@ -509,6 +531,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, input CreateAPIKeyInput, cre
 	if err != nil {
 		return nil, err
 	}
+	apiKey.KeyDigest = keyParts.keyDigest
 	apiKey.WorkspaceAccess = auth.CloneWorkspaceAccess(input.WorkspaceAccess)
 	if err := s.applyAPIKeyCreateMetadata(ctx, apiKey, input); err != nil {
 		return nil, err
@@ -528,6 +551,7 @@ type apiKeyParts struct {
 	fullKey   string
 	keyPrefix string
 	keyHash   string
+	keyDigest string
 }
 
 // generateAPIKey generates a new API key with prefix, hash, and prefix for display.
@@ -558,7 +582,13 @@ func generateAPIKey(bcryptCost int) (*apiKeyParts, error) {
 		fullKey:   fullKey,
 		keyPrefix: keyPrefix,
 		keyHash:   string(hashBytes),
+		keyDigest: apiKeyDigest(fullKey),
 	}, nil
+}
+
+func apiKeyDigest(fullKey string) string {
+	sum := sha256.Sum256([]byte(apiKeyDigestDomain + fullKey))
+	return apiKeyDigestPrefix + hex.EncodeToString(sum[:])
 }
 
 // GetAPIKey retrieves an API key by ID.
@@ -659,7 +689,6 @@ func (s *Service) DeleteAPIKey(ctx context.Context, id string) error {
 }
 
 // ValidateAPIKey validates an API key and returns the associated APIKey if valid.
-// Uses the stored KeyPrefix to skip non-matching keys before bcrypt comparison.
 func (s *Service) ValidateAPIKey(ctx context.Context, keySecret string) (*auth.APIKey, error) {
 	if s.apiKeyStore == nil {
 		return nil, ErrAPIKeyNotConfigured
@@ -670,36 +699,78 @@ func (s *Service) ValidateAPIKey(ctx context.Context, keySecret string) (*auth.A
 		return nil, ErrInvalidAPIKey
 	}
 
+	digest := apiKeyDigest(keySecret)
+	key, err := s.apiKeyStore.GetByDigest(ctx, digest)
+	if err == nil {
+		return s.finishAPIKeyValidation(ctx, key)
+	}
+	if !errors.Is(err, auth.ErrAPIKeyNotFound) {
+		return nil, fmt.Errorf("failed to get API key by digest: %w", err)
+	}
+
+	return s.validateLegacyAPIKey(ctx, keySecret, digest)
+}
+
+func (s *Service) validateLegacyAPIKey(ctx context.Context, keySecret, digest string) (*auth.APIKey, error) {
+	s.apiKeyMigrationMu.Lock()
+	defer s.apiKeyMigrationMu.Unlock()
+
+	key, err := s.apiKeyStore.GetByDigest(ctx, digest)
+	if err == nil {
+		return s.finishAPIKeyValidation(ctx, key)
+	}
+	if !errors.Is(err, auth.ErrAPIKeyNotFound) {
+		return nil, fmt.Errorf("failed to recheck API key digest: %w", err)
+	}
+
 	keys, err := s.apiKeyStore.List(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list API keys: %w", err)
+		return nil, fmt.Errorf("failed to list legacy API keys: %w", err)
 	}
 
-	// Extract the candidate prefix for fast filtering before bcrypt.
-	var candidatePrefix string
-	if len(keySecret) >= apiKeyPrefixLength {
-		candidatePrefix = keySecret[:apiKeyPrefixLength]
+	candidatePrefix := keySecret
+	if len(candidatePrefix) > apiKeyPrefixLength {
+		candidatePrefix = candidatePrefix[:apiKeyPrefixLength]
 	}
-
 	for _, key := range keys {
-		if candidatePrefix != "" && key.KeyPrefix != candidatePrefix {
+		if key.KeyDigest != "" || key.KeyPrefix != candidatePrefix {
 			continue
 		}
-		if err := bcrypt.CompareHashAndPassword([]byte(key.KeyHash), []byte(keySecret)); err == nil {
-			key = auth.NormalizeAPIKeyMetadata(key)
-			if err := s.validateAPIKeyOwner(ctx, key); err != nil {
-				return nil, err
-			}
-			// Update last used timestamp synchronously.
-			// This avoids goroutine leaks and race conditions with Delete.
-			if err := s.apiKeyStore.UpdateLastUsed(ctx, key.ID); err != nil {
-				slog.Error("failed to update API key last used timestamp", "keyID", key.ID, "error", err)
-			}
-			return key, nil
+		if err := bcrypt.CompareHashAndPassword([]byte(key.KeyHash), []byte(keySecret)); err != nil {
+			continue
 		}
+
+		if err := s.apiKeyStore.PromoteDigest(ctx, key.ID, digest); err != nil {
+			slog.Error("failed to promote legacy API key digest", "keyID", key.ID, "error", err)
+		} else {
+			key.KeyDigest = digest
+		}
+		return s.finishAPIKeyValidation(ctx, key)
 	}
 
 	return nil, ErrInvalidAPIKey
+}
+
+func (s *Service) finishAPIKeyValidation(ctx context.Context, key *auth.APIKey) (*auth.APIKey, error) {
+	if key == nil {
+		return nil, ErrInvalidAPIKey
+	}
+	key = auth.NormalizeAPIKeyMetadata(key)
+	if err := s.validateAPIKeyOwner(ctx, key); err != nil {
+		return nil, err
+	}
+	s.updateAPIKeyLastUsed(ctx, key)
+	return key, nil
+}
+
+func (s *Service) updateAPIKeyLastUsed(ctx context.Context, key *auth.APIKey) {
+	now := time.Now().UTC()
+	if key.LastUsedAt != nil && now.Sub(*key.LastUsedAt) < apiKeyLastUsedUpdateInterval {
+		return
+	}
+	if err := s.apiKeyStore.UpdateLastUsed(ctx, key.ID); err != nil {
+		slog.Error("failed to update API key last used timestamp", "keyID", key.ID, "error", err)
+	}
 }
 
 func (s *Service) applyAPIKeyCreateMetadata(ctx context.Context, key *auth.APIKey, input CreateAPIKeyInput) error {

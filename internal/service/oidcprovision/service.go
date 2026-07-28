@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,6 +45,9 @@ type Config struct {
 	Whitelist []string
 	// RoleMapping holds the role mapping configuration.
 	RoleMapping RoleMapperConfig
+	// WorkspaceExists checks whether a configured workspace currently exists.
+	// Missing workspaces are reported but do not prevent authentication.
+	WorkspaceExists func(context.Context, string) (bool, error)
 }
 
 // OIDCClaims contains the claims extracted from an OIDC ID token.
@@ -62,7 +66,7 @@ type OIDCClaims struct {
 
 // Service provides OIDC user provisioning functionality.
 type Service struct {
-	userStore  auth.UserStore
+	userStore  auth.AuthorizationSyncUserStore
 	config     Config
 	roleMapper *RoleMapper
 	logger     *slog.Logger
@@ -70,13 +74,20 @@ type Service struct {
 
 // New creates a new OIDC provisioning service.
 func New(userStore auth.UserStore, config Config) (*Service, error) {
+	authorizationStore, ok := userStore.(auth.AuthorizationSyncUserStore)
+	if !ok {
+		return nil, errors.New("OIDC provisioner: user store does not support atomic authorization sync")
+	}
+	if config.RoleMapping.DefaultRole == auth.RoleNone {
+		config.RoleMapping.DefaultRole = config.DefaultRole
+	}
 	roleMapper, err := NewRoleMapper(config.RoleMapping)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create role mapper: %w", err)
 	}
 
 	return &Service{
-		userStore:  userStore,
+		userStore:  authorizationStore,
 		config:     config,
 		roleMapper: roleMapper,
 		logger:     slog.Default().With(slog.String("service", "oidcprovision")),
@@ -110,13 +121,27 @@ func (s *Service) ProcessLogin(ctx context.Context, claims OIDCClaims) (*auth.Us
 			return nil, false, authservice.ErrUserDisabled
 		}
 
-		// Sync roles on re-login (unless skipOrgRoleSync is true)
-		if !s.config.RoleMapping.SkipOrgRoleSync {
-			if err := s.syncUserRole(ctx, user, claims); err != nil {
-				s.logger.Warn("failed to sync user role",
+		// Synchronize mapped authorization, or enforce strict matching when synchronization is disabled.
+		if s.config.RoleMapping.SkipOrgRoleSync {
+			if err := s.validateStrictMapping(claims); err != nil {
+				s.logger.Warn("OIDC login rejected: authorization mapping failed",
 					slog.String("user_id", user.ID),
 					slog.String("error", err.Error()))
-				// Continue with login even if role sync fails (non-fatal)
+				return nil, false, err
+			}
+		} else {
+			if err := s.syncUserAccess(ctx, user, claims); err != nil {
+				if s.roleMapper.WorkspaceAccessPolicyActive() ||
+					errors.Is(err, ErrNoRoleFound) ||
+					errors.Is(err, auth.ErrUserDisabled) {
+					s.logger.Warn("OIDC login rejected: authorization mapping failed",
+						slog.String("user_id", user.ID),
+						slog.String("error", err.Error()))
+					return nil, false, err
+				}
+				s.logger.Warn("failed to sync OIDC user authorization",
+					slog.String("user_id", user.ID),
+					slog.String("error", err.Error()))
 			}
 		}
 
@@ -139,10 +164,10 @@ func (s *Service) ProcessLogin(ctx context.Context, claims OIDCClaims) (*auth.Us
 		return nil, false, ErrAutoSignupDisabled
 	}
 
-	// 5. Determine role for new user
-	role, err := s.determineRole(claims)
+	// 5. Determine authorization for the new user.
+	role, workspaceAccess, err := s.determineAccess(ctx, claims)
 	if err != nil {
-		s.logger.Warn("OIDC login rejected: role mapping failed",
+		s.logger.Warn("OIDC login rejected: authorization mapping failed",
 			slog.String("email_domain", stringutil.ExtractEmailDomain(claims.Email)),
 			slog.String("error", err.Error()))
 		return nil, false, err
@@ -160,7 +185,7 @@ func (s *Service) ProcessLogin(ctx context.Context, claims OIDCClaims) (*auth.Us
 			ID:              uuid.New().String(),
 			Username:        username,
 			Role:            role,
-			WorkspaceAccess: auth.AllWorkspaceAccess(),
+			WorkspaceAccess: auth.CloneWorkspaceAccess(workspaceAccess),
 			AuthProvider:    "oidc",
 			OIDCIssuer:      s.config.Issuer,
 			OIDCSubject:     claims.Subject,
@@ -186,58 +211,129 @@ func (s *Service) ProcessLogin(ctx context.Context, claims OIDCClaims) (*auth.Us
 		slog.String("user_id", user.ID),
 		slog.String("username", username),
 		slog.String("email_domain", stringutil.ExtractEmailDomain(claims.Email)),
-		slog.String("role", string(user.Role)))
+		slog.String("role", string(user.Role)),
+		slog.Any("workspace_access", canonicalWorkspaceAccess(user.WorkspaceAccess)))
 
 	return user, true, nil // New user created
 }
 
-// determineRole determines the role for a user based on their OIDC claims.
-func (s *Service) determineRole(claims OIDCClaims) (auth.Role, error) {
-	// Use role mapper if configured
-	if s.roleMapper.IsConfigured() {
-		return s.roleMapper.MapRole(claims.RawClaims)
+func (s *Service) validateStrictMapping(claims OIDCClaims) error {
+	if !s.config.RoleMapping.RoleAttributeStrict || !s.roleMapper.IsConfigured() {
+		return nil
 	}
-
-	// Fall back to default role
-	return s.config.DefaultRole, nil
+	_, _, err := s.roleMapper.MapAccess(claims.RawClaims)
+	return err
 }
 
-// syncUserRole updates the user's role based on current OIDC claims.
-func (s *Service) syncUserRole(ctx context.Context, user *auth.User, claims OIDCClaims) error {
-	// Only sync if role mapper is configured
+// determineAccess determines authorization for a user based on OIDC claims.
+func (s *Service) determineAccess(ctx context.Context, claims OIDCClaims) (auth.Role, *auth.WorkspaceAccess, error) {
+	if s.roleMapper.IsConfigured() {
+		role, workspaceAccess, err := s.roleMapper.MapAccess(claims.RawClaims)
+		if err != nil {
+			return "", nil, err
+		}
+		s.warnForDormantGrants(ctx, workspaceAccess)
+		return role, workspaceAccess, nil
+	}
+
+	return s.config.DefaultRole, auth.AllWorkspaceAccess(), nil
+}
+
+// syncUserAccess updates mapped authorization without exposing unpersisted values.
+func (s *Service) syncUserAccess(ctx context.Context, user *auth.User, claims OIDCClaims) error {
 	if !s.roleMapper.IsConfigured() {
 		return nil
 	}
 
-	newRole, err := s.roleMapper.MapRole(claims.RawClaims)
+	accessPolicyActive := s.roleMapper.WorkspaceAccessPolicyActive()
+	var (
+		newRole   auth.Role
+		newAccess *auth.WorkspaceAccess
+		err       error
+	)
+	if accessPolicyActive {
+		newRole, newAccess, err = s.determineAccess(ctx, claims)
+	} else {
+		newRole, err = s.roleMapper.MapRole(claims.RawClaims)
+	}
 	if err != nil {
-		// In strict mode, this is an error; otherwise, keep current role
-		if errors.Is(err, ErrNoRoleFound) {
-			return nil // Keep current role
-		}
 		return err
 	}
 
-	// Check if role changed
-	if user.Role == newRole {
+	workspaceAccess := newAccess
+	if !accessPolicyActive {
+		workspaceAccess = nil
+	}
+	syncResult, err := s.userStore.SyncAuthorization(ctx, user.ID, newRole, workspaceAccess)
+	if err != nil {
+		return fmt.Errorf("failed to update OIDC user authorization: %w", err)
+	}
+	updated := syncResult.User
+	if updated == nil {
+		return errors.New("failed to update OIDC user authorization: store returned no user")
+	}
+
+	user.Role = updated.Role
+	if accessPolicyActive {
+		user.WorkspaceAccess = auth.CloneWorkspaceAccess(updated.WorkspaceAccess)
+	}
+	user.UpdatedAt = updated.UpdatedAt
+	if !syncResult.Changed {
 		return nil
 	}
 
-	oldRole := user.Role
-	user.Role = newRole
-	user.UpdatedAt = time.Now().UTC()
-
-	if err := s.userStore.Update(ctx, user); err != nil {
-		return fmt.Errorf("failed to update user role: %w", err)
+	if accessPolicyActive {
+		s.logger.Info("OIDC user authorization updated",
+			slog.String("user_id", user.ID),
+			slog.String("username", user.Username),
+			slog.String("old_role", string(syncResult.PreviousRole)),
+			slog.String("new_role", string(newRole)),
+			slog.Any("old_workspace_access", canonicalWorkspaceAccess(syncResult.PreviousWorkspaceAccess)),
+			slog.Any("new_workspace_access", canonicalWorkspaceAccess(updated.WorkspaceAccess)))
+	} else {
+		s.logger.Info("OIDC user role updated",
+			slog.String("user_id", user.ID),
+			slog.String("username", user.Username),
+			slog.String("old_role", string(syncResult.PreviousRole)),
+			slog.String("new_role", string(newRole)))
 	}
 
-	s.logger.Info("OIDC user role updated",
-		slog.String("user_id", user.ID),
-		slog.String("username", user.Username),
-		slog.String("old_role", string(oldRole)),
-		slog.String("new_role", string(newRole)))
-
 	return nil
+}
+
+func (s *Service) warnForDormantGrants(ctx context.Context, workspaceAccess *auth.WorkspaceAccess) {
+	if s.config.WorkspaceExists == nil {
+		return
+	}
+
+	normalized := canonicalWorkspaceAccess(workspaceAccess)
+	if normalized.All {
+		return
+	}
+	for _, grant := range normalized.Grants {
+		exists, err := s.config.WorkspaceExists(ctx, grant.Workspace)
+		if err != nil {
+			s.logger.Warn("failed to check OIDC workspace grant",
+				slog.String("workspace", grant.Workspace),
+				slog.String("error", err.Error()))
+			continue
+		}
+		if !exists {
+			s.logger.Warn("OIDC workspace grant references a nonexistent workspace",
+				slog.String("workspace", grant.Workspace))
+		}
+	}
+}
+
+func canonicalWorkspaceAccess(workspaceAccess *auth.WorkspaceAccess) auth.WorkspaceAccess {
+	normalized := auth.NormalizeWorkspaceAccess(workspaceAccess)
+	slices.SortFunc(normalized.Grants, func(left, right auth.WorkspaceGrant) int {
+		if result := strings.Compare(left.Workspace, right.Workspace); result != 0 {
+			return result
+		}
+		return strings.Compare(string(left.Role), string(right.Role))
+	})
+	return normalized
 }
 
 // isEmailAllowed checks if an email is allowed based on whitelist and allowedDomains.

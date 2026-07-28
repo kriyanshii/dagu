@@ -115,7 +115,7 @@ export interface paths {
         put?: never;
         /**
          * Change current user's password
-         * @description Allows the authenticated user to change their own password
+         * @description Allows a locally authenticated builtin user to change their own password. Externally authenticated users do not have Dagu passwords.
          */
         post: operations["changePassword"];
         delete?: never;
@@ -187,7 +187,7 @@ export interface paths {
         put?: never;
         /**
          * Reset user's password
-         * @description Resets a user's password to a new value. Requires admin role.
+         * @description Resets a locally authenticated builtin user's password to a new value. Requires admin role. Externally authenticated users do not have Dagu passwords.
          */
         post: operations["resetUserPassword"];
         delete?: never;
@@ -989,6 +989,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/dag-runs/{name}/{dagRunId}/human-tasks/{stepId}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete a waiting human task
+         * @description Validates typed input against the stored human-task form, completes the step atomically, and queues the same DAG-run when no manual steps remain waiting.
+         */
+        post: operations["completeHumanTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dag-runs/{name}/{dagRunId}/human-tasks/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue a completed human-task checkpoint for resume
+         * @description Queues a retry for a completed human-task checkpoint without requiring the previously submitted form values.
+         */
+        post: operations["resumeHumanTaskDAGRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/dag-runs/{name}/{dagRunId}/stop": {
         parameters: {
             query?: never;
@@ -1084,7 +1124,7 @@ export interface paths {
         head?: never;
         /**
          * Manually update a step's execution status
-         * @description Changes the status of a specific step within a DAG-run
+         * @description Changes the status of a specific step after the DAG-run is no longer active
          */
         patch: operations["updateDAGRunStepStatus"];
         trace?: never;
@@ -1364,7 +1404,7 @@ export interface paths {
         head?: never;
         /**
          * Manually update a step's execution status in a sub DAG-run
-         * @description Changes the status of a specific step within a sub DAG-run
+         * @description Changes the status of a specific step after the sub DAG-run and its embedded root run are no longer active
          */
         patch: operations["updateSubDAGRunStepStatus"];
         trace?: never;
@@ -2294,7 +2334,7 @@ export interface paths {
         put?: never;
         /**
          * Publish selected DAGs
-         * @description Commits and pushes the specified item IDs. If itemIds is omitted, publishes all modified or untracked items.
+         * @description Commits and pushes the specified DAG IDs. If itemIds is omitted, publishes all modified or untracked DAGs.
          */
         post: operations["syncPublishAll"];
         delete?: never;
@@ -2355,8 +2395,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get diff for a sync item
-         * @description Returns the diff between local and remote versions of a sync item
+         * Get diff for a DAG
+         * @description Returns the diff between local and remote versions of a DAG
          */
         get: operations["getSyncItemDiff"];
         put?: never;
@@ -2377,8 +2417,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Publish a single sync item
-         * @description Commits and pushes a single sync item to the remote repository
+         * Publish a single DAG
+         * @description Commits and pushes a single DAG to the remote repository
          */
         post: operations["publishSyncItem"];
         delete?: never;
@@ -2397,7 +2437,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Discard local changes for a sync item
+         * Discard local changes for a DAG
          * @description Discards local changes and reverts to the version in the remote repository
          */
         post: operations["discardSyncItemChanges"];
@@ -2417,8 +2457,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Forget a sync item
-         * @description Removes the state entry for a missing, untracked, or conflict sync item. Synced and modified items are rejected.
+         * Forget a DAG
+         * @description Removes the state entry for a missing, untracked, or conflicting DAG. Synced and modified DAGs are rejected.
          */
         post: operations["forgetSyncItem"];
         delete?: never;
@@ -2437,8 +2477,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Delete a sync item
-         * @description Removes an item from remote repository (git rm + commit + push), local disk, and sync state
+         * Delete a DAG
+         * @description Removes a DAG from the remote repository (git rm + commit + push), local disk, and sync state
          */
         post: operations["deleteSyncItem"];
         delete?: never;
@@ -2457,8 +2497,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Move a sync item
-         * @description Atomically renames an item across local filesystem, remote repository, and sync state
+         * Move a DAG
+         * @description Atomically renames a DAG across local filesystem, remote repository, and sync state
          */
         post: operations["moveSyncItem"];
         delete?: never;
@@ -2477,8 +2517,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Delete all missing sync items
-         * @description Removes all missing items from remote repository, local disk, and sync state
+         * Delete all missing DAGs
+         * @description Removes all missing DAGs from the remote repository, local disk, and sync state
          */
         post: operations["syncDeleteMissing"];
         delete?: never;
@@ -2497,8 +2537,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Delete selected sync items
-         * @description Removes the specified items from remote repository, local disk, and sync state in a single commit.
+         * Delete selected DAGs
+         * @description Removes the specified DAGs from the remote repository, local disk, and sync state in a single commit.
          */
         post: operations["syncDeleteBatch"];
         delete?: never;
@@ -2517,7 +2557,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Cleanup missing sync items
+         * Cleanup missing DAGs
          * @description Removes all missing entries from sync state
          */
         post: operations["syncCleanup"];
@@ -3355,6 +3395,36 @@ export interface components {
             /** @description Optional step name to restart from when the approver pushes the step back. Must reference the step itself or an upstream dependency. */
             rewindTo?: string;
         };
+        /** @description Resolved human-task instructions and optional normalized input form */
+        HumanTaskConfig: {
+            /** @description Instructions displayed to the operator. Run details contain the resolved, secret-masked snapshot. */
+            prompt: string;
+            /** @description Normalized flat JSON Schema for typed completion input */
+            form?: {
+                [key: string]: unknown;
+            };
+        };
+        /** @description Typed human-task completion input. An empty object acknowledges a task without a form. */
+        HumanTaskInput: {
+            [key: string]: unknown;
+        };
+        /** @description Result of completing or confirming one human task */
+        HumanTaskCompletionResponse: {
+            dagName: components["schemas"]["DAGName"];
+            dagRunId: components["schemas"]["DAGRunId"];
+            stepId: string;
+            alreadyCompleted: boolean;
+            /** @description Whether this request durably queued the DAG-run retry */
+            queued: boolean;
+            remainingWaitingSteps: number;
+        };
+        /** @description Result of queueing a completed human-task retry */
+        HumanTaskResumeResponse: {
+            dagName: components["schemas"]["DAGName"];
+            dagRunId: components["schemas"]["DAGRunId"];
+            /** @description Whether this request durably queued the DAG-run retry */
+            queued: boolean;
+        };
         /** @description Generic error response object */
         Error: {
             code: components["schemas"]["ErrorCode"];
@@ -3678,6 +3748,8 @@ export interface components {
             botToken?: string;
             /** @description Telegram chat ID */
             chatId?: string;
+            /** @description Optional Telegram topic ID (message thread ID) for forum groups */
+            topicId?: string;
             /** @description Optional Telegram message template. When omitted, Dagu sends the default notification text. */
             messageTemplate?: string;
         };
@@ -3689,6 +3761,8 @@ export interface components {
             botTokenPreview?: string;
             /** @description Telegram chat ID */
             chatId?: string;
+            /** @description Optional Telegram topic ID (message thread ID) for forum groups */
+            topicId?: string;
             /** @description Optional Telegram message template. When omitted, Dagu sends the default notification text. */
             messageTemplate?: string;
         };
@@ -4164,7 +4238,7 @@ export interface components {
          *     4: "Success"
          *     5: "Queued"
          *     6: "Partial Success"
-         *     7: "Waiting for approval"
+         *     7: "Waiting for manual action"
          *     8: "Rejected"
          *
          * @enum {integer}
@@ -4189,7 +4263,7 @@ export interface components {
          *     4: "Success"
          *     5: "Skipped"
          *     6: "Partial Success"
-         *     7: "Waiting for approval"
+         *     7: "Waiting for manual action"
          *     8: "Rejected"
          *     9: "Retrying"
          *
@@ -4280,6 +4354,13 @@ export interface components {
         /** @description Detailed DAG configuration information */
         DAGDetails: {
             /**
+             * @description Execution type. 'graph' resolves dependencies, 'chain' runs steps in order, 'controller' lets an LLM choose each step.
+             * @enum {string}
+             */
+            type?: DAGDetailsType;
+            /** @description Goals a controller DAG must satisfy. Present only for type controller. */
+            tasks?: components["schemas"]["ControllerTask"][];
+            /**
              * Format: date-time
              * @description Scheduler-aware next planned run time. Pending overdue one-offs remain visible until consumed.
              */
@@ -4350,6 +4431,11 @@ export interface components {
              * @enum {string}
              */
             reason?: ValueReferenceNoticeReason;
+            /**
+             * @description Whether the reference is a defect in the spec or its availability depends on runtime values or lifecycle scope.
+             * @enum {string}
+             */
+            class?: ValueReferenceNoticeClass;
         };
         /** @description Editor-only metadata used to synthesize per-document schema hints */
         DAGEditorHints: {
@@ -4507,6 +4593,8 @@ export interface components {
             /** @description ID of the worker that executed this DAG-run ('local' for local execution) */
             workerId?: string;
             triggerType?: components["schemas"]["TriggerType"];
+            /** @description Authenticated actor that initiated the DAG-run, when attribution is available */
+            triggerActor?: string;
             /** @description Type-keyed current-state runtime conditions for the DAG-run. This list reports the latest condition for each type, not a history of queued reasons. */
             conditions?: components["schemas"]["DAGRunCondition"][];
             /** @description List of labels for categorizing and filtering DAG runs */
@@ -4529,16 +4617,24 @@ export interface components {
             log: string;
             /** @description Status of individual steps within the DAG-run */
             nodes: components["schemas"]["Node"][];
+            onInit?: components["schemas"]["Node"];
             onExit?: components["schemas"]["Node"];
             onSuccess?: components["schemas"]["Node"];
             onFailure?: components["schemas"]["Node"];
             onAbort?: components["schemas"]["Node"];
+            onWait?: components["schemas"]["Node"];
             /** @description List of preconditions that must be met before the DAG-run can start */
             preconditions?: components["schemas"]["Condition"][];
+            /** @description Goal progress of a controller DAG-run. Absent for other DAG types. */
+            controllerTasks?: components["schemas"]["ControllerTask"][];
+            /** @description Ordered decision timeline of a controller DAG-run: what the controller ran, in what order, and when each task was satisfied. Absent for other DAG types. */
+            controllerEvents?: components["schemas"]["ControllerEvent"][];
             /** @description Whether this DAG-run still has a usable source file on disk, so reschedule can load the current spec from that file instead of the stored historical YAML snapshot. */
             specFromFile?: boolean;
             /** @description File name of the source DAG definition, derived from the DAG-run's source file path. Only set when the source file still exists on disk. Can be used to navigate to the DAG definition page. */
             sourceFileName?: components["schemas"]["DAGFileName"];
+            /** @description Whether completed human-task input is durable but the same DAG-run still needs its retry queued */
+            humanTaskResumePending?: boolean;
         };
         /**
          * @description Artifact tree node type
@@ -4620,6 +4716,46 @@ export interface components {
             /** @description JSON-serialized parameters passed to the DAG */
             params?: string;
         };
+        /** @description One entry on a controller DAG-run's decision timeline */
+        ControllerEvent: {
+            /** @description Controller turn this event belongs to, starting at 1 */
+            turn: number;
+            /**
+             * @description What the controller did on this turn
+             * @enum {string}
+             */
+            kind: ControllerEventKind;
+            /** @description Step or task the event concerns */
+            name?: string;
+            /** @description Resulting step status for an action event, or the new task status for a task_status event */
+            status?: string;
+            /** @description Which run of this step it was, starting at 1 */
+            attempt?: number;
+            /** @description Controller's justification, or why the call was rejected */
+            reason?: string;
+            /** @description RFC3339 timestamp when the step started */
+            startedAt?: string;
+            /** @description RFC3339 timestamp when the step finished */
+            finishedAt?: string;
+            /** @description Child DAG-run this action produced, for linking to its run page. Absent for steps that run no child DAG. */
+            childDagRunId?: string;
+            /** @description Name of the child DAG that ran */
+            childDagName?: string;
+        };
+        /** @description A goal a controller DAG must satisfy before the run concludes */
+        ControllerTask: {
+            /** @description Unique task name */
+            name: string;
+            /** @description Completion criteria the controller decides against */
+            description?: string;
+            /**
+             * @description Where the task stands. The run ends once none is open, and fails if any is failed. A skipped task does not fail the run.
+             * @enum {string}
+             */
+            status: ControllerTaskStatus;
+            /** @description Justification the controller gave for the current status */
+            reason?: string;
+        };
         /** @description Status of an individual step within a DAG-run */
         Node: {
             step: components["schemas"]["Step"];
@@ -4643,10 +4779,16 @@ export interface components {
             subRunsRepeated?: components["schemas"]["SubDAGRun"][];
             /** @description Error message if the step failed */
             error?: string;
+            /** @description Name of the subject that completed the human task */
+            humanTaskCompletedBy?: string;
+            /** @description ID of the subject that completed the human task; local CLI IDs use the os:<uid> form */
+            humanTaskCompletedById?: string;
             /** @description RFC3339 timestamp when the step was approved */
             approvedAt?: string;
             /** @description Username of who approved the step */
             approvedBy?: string;
+            /** @description ID of the subject that approved the step */
+            approvedById?: string;
             /** @description Key-value inputs provided during approval */
             approvalInputs?: {
                 [key: string]: string;
@@ -4655,6 +4797,8 @@ export interface components {
             rejectedAt?: string;
             /** @description Username of who rejected the step */
             rejectedBy?: string;
+            /** @description ID of the subject that rejected the step */
+            rejectedById?: string;
             /** @description Optional reason for rejection */
             rejectionReason?: string;
             /** @description Number of times this step has been pushed back for re-execution */
@@ -4672,6 +4816,8 @@ export interface components {
             iteration: number;
             /** @description Authenticated user who pushed the step back */
             by?: string;
+            /** @description ID of the subject that pushed the step back */
+            byId?: string;
             /**
              * Format: date-time
              * @description RFC3339 timestamp when the push-back was recorded
@@ -4777,6 +4923,7 @@ export interface components {
                 }[];
             };
             approval?: components["schemas"]["ApprovalConfig"];
+            humanTask?: components["schemas"]["HumanTaskConfig"];
         };
         /** @description Individual search result item for a DAG */
         SearchResultItem: {
@@ -4844,9 +4991,11 @@ export interface components {
         };
         /** @description Precondition that must be satisfied before running a step or DAG-run */
         Condition: {
-            /** @description Expression or check to evaluate. When `expected` is omitted, the value runs as a command check using the same variable expansion rules as shell `command` steps. */
-            condition: string;
-            /** @description Expected result of the condition evaluation. When set, Dagu compares the evaluated string output instead of using command exit status. */
+            /** @description Value or command text to evaluate. When `expected` is omitted, this runs as a command check. When `expected` is set, this is value-resolved and compared as data. */
+            condition?: string;
+            /** @description Dynamic value expression to evaluate and compare with `expected`. Valid only when `expected` is set and `condition` is omitted. */
+            eval?: string;
+            /** @description Expected result for a value-match precondition. When set, Dagu compares the actual value from `condition` or `eval` instead of using command exit status. */
             expected?: string;
             /** @description If true, inverts the condition result (run when condition does NOT match) */
             negate?: boolean;
@@ -5021,6 +5170,11 @@ export interface components {
          * @enum {string}
          */
         UserRole: UserRole;
+        /**
+         * @description Authentication provider for a user account
+         * @enum {string}
+         */
+        UserAuthProvider: UserAuthProvider;
         /** @description Workspace name. The reserved names all, default, and global are not allowed. */
         WorkspaceName: string;
         /** @description Role granted for a specific workspace */
@@ -5098,11 +5252,7 @@ export interface components {
             username: string;
             role: components["schemas"]["UserRole"];
             workspaceAccess: components["schemas"]["WorkspaceAccess"];
-            /**
-             * @description Authentication provider (builtin or oidc)
-             * @enum {string}
-             */
-            authProvider?: UserAuthProvider;
+            authProvider?: components["schemas"]["UserAuthProvider"];
             /** @description Whether the user account is disabled */
             isDisabled?: boolean;
             /**
@@ -5123,6 +5273,12 @@ export interface components {
         /** @description Response containing list of users */
         UsersListResponse: {
             users: components["schemas"]["User"][];
+            /** @description Whether OIDC workspace access is synchronized by this node */
+            oidcWorkspaceAccessSyncEnabled?: boolean;
+            /** @description Authentication providers that synchronize user roles at login on this node */
+            managedRoleProviders: components["schemas"]["UserAuthProvider"][];
+            /** @description Authentication providers that synchronize workspace access at login on this node */
+            managedWorkspaceAccessProviders: components["schemas"]["UserAuthProvider"][];
         };
         /** @description API key information */
         APIKey: {
@@ -5240,21 +5396,15 @@ export interface components {
          * @enum {string}
          */
         SyncSummary: SyncSummary;
-        /**
-         * @description Type of sync item
-         * @enum {string}
-         */
-        SyncItemKind: SyncItemKind;
-        /** @description Sync state for a single item */
+        /** @description Sync state for a single DAG */
         SyncItem: {
-            /** @description Stable item identifier (file path without extension) */
+            /** @description Stable DAG identifier (file path without extension) */
             itemId: string;
             /** @description Relative file path with extension */
             filePath: string;
-            /** @description Display-friendly item name */
+            /** @description Display-friendly DAG name */
             displayName: string;
             status: components["schemas"]["SyncStatus"];
-            kind: components["schemas"]["SyncItemKind"];
             /** @description Commit hash when last synced */
             baseCommit?: string;
             /** @description Content hash when last synced */
@@ -5318,7 +5468,7 @@ export interface components {
             lastSyncStatus?: string;
             /** @description Error message from last failed sync */
             lastError?: string;
-            /** @description Sync state for each item */
+            /** @description Sync state for each DAG */
             items: components["schemas"]["SyncItem"][];
             counts: components["schemas"]["SyncStatusCounts"];
         };
@@ -5327,9 +5477,9 @@ export interface components {
             itemId?: string;
             message: string;
         };
-        /** @description Diff between local and remote versions of a sync item */
+        /** @description Diff between local and remote versions of a DAG */
         SyncItemDiffResponse: {
-            /** @description The item identifier */
+            /** @description The DAG identifier */
             itemId: string;
             /** @description Relative file path with extension */
             filePath: string;
@@ -5369,20 +5519,20 @@ export interface components {
              */
             force: boolean;
         };
-        /** @description Request to publish selected items */
+        /** @description Request to publish selected DAGs */
         SyncPublishAllRequest: {
             /** @description Commit message */
             message?: string;
-            /** @description Item IDs to publish. If omitted, all modified or untracked items are published. */
+            /** @description DAG IDs to publish. If omitted, all modified or untracked DAGs are published. */
             itemIds?: string[];
         };
-        /** @description Request to delete selected items */
+        /** @description Request to delete selected DAGs */
         SyncDeleteBatchRequest: {
-            /** @description Item IDs to delete */
+            /** @description DAG IDs to delete */
             itemIds: string[];
             /** @description Commit message for the deletion */
             message?: string;
-            /** @description Force delete items with local modifications or conflicts */
+            /** @description Force delete DAGs with local modifications or conflicts */
             force?: boolean;
         };
         /** @description Response when a conflict is detected */
@@ -5734,6 +5884,8 @@ export interface components {
         DAGName: components["schemas"]["DAGName"];
         /** @description name of the step */
         StepName: string;
+        /** @description explicit ID of the human-task step */
+        HumanTaskStepId: string;
         /** @description Relative artifact file path within the DAG-run artifact directory. Must not start with '/' or '\' or contain '..'. */
         ArtifactPath: string & unknown & unknown & unknown;
         /** @description Whether to recursively expand nested artifact directories */
@@ -6040,6 +6192,15 @@ export interface operations {
             };
             /** @description Not authenticated or wrong current password */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Password is managed by the authentication provider */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6414,7 +6575,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Forbidden - requires admin role */
+            /** @description Forbidden - requires admin role, or the target user uses an external authentication provider */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8860,6 +9021,7 @@ export interface operations {
                     dagRunId: components["schemas"]["DAGRunId"] & unknown;
                     /** @description Optional. If provided, only this step will be retried. */
                     stepName?: string;
+                    subDAGRunId?: components["schemas"]["DAGRunId"] & unknown;
                 };
             };
         };
@@ -8870,6 +9032,159 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    completeHumanTask: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                /** @description name of the DAG */
+                name: components["parameters"]["DAGName"];
+                /** @description ID of the DAG-run; must not be the special 'latest' alias */
+                dagRunId: components["parameters"]["DAGRunConcreteId"];
+                /** @description explicit ID of the human-task step */
+                stepId: components["parameters"]["HumanTaskStepId"];
+            };
+            cookie?: never;
+        };
+        /** @description Typed form input. The JSON request body is limited to 16 MiB. */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HumanTaskInput"];
+            };
+        };
+        responses: {
+            /** @description Human task completed or an identical prior completion confirmed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HumanTaskCompletionResponse"];
+                };
+            };
+            /** @description Malformed or invalid human-task input */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description DAG-run or human task not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Human task is not actionable or completion conflicts with current state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Human-task input exceeds the 16 MiB request-body limit */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Completion was stored but the DAG-run retry could not be queued */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    resumeHumanTaskDAGRun: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                /** @description name of the DAG */
+                name: components["parameters"]["DAGName"];
+                /** @description ID of the DAG-run; must not be the special 'latest' alias */
+                dagRunId: components["parameters"]["DAGRunConcreteId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The retry was queued or was already queued or running */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HumanTaskResumeResponse"];
+                };
+            };
+            /** @description DAG-run not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The DAG-run still has waiting steps or no recoverable human-task checkpoint */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The retry could not be queued and remains retryable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
             };
             /** @description Generic error response */
             default: {
@@ -13074,7 +13389,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The sync item identifier (file path without extension) */
+                /** @description The DAG identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
@@ -13090,7 +13405,7 @@ export interface operations {
                     "application/json": components["schemas"]["SyncItemDiffResponse"];
                 };
             };
-            /** @description Item not found */
+            /** @description DAG not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13118,7 +13433,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The sync item identifier (file path without extension) */
+                /** @description The DAG identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
@@ -13129,7 +13444,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Item published successfully */
+            /** @description DAG published successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13138,7 +13453,7 @@ export interface operations {
                     "application/json": components["schemas"]["SyncResultResponse"];
                 };
             };
-            /** @description Item not found */
+            /** @description DAG not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13175,7 +13490,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The sync item identifier (file path without extension) */
+                /** @description The DAG identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
@@ -13191,7 +13506,7 @@ export interface operations {
                     "application/json": components["schemas"]["SuccessResponse"];
                 };
             };
-            /** @description Item not found */
+            /** @description DAG not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13219,14 +13534,14 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The sync item identifier (file path without extension) */
+                /** @description The DAG identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Item forgotten successfully */
+            /** @description DAG forgotten successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13235,7 +13550,7 @@ export interface operations {
                     "application/json": components["schemas"]["SuccessResponse"];
                 };
             };
-            /** @description Item cannot be forgotten */
+            /** @description DAG cannot be forgotten */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -13244,7 +13559,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Item not found */
+            /** @description DAG not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13272,7 +13587,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The sync item identifier (file path without extension) */
+                /** @description The DAG identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
@@ -13282,13 +13597,13 @@ export interface operations {
                 "application/json": {
                     /** @description Commit message for the deletion */
                     message?: string;
-                    /** @description Force delete even if item has local modifications */
+                    /** @description Force delete even if the DAG has local modifications */
                     force?: boolean;
                 };
             };
         };
         responses: {
-            /** @description Item deleted successfully */
+            /** @description DAG deleted successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13297,7 +13612,7 @@ export interface operations {
                     "application/json": components["schemas"]["SuccessResponse"];
                 };
             };
-            /** @description Item cannot be deleted */
+            /** @description DAG cannot be deleted */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -13306,7 +13621,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Item not found */
+            /** @description DAG not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13334,7 +13649,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The current sync item identifier (file path without extension) */
+                /** @description The current DAG identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
@@ -13342,17 +13657,17 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** @description The new item identifier to rename to */
+                    /** @description The new DAG identifier */
                     newItemId: string;
                     /** @description Commit message for the move */
                     message?: string;
-                    /** @description Force move even if item has conflicts */
+                    /** @description Force move even if the DAG has conflicts */
                     force?: boolean;
                 };
             };
         };
         responses: {
-            /** @description Item moved successfully */
+            /** @description DAG moved successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13361,7 +13676,7 @@ export interface operations {
                     "application/json": components["schemas"]["SuccessResponse"];
                 };
             };
-            /** @description Item cannot be moved */
+            /** @description DAG cannot be moved */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -13370,7 +13685,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Item not found */
+            /** @description DAG not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13418,14 +13733,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Missing items deleted successfully */
+            /** @description Missing DAGs deleted successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": {
-                        /** @description List of deleted item IDs */
+                        /** @description List of deleted DAG IDs */
                         deleted: string[];
                         /** @description Summary message */
                         message: string;
@@ -13468,21 +13783,21 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Items deleted successfully */
+            /** @description DAGs deleted successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": {
-                        /** @description List of deleted item IDs */
+                        /** @description List of deleted DAG IDs */
                         deleted: string[];
                         /** @description Summary message */
                         message: string;
                     };
                 };
             };
-            /** @description Cannot delete (push disabled, untracked items, validation error) */
+            /** @description Cannot delete (push disabled, untracked DAGs, validation error) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -13491,7 +13806,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Item not found */
+            /** @description DAG not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13530,7 +13845,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        /** @description List of forgotten item IDs */
+                        /** @description List of forgotten DAG IDs */
                         forgotten: string[];
                         /** @description Summary message */
                         message: string;
@@ -16393,7 +16708,10 @@ export enum ErrorCode {
     auth_token_invalid = "auth.token_invalid",
     auth_forbidden = "auth.forbidden",
     timeout = "timeout",
-    rate_limited = "rate_limited"
+    rate_limited = "rate_limited",
+    conflict = "conflict",
+    human_task_resume_failed = "human_task_resume_failed",
+    payload_too_large = "payload_too_large"
 }
 export enum WebhookAuthMode {
     token_only = "token_only",
@@ -16538,13 +16856,24 @@ export enum WorkerHealthStatus {
     warning = "warning",
     unhealthy = "unhealthy"
 }
+export enum DAGDetailsType {
+    graph = "graph",
+    chain = "chain",
+    controller = "controller"
+}
 export enum ValueReferenceNoticeReason {
     unknown_step_id = "unknown_step_id",
     unknown_output_name = "unknown_output_name",
     missing_dependency = "missing_dependency",
     self_reference = "self_reference",
     namespace_unavailable = "namespace_unavailable",
-    unknown_context_field = "unknown_context_field"
+    unknown_context_field = "unknown_context_field",
+    unknown_env_binding = "unknown_env_binding",
+    unknown_const_name = "unknown_const_name"
+}
+export enum ValueReferenceNoticeClass {
+    defect = "defect",
+    runtime_only = "runtime_only"
 }
 export enum ParamDefType {
     string = "string",
@@ -16568,6 +16897,19 @@ export enum ArtifactPreviewKind {
     image = "image",
     binary = "binary"
 }
+export enum ControllerEventKind {
+    action = "action",
+    task_status = "task_status",
+    ask_user = "ask_user",
+    rejected = "rejected",
+    stalled = "stalled"
+}
+export enum ControllerTaskStatus {
+    open = "open",
+    completed = "completed",
+    skipped = "skipped",
+    failed = "failed"
+}
 export enum StepOutputDeclarationType {
     string = "string",
     json = "json"
@@ -16589,7 +16931,8 @@ export enum UserRole {
 }
 export enum UserAuthProvider {
     builtin = "builtin",
-    oidc = "oidc"
+    oidc = "oidc",
+    proxy = "proxy"
 }
 export enum APIKeyAllowedSurfaces {
     rest_api = "rest_api",
@@ -16628,13 +16971,6 @@ export enum SyncSummary {
     conflict = "conflict",
     missing = "missing",
     error = "error"
-}
-export enum SyncItemKind {
-    dag = "dag",
-    config = "config",
-    memory = "memory",
-    skill = "skill",
-    soul = "soul"
 }
 export enum SyncAuthConfigType {
     token = "token",
@@ -16675,9 +17011,10 @@ export enum SecretProviderType {
     dagu_managed = "dagu-managed",
     vault = "vault",
     kubernetes = "kubernetes",
-    gcp_secret_manager = "gcp-secret-manager",
-    aws_secrets_manager = "aws-secrets-manager",
-    azure_key_vault = "azure-key-vault"
+    gcp = "gcp",
+    aws = "aws",
+    azure = "azure",
+    alibaba = "alibaba"
 }
 export enum SecretStatus {
     active = "active",

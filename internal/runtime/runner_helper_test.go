@@ -130,6 +130,12 @@ func withApproval(approval *core.ApprovalConfig) stepOption {
 	}
 }
 
+func withHumanTask(task *core.HumanTaskConfig) stepOption {
+	return func(step *core.Step) {
+		step.HumanTask = task
+	}
+}
+
 func withStepTimeout(d time.Duration) stepOption {
 	return func(step *core.Step) {
 		step.Timeout = d

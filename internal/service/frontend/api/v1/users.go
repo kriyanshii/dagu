@@ -10,6 +10,8 @@ import (
 
 	"github.com/dagucloud/dagu/api/v1"
 	"github.com/dagucloud/dagu/internal/auth"
+	"github.com/dagucloud/dagu/internal/cmn/config"
+	"github.com/dagucloud/dagu/internal/license"
 	"github.com/dagucloud/dagu/internal/service/audit"
 	authservice "github.com/dagucloud/dagu/internal/service/auth"
 )
@@ -27,10 +29,62 @@ func (a *API) ListUsers(ctx context.Context, _ api.ListUsersRequestObject) (api.
 	if err != nil {
 		return nil, err
 	}
+	workspaceAccessSyncEnabled := a.oidcWorkspaceAccessSyncEnabled()
 
 	return api.ListUsers200JSONResponse{
-		Users: toAPIUsers(users),
+		Users:                           toAPIUsers(users),
+		OidcWorkspaceAccessSyncEnabled:  &workspaceAccessSyncEnabled,
+		ManagedRoleProviders:            a.managedProviders(a.oidcAuthorizationSyncEnabled()),
+		ManagedWorkspaceAccessProviders: a.managedProviders(workspaceAccessSyncEnabled),
 	}, nil
+}
+
+func (a *API) managedProviders(oidcSyncEnabled bool) []api.UserAuthProvider {
+	providers := make([]api.UserAuthProvider, 0, 2)
+	if oidcSyncEnabled {
+		providers = append(providers, api.UserAuthProviderOidc)
+	}
+	if a.config == nil {
+		return providers
+	}
+	if a.licenseManager != nil && !a.licenseManager.Checker().IsFeatureEnabled(license.FeatureSSO) {
+		return providers
+	}
+	authConfig := a.config.Server.Auth
+	if authConfig.Mode == config.AuthModeBuiltin &&
+		authConfig.Proxy.Enabled &&
+		!authConfig.Proxy.RoleMapping.SkipOrgRoleSync {
+		providers = append(providers, api.UserAuthProviderProxy)
+	}
+	return providers
+}
+
+func (a *API) oidcWorkspaceAccessSyncEnabled() bool {
+	return a.oidcSyncEnabled() &&
+		a.config.Server.Auth.OIDC.RoleMapping.WorkspaceAccessPolicyActive()
+}
+
+func (a *API) oidcAuthorizationSyncEnabled() bool {
+	if !a.oidcSyncEnabled() {
+		return false
+	}
+	mapping := a.config.Server.Auth.OIDC.RoleMapping
+	return len(mapping.GroupMappings) > 0 ||
+		mapping.RoleAttributePath != "" ||
+		mapping.WorkspaceAccessPolicyActive()
+}
+
+func (a *API) oidcSyncEnabled() bool {
+	if a.config == nil {
+		return false
+	}
+	if a.licenseManager != nil && !a.licenseManager.Checker().IsFeatureEnabled(license.FeatureSSO) {
+		return false
+	}
+	authConfig := a.config.Server.Auth
+	return authConfig.Mode == config.AuthModeBuiltin &&
+		authConfig.OIDC.IsConfigured() &&
+		!authConfig.OIDC.RoleMapping.SkipOrgRoleSync
 }
 
 // CreateUser creates a new user. Requires admin role.
@@ -347,6 +401,13 @@ func (a *API) ResetUserPassword(ctx context.Context, request api.ResetUserPasswo
 				Code:       api.ErrorCodeBadRequest,
 				Message:    "Password does not meet security requirements",
 				HTTPStatus: http.StatusBadRequest,
+			}
+		}
+		if errors.Is(err, authservice.ErrExternalAuthPasswordManagement) {
+			return nil, &Error{
+				Code:       api.ErrorCodeForbidden,
+				Message:    "Password is managed by the authentication provider for this user",
+				HTTPStatus: http.StatusForbidden,
 			}
 		}
 		return nil, err

@@ -1047,3 +1047,13 @@ func TestDAGHasApprovalSteps(t *testing.T) {
 		})
 	}
 }
+
+func TestDAGHasHumanTaskSteps(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, (&core.DAG{Steps: []core.Step{{Name: "run"}}}).HasHumanTaskSteps())
+	assert.True(t, (&core.DAG{Steps: []core.Step{{
+		Name:      "review",
+		HumanTask: &core.HumanTaskConfig{Prompt: "Review"},
+	}}}).HasHumanTaskSteps())
+}

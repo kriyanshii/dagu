@@ -72,6 +72,8 @@ const config: Config = {
   setupRequired: false,
   oidcEnabled: false,
   oidcButtonLabel: '',
+  proxyEnabled: false,
+  proxyButtonLabel: '',
   terminalEnabled: true,
   gitSyncEnabled: true,
   updateAvailable: false,
@@ -240,13 +242,9 @@ describe('sidebar menu', () => {
     expect(
       screen.getByRole('button', { name: 'Toggle Integrations section' })
     ).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByRole('link', { name: 'Profiles' })).toHaveAttribute(
-      'href',
-      '/profiles'
-    );
     expect(
-      screen.queryByRole('link', { name: 'Secrets' })
-    ).not.toBeInTheDocument();
+      screen.getByRole('link', { name: 'Profiles & Secrets' })
+    ).toHaveAttribute('href', '/profiles');
     expect(
       screen.getByRole('link', { name: 'Administration' })
     ).toHaveAttribute('href', '/administration');

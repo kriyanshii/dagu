@@ -22,6 +22,8 @@ const testConfig: Config = {
   setupRequired: false,
   oidcEnabled: false,
   oidcButtonLabel: '',
+  proxyEnabled: false,
+  proxyButtonLabel: '',
   terminalEnabled: false,
   gitSyncEnabled: false,
   updateAvailable: false,

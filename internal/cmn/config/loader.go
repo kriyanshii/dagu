@@ -4,8 +4,13 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"maps"
 	"net"
 	"os"
 	"path"
@@ -16,7 +21,9 @@ import (
 
 	"github.com/adrg/xdg"
 	"github.com/dagucloud/dagu/internal/cmn/fileutil"
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 // Service represents the type of service that is loading configuration.
@@ -52,13 +59,17 @@ const (
 
 // ConfigLoader reads and merges configuration from various sources.
 type ConfigLoader struct {
-	v                 *viper.Viper
-	configFile        string
-	notices           []string
-	warnings          []string
-	additionalBaseEnv []string
-	appHomeDir        string
-	service           Service
+	v                                *viper.Viper
+	configFile                       string
+	notices                          []string
+	warnings                         []string
+	additionalBaseEnv                []string
+	appHomeDir                       string
+	service                          Service
+	trustedProxyGroupMappings        map[string]string
+	trustedProxyGroupMappingsSet     bool
+	trustedProxyWorkspaceMappings    map[string][]TrustedProxyWorkspaceGrant
+	trustedProxyWorkspaceMappingsSet bool
 }
 
 // ConfigLoaderOption defines a functional option for configuring a ConfigLoader.
@@ -194,6 +205,11 @@ func (l *ConfigLoader) Load() (*Config, error) {
 	if err := checkForLegacyKeys(l.v); err != nil {
 		return nil, err
 	}
+	if l.requires(SectionServer) {
+		if err := l.mergeTrustedProxyMappingsFile(l.v.ConfigFileUsed()); err != nil {
+			return nil, err
+		}
+	}
 
 	configFileUsed, err := l.resolvePath("config file", l.v.ConfigFileUsed())
 	if err != nil {
@@ -206,12 +222,28 @@ func (l *ConfigLoader) Load() (*Config, error) {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("failed to read admin config: %w", err)
 		}
+	} else if l.requires(SectionServer) {
+		if err := l.mergeTrustedProxyMappingsFile(l.v.ConfigFileUsed()); err != nil {
+			return nil, err
+		}
+	}
+	if err := l.loadOIDCWorkspaceMappingsEnv(); err != nil {
+		return nil, err
+	}
+	if l.requires(SectionServer) {
+		if err := l.loadTrustedProxyMappingsEnv(); err != nil {
+			return nil, err
+		}
+		if err := l.validateTrustedProxyConfigKeys(); err != nil {
+			return nil, err
+		}
 	}
 
 	var def Definition
 	if err := l.v.Unmarshal(&def); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
+	l.applyTrustedProxyMappings(&def)
 
 	cfg, err := l.buildConfig(def)
 	if err != nil {
@@ -431,6 +463,40 @@ func (l *ConfigLoader) loadSecretsConfig(cfg *Config, def Definition) {
 			Context:    def.Secrets.Kubernetes.Context,
 		}
 	}
+
+	if def.Secrets.AWS != nil {
+		cfg.Secrets.AWS = AWSSecretsConfig{
+			Region: def.Secrets.AWS.Region,
+		}
+	}
+
+	if def.Secrets.GCP != nil {
+		cfg.Secrets.GCP = GCPSecretsConfig{
+			ProjectID: def.Secrets.GCP.ProjectID,
+			Location:  def.Secrets.GCP.Location,
+		}
+	}
+
+	if def.Secrets.Azure != nil {
+		cfg.Secrets.Azure = AzureSecretsConfig{
+			VaultURL: def.Secrets.Azure.VaultURL,
+		}
+	}
+
+	if def.Secrets.Alibaba != nil {
+		caFile := def.Secrets.Alibaba.CAFile
+		resolved, err := l.resolvePath("secrets.alibaba.ca_file", caFile)
+		if err != nil {
+			l.warnings = append(l.warnings, err.Error())
+		} else {
+			caFile = resolved
+		}
+		cfg.Secrets.Alibaba = AlibabaSecretsConfig{
+			Region:   def.Secrets.Alibaba.Region,
+			Endpoint: def.Secrets.Alibaba.Endpoint,
+			CAFile:   caFile,
+		}
+	}
 }
 
 func (l *ConfigLoader) loadEventStoreConfig(cfg *Config, def Definition) {
@@ -516,6 +582,7 @@ func (l *ConfigLoader) loadServerTLS(cfg *Config, def Definition) {
 }
 
 func (l *ConfigLoader) loadServerAuth(cfg *Config, def Definition) {
+	l.setTrustedProxyDefaults(cfg)
 	l.loadAuthMode(cfg, def)
 
 	if def.Auth == nil {
@@ -525,6 +592,7 @@ func (l *ConfigLoader) loadServerAuth(cfg *Config, def Definition) {
 
 	l.loadBasicAuth(cfg, def.Auth)
 	l.loadOIDCAuth(cfg, def.Auth)
+	l.loadTrustedProxyAuth(cfg, def.Auth)
 	l.loadBuiltinAuth(cfg, def.Auth)
 	l.setAuthDefaults(cfg)
 }
@@ -584,6 +652,8 @@ func (l *ConfigLoader) loadOIDCRoleMapping(cfg *Config, rm *OIDCRoleMappingDef) 
 	cfg.Server.Auth.OIDC.RoleMapping.DefaultRole = rm.DefaultRole
 	cfg.Server.Auth.OIDC.RoleMapping.GroupsClaim = rm.GroupsClaim
 	cfg.Server.Auth.OIDC.RoleMapping.GroupMappings = rm.GroupMappings
+	cfg.Server.Auth.OIDC.RoleMapping.WorkspaceMappings = rm.WorkspaceMappings
+	cfg.Server.Auth.OIDC.RoleMapping.DefaultWorkspaceAccess = rm.DefaultWorkspaceAccess
 	cfg.Server.Auth.OIDC.RoleMapping.RoleAttributePath = rm.RoleAttributePath
 
 	if rm.RoleAttributeStrict != nil {
@@ -592,6 +662,369 @@ func (l *ConfigLoader) loadOIDCRoleMapping(cfg *Config, rm *OIDCRoleMappingDef) 
 	if rm.SkipOrgRoleSync != nil {
 		cfg.Server.Auth.OIDC.RoleMapping.SkipOrgRoleSync = *rm.SkipOrgRoleSync
 	}
+}
+
+func (l *ConfigLoader) loadOIDCWorkspaceMappingsEnv() error {
+	const (
+		configKey = "auth.oidc.role_mapping.workspace_mappings"
+		envSuffix = "AUTH_OIDC_WORKSPACE_MAPPINGS"
+	)
+
+	envName := strings.ToUpper(AppSlug) + "_" + envSuffix
+	raw, exists := os.LookupEnv(envName)
+	if !exists {
+		return nil
+	}
+
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return fmt.Errorf("%s must be a JSON object", envName)
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	var mappings map[string][]OIDCWorkspaceGrant
+	if err := decoder.Decode(&mappings); err != nil {
+		return fmt.Errorf("invalid %s JSON: %w", envName, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("invalid %s JSON: expected a single object", envName)
+	}
+	l.v.Set(configKey, mappings)
+	return nil
+}
+
+func (l *ConfigLoader) loadTrustedProxyAuth(cfg *Config, authDef *AuthDef) {
+	if authDef.Proxy == nil {
+		return
+	}
+
+	trustedProxyDef := authDef.Proxy
+	trustedProxy := &cfg.Server.Auth.Proxy
+	if trustedProxyDef.Enabled != nil {
+		trustedProxy.Enabled = *trustedProxyDef.Enabled
+	}
+	if trustedProxyDef.Source != nil {
+		trustedProxy.Source = *trustedProxyDef.Source
+	}
+	if trustedProxyDef.ButtonLabel != nil {
+		trustedProxy.ButtonLabel = *trustedProxyDef.ButtonLabel
+	}
+	if trustedProxyDef.Headers != nil {
+		trustedProxy.Headers.User = trustedProxyDef.Headers.User
+		trustedProxy.Headers.Groups = trustedProxyDef.Headers.Groups
+	}
+	if trustedProxyDef.AutoSignup != nil {
+		trustedProxy.AutoSignup = *trustedProxyDef.AutoSignup
+	}
+	if trustedProxyDef.RoleMapping == nil {
+		return
+	}
+
+	roleMappingDef := trustedProxyDef.RoleMapping
+	roleMapping := &trustedProxy.RoleMapping
+	if roleMappingDef.DefaultRole != nil {
+		roleMapping.DefaultRole = *roleMappingDef.DefaultRole
+	}
+	roleMapping.GroupMappings = roleMappingDef.GroupMappings
+	roleMapping.WorkspaceMappings = roleMappingDef.WorkspaceMappings
+	if roleMappingDef.DefaultWorkspaceAccess != nil {
+		roleMapping.DefaultWorkspaceAccess = *roleMappingDef.DefaultWorkspaceAccess
+	}
+	if roleMappingDef.RequireMapping != nil {
+		roleMapping.RequireMapping = *roleMappingDef.RequireMapping
+	}
+	if roleMappingDef.SkipOrgRoleSync != nil {
+		roleMapping.SkipOrgRoleSync = *roleMappingDef.SkipOrgRoleSync
+	}
+}
+
+func (l *ConfigLoader) loadTrustedProxyMappingsEnv() error {
+	groupMappings, exists, err := loadStrictJSONObjectEnv[string]("AUTH_PROXY_GROUP_MAPPINGS")
+	if err != nil {
+		return err
+	}
+	if exists {
+		l.trustedProxyGroupMappings = cloneTrustedProxyGroupMappings(groupMappings)
+		l.trustedProxyGroupMappingsSet = true
+		l.v.Set("auth.proxy.role_mapping.group_mappings", groupMappings)
+	}
+
+	workspaceMappingsJSON, exists, err := loadStrictJSONObjectEnv[[]strictTrustedProxyWorkspaceGrant]("AUTH_PROXY_WORKSPACE_MAPPINGS")
+	if err != nil {
+		return err
+	}
+	if exists {
+		workspaceMappings := make(map[string][]TrustedProxyWorkspaceGrant, len(workspaceMappingsJSON))
+		for group, grants := range workspaceMappingsJSON {
+			converted := make([]TrustedProxyWorkspaceGrant, len(grants))
+			for i, grant := range grants {
+				converted[i] = TrustedProxyWorkspaceGrant(grant)
+			}
+			workspaceMappings[group] = converted
+		}
+		l.trustedProxyWorkspaceMappings = cloneTrustedProxyWorkspaceMappings(workspaceMappings)
+		l.trustedProxyWorkspaceMappingsSet = true
+		l.v.Set("auth.proxy.role_mapping.workspace_mappings", workspaceMappings)
+	}
+	return nil
+}
+
+type strictTrustedProxyWorkspaceGrant TrustedProxyWorkspaceGrant
+
+func (g *strictTrustedProxyWorkspaceGrant) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for key := range fields {
+		if key != "workspace" && key != "role" {
+			return fmt.Errorf("json: unknown field %q", key)
+		}
+	}
+
+	var grant TrustedProxyWorkspaceGrant
+	if raw, ok := fields["workspace"]; ok {
+		if err := json.Unmarshal(raw, &grant.Workspace); err != nil {
+			return fmt.Errorf("workspace: %w", err)
+		}
+	}
+	if raw, ok := fields["role"]; ok {
+		if err := json.Unmarshal(raw, &grant.Role); err != nil {
+			return fmt.Errorf("role: %w", err)
+		}
+	}
+	*g = strictTrustedProxyWorkspaceGrant(grant)
+	return nil
+}
+
+type trustedProxyMappingsDocument struct {
+	Auth  *trustedProxyMappingsAuth `yaml:"auth"`
+	Other map[string]yaml.Node      `yaml:",inline"`
+}
+
+type trustedProxyMappingsAuth struct {
+	Proxy *AuthTrustedProxyDef `yaml:"proxy"`
+	Other map[string]yaml.Node `yaml:",inline"`
+}
+
+func (l *ConfigLoader) mergeTrustedProxyMappingsFile(filename string) error {
+	if filename == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return fmt.Errorf("failed to read proxy authentication mappings from %q: %w", filename, err)
+	}
+
+	var document trustedProxyMappingsDocument
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&document); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return fmt.Errorf("invalid auth.proxy config in %q: %w", filename, err)
+	}
+	if containsCaseVariantKey(document.Other, "auth") {
+		return fmt.Errorf("invalid auth.proxy config in %q: auth key must use canonical casing", filename)
+	}
+	if document.Auth == nil {
+		return nil
+	}
+	if containsCaseVariantKey(document.Auth.Other, "trusted_proxy") {
+		return fmt.Errorf("invalid auth.proxy config in %q: auth.trusted_proxy is not supported; use auth.proxy", filename)
+	}
+	if containsCaseVariantKey(document.Auth.Other, "proxy") {
+		return fmt.Errorf("invalid auth.proxy config in %q: auth.proxy key must use canonical casing", filename)
+	}
+	if document.Auth.Proxy == nil || document.Auth.Proxy.RoleMapping == nil {
+		return nil
+	}
+
+	roleMapping := document.Auth.Proxy.RoleMapping
+	if roleMapping.GroupMappings != nil {
+		if l.trustedProxyGroupMappings == nil {
+			l.trustedProxyGroupMappings = make(map[string]string, len(roleMapping.GroupMappings))
+		}
+		maps.Copy(l.trustedProxyGroupMappings, roleMapping.GroupMappings)
+		l.trustedProxyGroupMappingsSet = true
+	}
+	if roleMapping.WorkspaceMappings != nil {
+		if l.trustedProxyWorkspaceMappings == nil {
+			l.trustedProxyWorkspaceMappings = make(map[string][]TrustedProxyWorkspaceGrant, len(roleMapping.WorkspaceMappings))
+		}
+		for group, grants := range roleMapping.WorkspaceMappings {
+			l.trustedProxyWorkspaceMappings[group] = append([]TrustedProxyWorkspaceGrant(nil), grants...)
+		}
+		l.trustedProxyWorkspaceMappingsSet = true
+	}
+	return nil
+}
+
+func containsCaseVariantKey(fields map[string]yaml.Node, canonical string) bool {
+	for key := range fields {
+		if strings.EqualFold(key, canonical) {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *ConfigLoader) applyTrustedProxyMappings(def *Definition) {
+	if !l.trustedProxyGroupMappingsSet && !l.trustedProxyWorkspaceMappingsSet {
+		return
+	}
+	if def.Auth == nil {
+		def.Auth = &AuthDef{}
+	}
+	if def.Auth.Proxy == nil {
+		def.Auth.Proxy = &AuthTrustedProxyDef{}
+	}
+	if def.Auth.Proxy.RoleMapping == nil {
+		def.Auth.Proxy.RoleMapping = &TrustedProxyRoleMappingDef{}
+	}
+
+	roleMapping := def.Auth.Proxy.RoleMapping
+	if l.trustedProxyGroupMappingsSet {
+		roleMapping.GroupMappings = cloneTrustedProxyGroupMappings(l.trustedProxyGroupMappings)
+	}
+	if l.trustedProxyWorkspaceMappingsSet {
+		roleMapping.WorkspaceMappings = cloneTrustedProxyWorkspaceMappings(l.trustedProxyWorkspaceMappings)
+	}
+}
+
+func cloneTrustedProxyGroupMappings(mappings map[string]string) map[string]string {
+	cloned := make(map[string]string, len(mappings))
+	maps.Copy(cloned, mappings)
+	return cloned
+}
+
+func cloneTrustedProxyWorkspaceMappings(mappings map[string][]TrustedProxyWorkspaceGrant) map[string][]TrustedProxyWorkspaceGrant {
+	cloned := make(map[string][]TrustedProxyWorkspaceGrant, len(mappings))
+	for group, grants := range mappings {
+		cloned[group] = append([]TrustedProxyWorkspaceGrant(nil), grants...)
+	}
+	return cloned
+}
+
+func (l *ConfigLoader) validateTrustedProxyConfigKeys() error {
+	raw := l.v.GetStringMap("auth.proxy")
+	if len(raw) == 0 {
+		return nil
+	}
+
+	var decoded AuthTrustedProxyDef
+	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		Result:           &decoded,
+		WeaklyTypedInput: true,
+		ErrorUnused:      true,
+		TagName:          "mapstructure",
+	})
+	if err != nil {
+		return fmt.Errorf("validate auth.proxy config: %w", err)
+	}
+	if err := decoder.Decode(raw); err != nil {
+		return fmt.Errorf("invalid auth.proxy config: %w", err)
+	}
+	return nil
+}
+
+func loadStrictJSONObjectEnv[T any](envSuffix string) (map[string]T, bool, error) {
+	envName := strings.ToUpper(AppSlug) + "_" + envSuffix
+	raw, exists := os.LookupEnv(envName)
+	if !exists {
+		return nil, false, nil
+	}
+	trimmed := strings.TrimSpace(raw)
+	if err := validateJSONObjectStructure(trimmed); err != nil {
+		return nil, true, fmt.Errorf("invalid %s JSON: %w", envName, err)
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	var value map[string]T
+	if err := decoder.Decode(&value); err != nil {
+		return nil, true, fmt.Errorf("invalid %s JSON: %w", envName, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, true, fmt.Errorf("invalid %s JSON: expected a single object", envName)
+	}
+	return value, true, nil
+}
+
+func validateJSONObjectStructure(raw string) error {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	if err := consumeUniqueJSONValue(decoder, true); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("expected a single object")
+		}
+		return err
+	}
+	return nil
+}
+
+func consumeUniqueJSONValue(decoder *json.Decoder, requireObject bool) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, isDelim := token.(json.Delim)
+	if requireObject && (!isDelim || delim != '{') {
+		return fmt.Errorf("must be a JSON object")
+	}
+	if !isDelim {
+		return nil
+	}
+
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("object key must be a string")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("duplicate object key %q", key)
+			}
+			seen[key] = struct{}{}
+			if err := consumeUniqueJSONValue(decoder, false); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim('}') {
+			return fmt.Errorf("invalid object terminator")
+		}
+	case '[':
+		for decoder.More() {
+			if err := consumeUniqueJSONValue(decoder, false); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim(']') {
+			return fmt.Errorf("invalid array terminator")
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delim)
+	}
+	return nil
 }
 
 func (l *ConfigLoader) loadBuiltinAuth(cfg *Config, auth *AuthDef) {
@@ -635,9 +1068,23 @@ func (l *ConfigLoader) setAuthDefaults(cfg *Config) {
 	if cfg.Server.Auth.OIDC.RoleMapping.DefaultRole == "" {
 		cfg.Server.Auth.OIDC.RoleMapping.DefaultRole = "viewer"
 	}
+	roleMapping := &cfg.Server.Auth.OIDC.RoleMapping
+	if roleMapping.DefaultWorkspaceAccess == "" && len(roleMapping.WorkspaceMappings) == 0 {
+		roleMapping.DefaultWorkspaceAccess = OIDCDefaultWorkspaceAccessAll
+	}
 	if cfg.Server.Auth.OIDC.ButtonLabel == "" {
 		cfg.Server.Auth.OIDC.ButtonLabel = "Login with SSO"
 	}
+}
+
+func (l *ConfigLoader) setTrustedProxyDefaults(cfg *Config) {
+	trustedProxy := &cfg.Server.Auth.Proxy
+	trustedProxy.ButtonLabel = "Continue with SSO"
+	trustedProxy.AutoSignup = true
+	trustedProxy.RoleMapping.DefaultRole = "viewer"
+	trustedProxy.RoleMapping.DefaultWorkspaceAccess = TrustedProxyDefaultWorkspaceAccessNone
+	trustedProxy.RoleMapping.RequireMapping = false
+	trustedProxy.RoleMapping.SkipOrgRoleSync = false
 }
 
 // warnIfWeakValue appends a warning if value matches any entry in weakList (case-insensitive).
@@ -654,6 +1101,17 @@ func (l *ConfigLoader) loadServerDefaults(cfg *Config, def Definition) {
 	cfg.Server.BasePath = cleanServerBasePath(cfg.Server.BasePath)
 	cfg.Server.CheckUpdates = l.v.GetBool("check_updates")
 	cfg.Server.CORSAllowedOrigins = parseStringList(l.v.Get("cors_allowed_origins"))
+	for _, origin := range cfg.Server.CORSAllowedOrigins {
+		if strings.TrimSpace(origin) != "*" {
+			continue
+		}
+		warning := `cors_allowed_origins contains "*"; any website may make browser requests to the Dagu API`
+		if cfg.Server.Auth.Mode == AuthModeNone {
+			warning += `, and auth.mode "none" allows those requests to execute workflows without authentication`
+		}
+		l.warnings = append(l.warnings, warning)
+		break
+	}
 
 	cfg.Server.Metrics = MetricsAccessPrivate
 	if def.Metrics != nil {
@@ -1483,9 +1941,10 @@ func (l *ConfigLoader) setViperDefaultValues(paths Paths) {
 }
 
 type envBinding struct {
-	key    string
-	env    string
-	isPath bool
+	key      string
+	env      string
+	isPath   bool
+	requires ConfigSection
 }
 
 var envBindings = []envBinding{
@@ -1531,6 +1990,13 @@ var envBindings = []envBinding{
 	{key: "secrets.kubernetes.namespace", env: "SECRETS_KUBERNETES_NAMESPACE"},
 	{key: "secrets.kubernetes.kubeconfig", env: "SECRETS_KUBERNETES_KUBECONFIG", isPath: true},
 	{key: "secrets.kubernetes.context", env: "SECRETS_KUBERNETES_CONTEXT"},
+	{key: "secrets.aws.region", env: "SECRETS_AWS_REGION"},
+	{key: "secrets.gcp.project_id", env: "SECRETS_GCP_PROJECT_ID"},
+	{key: "secrets.gcp.location", env: "SECRETS_GCP_LOCATION"},
+	{key: "secrets.azure.vault_url", env: "SECRETS_AZURE_VAULT_URL"},
+	{key: "secrets.alibaba.region", env: "SECRETS_ALIBABA_REGION"},
+	{key: "secrets.alibaba.endpoint", env: "SECRETS_ALIBABA_ENDPOINT"},
+	{key: "secrets.alibaba.ca_file", env: "SECRETS_ALIBABA_CA_FILE", isPath: true},
 
 	// Scheduler
 	{key: "scheduler.port", env: "SCHEDULER_PORT"},
@@ -1580,9 +2046,21 @@ var envBindings = []envBinding{
 	{key: "auth.oidc.role_mapping.default_role", env: "AUTH_OIDC_DEFAULT_ROLE"},
 	{key: "auth.oidc.role_mapping.groups_claim", env: "AUTH_OIDC_GROUPS_CLAIM"},
 	{key: "auth.oidc.role_mapping.group_mappings", env: "AUTH_OIDC_GROUP_MAPPINGS"},
+	{key: "auth.oidc.role_mapping.default_workspace_access", env: "AUTH_OIDC_DEFAULT_WORKSPACE_ACCESS"},
 	{key: "auth.oidc.role_mapping.role_attribute_path", env: "AUTH_OIDC_ROLE_ATTRIBUTE_PATH"},
 	{key: "auth.oidc.role_mapping.role_attribute_strict", env: "AUTH_OIDC_ROLE_ATTRIBUTE_STRICT"},
 	{key: "auth.oidc.role_mapping.skip_org_role_sync", env: "AUTH_OIDC_SKIP_ORG_ROLE_SYNC"},
+	// Auth proxy
+	{key: "auth.proxy.enabled", env: "AUTH_PROXY_ENABLED", requires: SectionServer},
+	{key: "auth.proxy.source", env: "AUTH_PROXY_SOURCE", requires: SectionServer},
+	{key: "auth.proxy.button_label", env: "AUTH_PROXY_BUTTON_LABEL", requires: SectionServer},
+	{key: "auth.proxy.headers.user", env: "AUTH_PROXY_HEADERS_USER", requires: SectionServer},
+	{key: "auth.proxy.headers.groups", env: "AUTH_PROXY_HEADERS_GROUPS", requires: SectionServer},
+	{key: "auth.proxy.auto_signup", env: "AUTH_PROXY_AUTO_SIGNUP", requires: SectionServer},
+	{key: "auth.proxy.role_mapping.default_role", env: "AUTH_PROXY_DEFAULT_ROLE", requires: SectionServer},
+	{key: "auth.proxy.role_mapping.default_workspace_access", env: "AUTH_PROXY_DEFAULT_WORKSPACE_ACCESS", requires: SectionServer},
+	{key: "auth.proxy.role_mapping.require_mapping", env: "AUTH_PROXY_REQUIRE_MAPPING", requires: SectionServer},
+	{key: "auth.proxy.role_mapping.skip_org_role_sync", env: "AUTH_PROXY_SKIP_ORG_ROLE_SYNC", requires: SectionServer},
 	// Auth (builtin)
 	{key: "auth.builtin.token.secret", env: "AUTH_TOKEN_SECRET"},
 	{key: "auth.builtin.token.ttl", env: "AUTH_TOKEN_TTL"},
@@ -1692,6 +2170,9 @@ func (l *ConfigLoader) bindEnvironmentVariables() {
 	prefix := strings.ToUpper(AppSlug) + "_"
 
 	for _, b := range envBindings {
+		if b.requires != SectionNone && !l.requires(b.requires) {
+			continue
+		}
 		fullEnv := prefix + b.env
 
 		if b.isPath {

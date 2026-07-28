@@ -216,8 +216,8 @@ func (e *enqueueExecutor) enqueueOne(ctx context.Context, runParams executor.Run
 		}
 	}()
 
-	if len(e.step.WorkerSelector) > 0 && child.DAG.HasApprovalSteps() {
-		return enqueueRunOutput{}, fmt.Errorf("%w: %s", ErrApprovalStepsWithWorker, target)
+	if err := validateSubDAG(child.DAG, target, e.step.WorkerSelector); err != nil {
+		return enqueueRunOutput{}, err
 	}
 
 	dagCopy, err := spec.ResolveRuntimeParams(ctx, child.DAG, runParams.Params, spec.ResolveRuntimeParamsOptions{
@@ -254,6 +254,7 @@ func (e *enqueueExecutor) enqueueOne(ctx context.Context, runParams executor.Run
 		LogBaseDir:      rCtx.DAGRunLogDir,
 		ArtifactBaseDir: rCtx.DAGRunArtifactDir,
 		TriggerType:     core.TriggerTypeSubDAG,
+		TriggerActor:    rCtx.TriggerActor,
 		ProfileName:     rCtx.ProfileName,
 	})
 	if err != nil {

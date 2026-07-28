@@ -110,10 +110,11 @@ type TLSDef struct {
 
 // AuthDef configures authentication for the application.
 type AuthDef struct {
-	Mode    *string         `mapstructure:"mode"` // "none", "basic", or "builtin"
-	Basic   *AuthBasicDef   `mapstructure:"basic"`
-	OIDC    *AuthOIDCDef    `mapstructure:"oidc"`
-	Builtin *AuthBuiltinDef `mapstructure:"builtin"`
+	Mode    *string              `mapstructure:"mode"` // "none", "basic", or "builtin"
+	Basic   *AuthBasicDef        `mapstructure:"basic"`
+	OIDC    *AuthOIDCDef         `mapstructure:"oidc"`
+	Proxy   *AuthTrustedProxyDef `mapstructure:"proxy"`
+	Builtin *AuthBuiltinDef      `mapstructure:"builtin"`
 }
 
 // AuthBasicDef configures basic authentication credentials.
@@ -161,12 +162,40 @@ type AuthOIDCDef struct {
 
 // OIDCRoleMappingDef maps OIDC claims to Dagu roles.
 type OIDCRoleMappingDef struct {
-	DefaultRole         string            `mapstructure:"default_role"`          // Default: "viewer"
-	GroupsClaim         string            `mapstructure:"groups_claim"`          // Default: "groups"
-	GroupMappings       map[string]string `mapstructure:"group_mappings"`        // IdP group -> Dagu role
-	RoleAttributePath   string            `mapstructure:"role_attribute_path"`   // jq expression for role extraction
-	RoleAttributeStrict *bool             `mapstructure:"role_attribute_strict"` // Deny login if no valid role found
-	SkipOrgRoleSync     *bool             `mapstructure:"skip_org_role_sync"`    // Only assign roles on first login
+	DefaultRole            string                          `mapstructure:"default_role"`             // Default: "viewer"
+	GroupsClaim            string                          `mapstructure:"groups_claim"`             // Default: "groups"
+	GroupMappings          map[string]string               `mapstructure:"group_mappings"`           // IdP group -> Dagu role
+	WorkspaceMappings      map[string][]OIDCWorkspaceGrant `mapstructure:"workspace_mappings"`       // IdP group -> workspace grants
+	DefaultWorkspaceAccess string                          `mapstructure:"default_workspace_access"` // Default: "all"; required with workspace mappings
+	RoleAttributePath      string                          `mapstructure:"role_attribute_path"`      // jq expression for role extraction
+	RoleAttributeStrict    *bool                           `mapstructure:"role_attribute_strict"`    // Deny login if no global or workspace mapping matches
+	SkipOrgRoleSync        *bool                           `mapstructure:"skip_org_role_sync"`       // Keep first-login authorization assignments
+}
+
+// AuthTrustedProxyDef configures authentication delegated to an authenticating reverse proxy.
+type AuthTrustedProxyDef struct {
+	Enabled     *bool                       `mapstructure:"enabled" yaml:"enabled"`
+	Source      *string                     `mapstructure:"source" yaml:"source"`
+	ButtonLabel *string                     `mapstructure:"button_label" yaml:"button_label"`
+	Headers     *TrustedProxyHeadersDef     `mapstructure:"headers" yaml:"headers"`
+	AutoSignup  *bool                       `mapstructure:"auto_signup" yaml:"auto_signup"`
+	RoleMapping *TrustedProxyRoleMappingDef `mapstructure:"role_mapping" yaml:"role_mapping"`
+}
+
+// TrustedProxyHeadersDef identifies the headers populated by the authenticating proxy.
+type TrustedProxyHeadersDef struct {
+	User   string `mapstructure:"user" yaml:"user"`
+	Groups string `mapstructure:"groups" yaml:"groups"`
+}
+
+// TrustedProxyRoleMappingDef maps proxy groups to Dagu authorization.
+type TrustedProxyRoleMappingDef struct {
+	DefaultRole            *string                                 `mapstructure:"default_role" yaml:"default_role"`
+	GroupMappings          map[string]string                       `mapstructure:"group_mappings" yaml:"group_mappings"`
+	WorkspaceMappings      map[string][]TrustedProxyWorkspaceGrant `mapstructure:"workspace_mappings" yaml:"workspace_mappings"`
+	DefaultWorkspaceAccess *string                                 `mapstructure:"default_workspace_access" yaml:"default_workspace_access"`
+	RequireMapping         *bool                                   `mapstructure:"require_mapping" yaml:"require_mapping"`
+	SkipOrgRoleSync        *bool                                   `mapstructure:"skip_org_role_sync" yaml:"skip_org_role_sync"`
 }
 
 // PermissionsDef configures UI and API permissions.
@@ -210,6 +239,33 @@ type PathsDef struct {
 type SecretsDef struct {
 	Vault      *VaultSecretsDef      `mapstructure:"vault"`
 	Kubernetes *KubernetesSecretsDef `mapstructure:"kubernetes"`
+	AWS        *AWSSecretsDef        `mapstructure:"aws"`
+	GCP        *GCPSecretsDef        `mapstructure:"gcp"`
+	Azure      *AzureSecretsDef      `mapstructure:"azure"`
+	Alibaba    *AlibabaSecretsDef    `mapstructure:"alibaba"`
+}
+
+// AWSSecretsDef configures global AWS Secrets Manager client defaults.
+type AWSSecretsDef struct {
+	Region string `mapstructure:"region"`
+}
+
+// GCPSecretsDef configures global GCP Secret Manager client defaults.
+type GCPSecretsDef struct {
+	ProjectID string `mapstructure:"project_id"`
+	Location  string `mapstructure:"location"`
+}
+
+// AzureSecretsDef configures global Azure Key Vault client defaults.
+type AzureSecretsDef struct {
+	VaultURL string `mapstructure:"vault_url"`
+}
+
+// AlibabaSecretsDef configures global Alibaba Cloud KMS client defaults.
+type AlibabaSecretsDef struct {
+	Region   string `mapstructure:"region"`
+	Endpoint string `mapstructure:"endpoint"`
+	CAFile   string `mapstructure:"ca_file"`
 }
 
 // VaultSecretsDef configures global HashiCorp Vault client defaults.

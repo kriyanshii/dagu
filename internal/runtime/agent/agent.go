@@ -177,11 +177,16 @@ type Agent struct {
 	// stepRetry is the name of the step to retry, if specified.
 	stepRetry string
 
+	// retryPath identifies the persisted child invocation selected by a root retry.
+	retryPath exec.RetryPath
+
 	// workerID is the identifier of the worker executing this DAG run.
 	workerID string
 
 	// triggerType indicates how this DAG run was initiated.
 	triggerType core.TriggerType
+	// triggerActor identifies the attributable actor that initiated the DAG run.
+	triggerActor string
 
 	// defaultExecMode is the server-level default execution mode.
 	defaultExecMode config.ExecutionMode
@@ -287,6 +292,8 @@ type Options struct {
 	ExtraEnvs []string
 	// StepRetry is the name of the step to retry, if specified.
 	StepRetry string
+	// RetryPath identifies a persisted child DAG step retry.
+	RetryPath exec.RetryPath
 	// WorkerID is the identifier of the worker executing this DAG run.
 	// For distributed execution, this is set to the worker's ID.
 	// For local execution, this defaults to "local".
@@ -335,6 +342,8 @@ type Options struct {
 	PeerConfig config.Peer
 	// TriggerType indicates how this DAG run was initiated.
 	TriggerType core.TriggerType
+	// TriggerActor identifies the attributable actor that initiated the DAG run.
+	TriggerActor string
 	// DefaultExecMode is the server-level default execution mode.
 	DefaultExecMode config.ExecutionMode
 	// ScheduleTime is the RFC 3339 timestamp of when this run was scheduled.
@@ -397,6 +406,7 @@ func New(
 		extraEnvs:                append([]string{}, opts.ExtraEnvs...),
 		profileName:              opts.ProfileName,
 		stepRetry:                opts.StepRetry,
+		retryPath:                opts.RetryPath,
 		peerConfig:               opts.PeerConfig,
 		workerID:                 opts.WorkerID,
 		statusPusher:             opts.StatusPusher,
@@ -405,6 +415,7 @@ func New(
 		queuedRun:                opts.QueuedRun,
 		attemptID:                opts.AttemptID,
 		triggerType:              opts.TriggerType,
+		triggerActor:             opts.TriggerActor,
 		defaultExecMode:          opts.DefaultExecMode,
 		scheduleTime:             opts.ScheduleTime,
 		dagRunLogDir:             opts.DAGRunLogDir,
@@ -456,8 +467,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	runningStatusDone := make(chan struct{})
 	close(runningStatusDone)
+	stopRunningStatus := func() {}
 	defer func() {
 		cancel()
+		stopRunningStatus()
 		<-runningStatusDone
 	}()
 
@@ -467,6 +480,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		tag.RunID(a.dagRunID),
 		tag.AttemptID(a.dagRunAttemptID),
 	)
+	if !a.parentDAGRun.Zero() && a.dag.HasHumanTaskSteps() {
+		return fmt.Errorf("DAG %q contains human task steps and cannot run as a sub-DAG", a.dag.Name)
+	}
 
 	// Initialize propagators for W3C trace context before anything else
 	telemetry.InitializePropagators()
@@ -600,8 +616,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	contextOpts := []runtime.ContextOption{
 		runtime.WithDatabase(dbClient),
 		runtime.WithRootDAGRun(a.rootDAGRun),
+		runtime.WithRetryPath(a.retryPath),
 		runtime.WithAttemptID(a.dagRunAttemptID),
 		runtime.WithTriggerType(a.triggerType),
+		runtime.WithTriggerActor(a.triggerActor),
 		runtime.WithRunStartedAt(contextTimeString(a.plan.StartAt())),
 		runtime.WithParams(a.dag.Params),
 		runtime.WithDefaultSecrets(profileValues.defaultSecrets),
@@ -944,24 +962,25 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Write the first status just after the start to store the running status.
 	// If the DAG is already finished, skip it.
+	runningStatusCtx, stopRunningStatus := context.WithCancel(ctx)
 	runningStatusDone = make(chan struct{})
-	go execWithRecovery(ctx, func() {
+	go execWithRecovery(runningStatusCtx, func() {
 		defer close(runningStatusDone)
 
 		timer := time.NewTimer(waitForRunning)
 		defer timer.Stop()
 
 		select {
-		case <-ctx.Done():
+		case <-runningStatusCtx.Done():
 			return
 		case <-timer.C:
 		}
 
-		status := a.Status(ctx)
+		status := a.Status(runningStatusCtx)
 		if a.finished.Load() || a.shouldDelayTerminalStatus(status.Status) {
 			return
 		}
-		a.writeStatus(ctx, attempt, status)
+		a.writeStatus(runningStatusCtx, attempt, status)
 	})
 
 	// Start the dag-run.
@@ -1021,6 +1040,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	close(progressCh)
 	<-progressDone
 	progressDrained = true
+	stopRunningStatus()
+	<-runningStatusDone
 
 	// Update the finished status to the runstore database.
 	finishedStatus := a.Status(ctx)
@@ -1113,6 +1134,8 @@ func (a *Agent) Run(ctx context.Context) error {
 
 func (a *Agent) shouldDelayTerminalStatus(status core.Status) bool {
 	switch status {
+	case core.Waiting:
+		return true
 	case core.Failed, core.Aborted, core.Succeeded, core.PartiallySucceeded, core.Rejected:
 		if a.artifactFinalizer != nil && a.artifactDir != "" {
 			return true
@@ -1188,8 +1211,8 @@ func errorString(err error) string {
 func (a *Agent) collectOutputs(ctx context.Context) map[string]string {
 	outputs := make(map[string]string)
 
-	// Get nodes from the plan in execution order
-	nodes := a.plan.Nodes()
+	// Steps and lifecycle handlers both publish to the run's outputs.
+	nodes := a.runner.NodesInRunOrder(a.plan)
 
 	for _, node := range nodes {
 		nodeData := node.NodeData()
@@ -1316,6 +1339,7 @@ func (a *Agent) Status(ctx context.Context) exec.DAGRunStatus {
 			transform.WithWorkingDir(a.evaluatedWorkingDir),
 			transform.WithArchiveDir(a.artifactDir),
 			transform.WithTriggerType(a.triggerType),
+			transform.WithTriggerActor(a.triggerActor),
 			transform.WithAutoRetryCount(a.currentAutoRetryCount()),
 			transform.WithPIDStartedAt(currentPIDStartedAt()),
 			transform.WithRuntimeProfile(a.profileName, a.profileResolvedAt, a.profileEntries),
@@ -1362,6 +1386,7 @@ func (a *Agent) Status(ctx context.Context) exec.DAGRunStatus {
 		transform.WithPreconditions(a.dag.Preconditions),
 		transform.WithWorkerID(a.workerID),
 		transform.WithTriggerType(a.triggerType),
+		transform.WithTriggerActor(a.triggerActor),
 		transform.WithAutoRetryCount(a.currentAutoRetryCount()),
 		transform.WithPIDStartedAt(currentPIDStartedAt()),
 		transform.WithRuntimeProfile(a.profileName, a.profileResolvedAt, a.profileEntries),
@@ -1648,7 +1673,6 @@ func (a *Agent) newRunner(attempt runstate.Attempt) *runtime.Runner {
 		DAGRunAutoRetryLimit: autoRetryLimit,
 		DAGRunIsRoot:         a.parentDAGRun.Zero(),
 	}
-
 	return runtime.New(cfg)
 }
 
@@ -1815,6 +1839,11 @@ func (a *Agent) resolveSecrets(ctx context.Context) ([]string, error) {
 
 	baseDirs := a.buildSecretBaseDirs(envScope)
 	secretRegistry := secrets.NewRegistryWithReferenceResolver(a.secretReferenceResolver, baseDirs...)
+	defer func() {
+		if err := secretRegistry.Close(); err != nil {
+			logger.Warn(ctx, "Failed to close secret providers", tag.Error(err))
+		}
+	}()
 
 	resolvedSecrets, err := secretRegistry.ResolveAll(secretCtx, a.dag.Secrets)
 	if err != nil {
@@ -2010,8 +2039,10 @@ func (a *Agent) dryRun(ctx context.Context) error {
 	contextOpts := []runtime.ContextOption{
 		runtime.WithDatabase(db),
 		runtime.WithRootDAGRun(a.rootDAGRun),
+		runtime.WithRetryPath(a.retryPath),
 		runtime.WithAttemptID(a.dagRunAttemptID),
 		runtime.WithTriggerType(a.triggerType),
+		runtime.WithTriggerActor(a.triggerActor),
 		runtime.WithRunStartedAt(contextTimeString(a.plan.StartAt())),
 		runtime.WithParams(a.dag.Params),
 	}

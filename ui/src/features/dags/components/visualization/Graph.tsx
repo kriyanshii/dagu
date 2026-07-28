@@ -74,19 +74,19 @@ type Props = {
 };
 
 const GRAPH_STATUS_STROKES = {
-  none: '#5f6368',
-  running: '#43a047',
-  retrying: '#e37400',
-  done: '#166534',
-  error: '#d93025',
-  cancel: '#d946ef',
-  skipped: '#5f6368',
-  partial: '#e37400',
-  waiting: '#e37400',
-  rejected: '#d93025',
+  none: '#8a8d99',
+  running: '#7c6ef4',
+  retrying: '#d9a03c',
+  done: '#22c55e',
+  error: '#ef5350',
+  cancel: '#c084fc',
+  skipped: '#8a8d99',
+  partial: '#d9a03c',
+  waiting: '#d9a03c',
+  rejected: '#ef5350',
 } as const;
 
-const GRAPH_SUCCESS_LINK_STROKE = '#5f8f64';
+const GRAPH_SUCCESS_LINK_STROKE = '#3fa76b';
 const GRAPH_RENDERED_NODE_SHAPE_SELECTOR =
   'rect, polygon, path, circle, ellipse';
 
@@ -315,7 +315,7 @@ function Graph({
             // Dashed line for error state
             dat.push(`${depId} -.- ${id};`);
             linkStyles.push(
-              `linkStyle ${linkIndex} stroke:#c4726a,stroke-width:1.8px,stroke-dasharray:3`
+              `linkStyle ${linkIndex} stroke:#ef5350,stroke-width:1.8px,stroke-dasharray:3`
             );
           } else if (status === NodeStatus.Success) {
             // Solid line with success color
@@ -327,7 +327,7 @@ function Graph({
             // Default connection style
             dat.push(`${depId} --> ${id};`);
             linkStyles.push(
-              `linkStyle ${linkIndex} stroke:#6b635a,stroke-width:1px`
+              `linkStyle ${linkIndex} stroke:#62656f,stroke-width:1px`
             );
           }
           linkIndex++;
@@ -351,8 +351,8 @@ function Graph({
 
     // Define node styles for different states
     // Use theme-appropriate colors for light/dark modes
-    const nodeFill = isDarkMode ? '#161a3d' : '#ffffff'; // --card for dark, white for light
-    const nodeColor = isDarkMode ? '#f1f5f9' : '#0f1129'; // --foreground for dark, --background for light
+    const nodeFill = isDarkMode ? '#12141b' : '#fbfaf6'; // --card per mode
+    const nodeColor = isDarkMode ? '#f2f1ec' : '#14161b'; // --foreground per mode
 
     // Unified status colors
     dat.push(
@@ -767,7 +767,7 @@ function fallbackStatusBorderClassName(status: NodeStatus): string {
     case NodeStatus.Success:
       return 'border-l-4 border-l-success';
     case NodeStatus.Running:
-      return 'border-l-4 border-l-[#43a047]';
+      return 'border-l-4 border-l-[var(--status-running)]';
     case NodeStatus.Retrying:
     case NodeStatus.Waiting:
     case NodeStatus.PartialSuccess:
@@ -787,7 +787,7 @@ function fallbackStatusDotClassName(status: NodeStatus): string {
     case NodeStatus.Success:
       return 'bg-success';
     case NodeStatus.Running:
-      return 'bg-[#43a047] animate-pulse';
+      return 'bg-[var(--status-running)] animate-pulse';
     case NodeStatus.Retrying:
     case NodeStatus.Waiting:
     case NodeStatus.PartialSuccess:
