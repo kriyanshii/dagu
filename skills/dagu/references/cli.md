@@ -140,6 +140,22 @@ Flags:
 
 Default: shows runs from the last 30 days, newest first.
 
+### dagu ls
+
+List DAG definitions.
+
+```sh
+dagu ls [flags] [pattern]
+```
+
+Flags:
+
+- `--next/-n` — Show next scheduled run time
+- `--last/-l` — Show last run status and time
+- `--history/-H` — Show a compact recent-history summary
+- `--sort-last/-t` — Sort by last run time
+- `--reverse/-r` — Reverse sort order
+
 ### dagu cleanup
 
 Remove old DAG run history. Active runs are never deleted.

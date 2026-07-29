@@ -328,6 +328,41 @@ var (
 		usage:     "Skip confirmation prompt",
 		isBool:    true,
 	}
+
+	lsNextFlag = commandLineFlag{
+		name:      "next",
+		shorthand: "n",
+		usage:     "Show next scheduled run time for cron DAGs",
+		isBool:    true,
+	}
+
+	lsLastFlag = commandLineFlag{
+		name:      "last",
+		shorthand: "l",
+		usage:     "Show last run status and time",
+		isBool:    true,
+	}
+
+	lsHistoryFlag = commandLineFlag{
+		name:      "history",
+		shorthand: "H",
+		usage:     "Show a compact recent-history summary",
+		isBool:    true,
+	}
+
+	lsSortLastFlag = commandLineFlag{
+		name:      "sort-last",
+		shorthand: "t",
+		usage:     "Sort by last run time",
+		isBool:    true,
+	}
+
+	lsReverseFlag = commandLineFlag{
+		name:      "reverse",
+		shorthand: "r",
+		usage:     "Reverse sort order",
+		isBool:    true,
+	}
 )
 
 // Tunnel flags
