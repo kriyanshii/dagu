@@ -328,6 +328,33 @@ var (
 		usage:     "Skip confirmation prompt",
 		isBool:    true,
 	}
+
+	rmHistoryFlag = commandLineFlag{
+		name:      "history",
+		shorthand: "H",
+		usage:     "Delete DAG run history",
+		isBool:    true,
+	}
+
+	rmDefinitionFlag = commandLineFlag{
+		name:      "definition",
+		shorthand: "d",
+		usage:     "Delete the DAG YAML definition",
+		isBool:    true,
+	}
+
+	rmOlderThanFlag = commandLineFlag{
+		name:      "older-than",
+		shorthand: "t",
+		usage:     "With --history: delete runs older than duration (e.g. 10d, 24h, 1w). Omitted = delete all history",
+	}
+
+	rmForceFlag = commandLineFlag{
+		name:      "force",
+		shorthand: "f",
+		usage:     "Skip confirmation prompt",
+		isBool:    true,
+	}
 )
 
 // Tunnel flags

@@ -140,9 +140,26 @@ Flags:
 
 Default: shows runs from the last 30 days, newest first.
 
+### dagu rm
+
+Remove DAG run history and/or the DAG YAML definition. At least one of `--history` or `--definition` is required. Active runs are never deleted from history; definition deletion is refused while the DAG has alive processes.
+
+```sh
+dagu rm (--history|-H | --definition|-d) [-t <duration>] [-f] <dag-name>
+```
+
+Flags:
+
+- `--history/-H` — Delete run history
+- `--definition/-d` — Delete the DAG YAML definition
+- `--older-than/-t` — With `--history`: delete runs older than a duration (e.g. `10d`, `24h`, `1w`). Omitted = delete all history
+- `--force/-f` — Skip confirmation prompt
+
 ### dagu cleanup
 
 Remove old DAG run history. Active runs are never deleted.
+
+Deprecated: prefer `dagu rm --history`.
 
 ```sh
 dagu cleanup <dag-name> [--retention-days <n>] [--dry-run] [--yes/-y]

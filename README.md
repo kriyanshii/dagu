@@ -785,10 +785,11 @@ See the distributed execution documentation for setup details.
 | `dagu dry <dag>` | Dry run — show what would execute |
 | `dagu status <dag>` | Show DAG run status |
 | `dagu history <dag>` | Show execution history |
+| `dagu rm -H\|-d <dag>` | Remove history and/or DAG definition |
 | `dagu validate <dag>` | Validate DAG YAML |
 | `dagu enqueue <dag>` | Add DAG to the execution queue |
 | `dagu dequeue <queue-name> [--dag-run=<dag>:<run-id>]` | Remove a DAG-run from the queue |
-| `dagu cleanup <dag>` | Clean up old run data |
+| `dagu cleanup <dag>` | Clean up old run data (prefer `rm --history`) |
 | `dagu version` | Show version |
 
 ## Environment Variables

@@ -365,7 +365,17 @@ func (dr DataRoot) Rename(ctx context.Context, newRoot DataRoot) error {
 // If dryRun is true, it returns the run IDs that would be removed without actually deleting them.
 // Returns a list of dag-run IDs that were removed (or would be removed in dry-run mode).
 func (dr DataRoot) RemoveOld(ctx context.Context, retentionDays int, dryRun bool) ([]string, error) {
+	if retentionDays < 0 {
+		return nil, nil
+	}
 	keepTime := exec.NewUTC(time.Now().AddDate(0, 0, -retentionDays))
+	return dr.RemoveOldBefore(ctx, keepTime, dryRun)
+}
+
+// RemoveOldBefore removes dag-runs whose recorded time is strictly before keepTime.
+// Active (non-final) runs are never removed. If dryRun is true, it returns the run
+// IDs that would be removed without actually deleting them.
+func (dr DataRoot) RemoveOldBefore(ctx context.Context, keepTime exec.TimeInUTC, dryRun bool) ([]string, error) {
 	dagRuns := dr.listDAGRunsInRange(ctx, exec.TimeInUTC{}, keepTime, &listDAGRunsInRangeOpts{})
 
 	var removedRunIDs []string

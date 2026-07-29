@@ -300,6 +300,31 @@ func TestJSONDB(t *testing.T) {
 		assert.Equal(t, "dagrun-id-1", dagRunStatus.DAGRunID)
 		assert.Equal(t, core.Running, dagRunStatus.Status)
 	})
+	t.Run("RemoveOldWithOlderThanCutoff", func(t *testing.T) {
+		th := setupTestStore(t)
+
+		tsOld := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
+		tsRecent := time.Date(2021, 1, 3, 12, 0, 0, 0, time.UTC)
+		cutoff := time.Date(2021, 1, 2, 0, 0, 0, 0, time.UTC)
+
+		th.CreateAttempt(t, tsOld, "old-run", core.Succeeded)
+		th.CreateAttempt(t, tsRecent, "recent-run", core.Succeeded)
+
+		removedIDs, err := th.Store.RemoveOldDAGRuns(
+			th.Context,
+			"test_DAG",
+			30, // ignored when OlderThan is set
+			exec.WithOlderThan(cutoff),
+		)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"old-run"}, removedIDs)
+
+		attempts := th.Store.RecentAttempts(th.Context, "test_DAG", 3)
+		require.Len(t, attempts, 1)
+		status, err := attempts[0].ReadStatus(th.Context)
+		require.NoError(t, err)
+		assert.Equal(t, "recent-run", status.DAGRunID)
+	})
 	t.Run("RemoveDAGRunRejectsActiveWhenRequested", func(t *testing.T) {
 		th := setupTestStore(t)
 		ts := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
