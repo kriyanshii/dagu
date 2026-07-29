@@ -140,6 +140,14 @@ Flags:
 
 Default: shows runs from the last 30 days, newest first.
 
+### dagu ps
+
+List running DAG processes.
+
+```sh
+dagu ps [-d <dag-name>] [-r <run-id>]
+```
+
 ### dagu cleanup
 
 Remove old DAG run history. Active runs are never deleted.
