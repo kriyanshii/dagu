@@ -1108,6 +1108,90 @@ func TestBuildWorkerSelector(t *testing.T) {
 	}
 }
 
+func TestWorkerSelectorEvaluation(t *testing.T) {
+	t.Parallel()
+
+	const step = `
+steps:
+  - name: task
+    run: echo hello
+`
+	tests := []struct {
+		name    string
+		yaml    string
+		opts    []LoadOption
+		want    map[string]string
+		wantErr string
+	}{
+		{
+			name: "EnvParamsAndKey",
+			yaml: `
+env:
+  LABEL_KEY: workload
+  WORKLOAD: intraday
+params: REGION=eu-west
+worker_selector:
+  ${LABEL_KEY}: ${WORKLOAD}
+  region: ${REGION}
+`,
+			want: map[string]string{"workload": "intraday", "region": "eu-west"},
+		},
+		{
+			name: "EmptyResolvedKey",
+			yaml: `
+env:
+  LABEL_KEY: "  "
+worker_selector:
+  ${LABEL_KEY}: fast
+`,
+			wantErr: "resolved to an empty key",
+		},
+		{
+			name: "DuplicateResolvedKeys",
+			yaml: `
+env:
+  LABEL_KEY: workload
+worker_selector:
+  ${LABEL_KEY}: fast
+  workload: slow
+`,
+			wantErr: `duplicate key "workload"`,
+		},
+		{
+			name: "UndefinedVariableStaysLiteral",
+			yaml: `
+worker_selector:
+  workload: ${UNDEFINED_WORKER_SELECTOR_VAR}
+`,
+			want: map[string]string{"workload": "${UNDEFINED_WORKER_SELECTOR_VAR}"},
+		},
+		{
+			name: "WithoutEvalLeavesRaw",
+			yaml: `
+env:
+  WORKLOAD: intraday
+worker_selector:
+  workload: ${WORKLOAD}
+`,
+			opts: []LoadOption{WithoutEval()},
+			want: map[string]string{"workload": "${WORKLOAD}"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dag, err := LoadYAML(context.Background(), []byte(tt.yaml+step), tt.opts...)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, dag.WorkerSelector)
+		})
+	}
+}
+
 func TestBuildWebhookConfig(t *testing.T) {
 	t.Parallel()
 

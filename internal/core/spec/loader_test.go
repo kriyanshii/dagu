@@ -357,6 +357,74 @@ steps:
 	})
 }
 
+func TestLoad_WorkerSelectorFromBaseConfig(t *testing.T) {
+	t.Parallel()
+
+	const step = `
+steps:
+  - name: "1"
+    run: "true"
+`
+	tests := []struct {
+		name string
+		base string
+		dag  string
+		want map[string]string
+	}{
+		{
+			name: "DAGSelectorUsesBaseEnv",
+			base: `
+env:
+  WORKLOAD: batch-eu
+`,
+			dag: `
+worker_selector:
+  workload: "${WORKLOAD}"
+`,
+			want: map[string]string{"workload": "batch-eu"},
+		},
+		{
+			name: "BaseSelectorUsesDAGEnvOverride",
+			base: `
+env:
+  WORKLOAD: base-pool
+worker_selector:
+  workload: "${WORKLOAD}"
+`,
+			dag: `
+env:
+  WORKLOAD: child-pool
+`,
+			want: map[string]string{"workload": "child-pool"},
+		},
+		{
+			name: "BaseSelectorUsesDAGParamOverride",
+			base: `
+params:
+  - REGION: us
+worker_selector:
+  region: "${params.REGION}"
+`,
+			dag: `
+params:
+  - REGION: eu
+`,
+			want: map[string]string{"region": "eu"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			base := createTempYAMLFile(t, tt.base)
+			dagFile := createTempYAMLFile(t, tt.dag+step)
+			dag, err := spec.Load(context.Background(), dagFile, spec.WithBaseConfig(base))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, dag.WorkerSelector)
+		})
+	}
+}
+
 func TestLoad_HarnessDefinitionsBaseConfigMerge(t *testing.T) {
 	t.Parallel()
 

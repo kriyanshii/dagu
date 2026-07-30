@@ -832,13 +832,13 @@ func (n *Node) setupExecutor(ctx context.Context) (context.Context, executor.Exe
 
 	// Handle sub DAG execution
 	if subDAG := n.Step().SubDAG; subDAG != nil {
-		subRuns, err := n.BuildSubDAGRuns(ctx, subDAG)
+		runParams, err := n.buildChildRunParams(ctx, subDAG)
 		if err != nil {
 			return ctx, nil, err
 		}
-		n.SetSubRuns(subRuns)
+		n.SetSubRuns(subRunsFromParams(runParams))
 
-		if err := n.configureSubDAGExecutor(cmd, subRuns); err != nil {
+		if err := n.configureSubDAGExecutor(cmd, runParams); err != nil {
 			return ctx, nil, err
 		}
 	}
@@ -967,13 +967,13 @@ func objectAsConfig(obj any) (map[string]any, error) {
 	return config, nil
 }
 
-func (n *Node) configureSubDAGExecutor(cmd executor.Executor, subRuns []SubDAGRun) error {
+func (n *Node) configureSubDAGExecutor(cmd executor.Executor, runParams []executor.RunParams) error {
 	if n.Step().Parallel == nil {
 		dagExecutor, ok := cmd.(executor.DAGExecutor)
 		if !ok {
 			return fmt.Errorf("action %q does not support sub DAG execution", n.Step().ExecutorConfig.Type)
 		}
-		dagExecutor.SetParams(runParams(subRuns[0]))
+		dagExecutor.SetParams(runParams[0])
 		return nil
 	}
 
@@ -981,24 +981,20 @@ func (n *Node) configureSubDAGExecutor(cmd executor.Executor, subRuns []SubDAGRu
 	if !ok {
 		return fmt.Errorf("action %q does not support parallel execution", n.Step().ExecutorConfig.Type)
 	}
-	parallelExecutor.SetParamsList(runParamsList(subRuns))
+	parallelExecutor.SetParamsList(runParams)
 	return nil
 }
 
-func runParams(subRun SubDAGRun) executor.RunParams {
-	return executor.RunParams{
-		RunID:   subRun.DAGRunID,
-		Params:  subRun.Params,
-		DAGName: subRun.DAGName,
+func subRunsFromParams(params []executor.RunParams) []SubDAGRun {
+	subRuns := make([]SubDAGRun, len(params))
+	for i, run := range params {
+		subRuns[i] = SubDAGRun{
+			DAGRunID: run.RunID,
+			Params:   run.Params,
+			DAGName:  run.DAGName,
+		}
 	}
-}
-
-func runParamsList(subRuns []SubDAGRun) []executor.RunParams {
-	params := make([]executor.RunParams, 0, len(subRuns))
-	for _, subRun := range subRuns {
-		params = append(params, runParams(subRun))
-	}
-	return params
+	return subRuns
 }
 
 // evaluateCommandArgs evaluates the command and arguments of the node.
@@ -1298,8 +1294,16 @@ func (n *Node) Init() {
 	}
 }
 
-// BuildSubDAGRuns constructs the sub DAG runs based on parallel configuration
+// BuildSubDAGRuns constructs the sub DAG runs based on parallel configuration.
 func (n *Node) BuildSubDAGRuns(ctx context.Context, subDAG *core.SubDAG) ([]SubDAGRun, error) {
+	runParams, err := n.buildChildRunParams(ctx, subDAG)
+	if err != nil {
+		return nil, err
+	}
+	return subRunsFromParams(runParams), nil
+}
+
+func (n *Node) buildChildRunParams(ctx context.Context, subDAG *core.SubDAG) ([]executor.RunParams, error) {
 	parallel := n.Step().Parallel
 
 	// Single sub DAG execution (non-parallel)
@@ -1313,11 +1317,20 @@ func (n *Node) BuildSubDAGRuns(ctx context.Context, subDAG *core.SubDAG) ([]SubD
 		if repeated && len(n.State().SubRuns) > 0 {
 			n.AddSubRunsRepeated(n.State().SubRuns[0])
 		}
+		workerSelector, err := resolveWorkerSelector(
+			ctx,
+			GetEnv(ctx).Scope,
+			n.Step().WorkerSelector,
+		)
+		if err != nil {
+			return nil, err
+		}
 		dagRunID := GenerateSubDAGRunIDForTarget(ctx, dagName, params, repeated)
-		return []SubDAGRun{{
-			DAGRunID: dagRunID,
-			Params:   params,
-			DAGName:  dagName,
+		return []executor.RunParams{{
+			RunID:          dagRunID,
+			Params:         params,
+			DAGName:        dagName,
+			WorkerSelector: workerSelector,
 		}}, nil
 	}
 
@@ -1379,8 +1392,7 @@ func (n *Node) BuildSubDAGRuns(ctx context.Context, subDAG *core.SubDAG) ([]SubD
 		return nil, fmt.Errorf("parallel execution exceeds maximum limit: %d items (max: %d)", len(items), maxParallelItems)
 	}
 
-	// Build sub runs with deduplication
-	subRunMap := make(map[string]SubDAGRun)
+	runParamsByID := make(map[string]executor.RunParams)
 	repeated := n.IsRepeated()
 
 	if repeated {
@@ -1420,22 +1432,70 @@ func (n *Node) BuildSubDAGRuns(ctx context.Context, subDAG *core.SubDAG) ([]SubD
 			finalParams = evaluatedStepParams
 		}
 
+		workerSelector, err := resolveWorkerSelector(ctx, scope, n.Step().WorkerSelector)
+		if err != nil {
+			return nil, err
+		}
+
 		dagRunID := GenerateSubDAGRunIDForTarget(ctx, dagName, finalParams, repeated)
-		// Use dagRunID as key to deduplicate - same params will generate same ID
-		subRunMap[dagRunID] = SubDAGRun{
-			DAGRunID: dagRunID,
-			Params:   finalParams,
-			DAGName:  dagName,
+		if existing, ok := runParamsByID[dagRunID]; ok &&
+			!maps.Equal(existing.WorkerSelector, workerSelector) {
+			return nil, fmt.Errorf(
+				"parallel items resolve to the same sub-DAG run %q with different worker selectors",
+				dagRunID,
+			)
+		}
+		runParamsByID[dagRunID] = executor.RunParams{
+			RunID:          dagRunID,
+			Params:         finalParams,
+			DAGName:        dagName,
+			WorkerSelector: workerSelector,
 		}
 	}
 
-	// Convert map back to slice
-	var subRuns []SubDAGRun
-	for _, run := range subRunMap {
-		subRuns = append(subRuns, run)
+	var runParams []executor.RunParams
+	for _, params := range runParamsByID {
+		runParams = append(runParams, params)
 	}
 
-	return subRuns, nil
+	return runParams, nil
+}
+
+func resolveWorkerSelector(
+	ctx context.Context,
+	scope *cmnvalue.EnvScope,
+	selector map[string]string,
+) (map[string]string, error) {
+	if len(selector) == 0 {
+		return nil, nil
+	}
+	if scope == nil {
+		scope = cmnvalue.NewEnvScope(nil, false)
+	}
+
+	resolver := ValueResolverWithScope(ctx, scope)
+	field := cmnvalue.WorkflowField("worker_selector")
+	resolved := make(map[string]string, len(selector))
+	for rawKey, rawValue := range selector {
+		key, err := resolver.String(ctx, rawKey, field)
+		if err != nil {
+			return nil, fmt.Errorf("failed to eval worker selector key %q: %w", rawKey, err)
+		}
+		value, err := resolver.String(ctx, rawValue, field)
+		if err != nil {
+			return nil, fmt.Errorf("failed to eval worker selector value %q: %w", rawValue, err)
+		}
+
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, fmt.Errorf("worker selector key %q resolved to an empty key", rawKey)
+		}
+		if _, ok := resolved[key]; ok {
+			return nil, fmt.Errorf("worker selector keys resolve to duplicate key %q", key)
+		}
+		resolved[key] = strings.TrimSpace(value)
+	}
+	return resolved, nil
 }
 
 // ItemToParam converts a parallel item to a parameter string
