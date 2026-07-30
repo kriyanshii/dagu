@@ -123,7 +123,12 @@ func runLs(ctx *Context, args []string) error {
 		sort.SliceStable(rows, func(i, j int) bool {
 			ti, tj := rows[i].lastTime, rows[j].lastTime
 			if ti.Equal(tj) {
-				return strings.ToLower(rows[i].dag.Name) < strings.ToLower(rows[j].dag.Name)
+				nameI := strings.ToLower(rows[i].dag.Name)
+				nameJ := strings.ToLower(rows[j].dag.Name)
+				if reverse {
+					return nameI > nameJ
+				}
+				return nameI < nameJ
 			}
 			if reverse {
 				return ti.After(tj)
@@ -173,8 +178,8 @@ func enrichLsRow(ctx *Context, row *lsRow, wantLast, wantHistory bool) {
 
 func renderLsTable(out io.Writer, rows []lsRow, showNext, showLast, showHistory bool) error {
 	if len(rows) == 0 {
-		fmt.Fprintln(out, "No DAGs found")
-		return nil
+		_, err := fmt.Fprintln(out, "No DAGs found")
+		return err
 	}
 
 	headers := []string{"NAME"}
