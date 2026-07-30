@@ -868,6 +868,18 @@
         "token": {
           "type": "string",
           "description": "Default Vault token."
+        },
+        "ca_cert": {
+          "type": "string",
+          "description": "CA certificate file for verifying a custom Vault TLS endpoint."
+        },
+        "client_cert": {
+          "type": "string",
+          "description": "Client certificate file for Vault mutual TLS authentication."
+        },
+        "client_key": {
+          "type": "string",
+          "description": "Client private key file for Vault mutual TLS authentication."
         }
       }
     },
