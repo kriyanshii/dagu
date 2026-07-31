@@ -307,8 +307,11 @@ func TestJSONDB(t *testing.T) {
 		tsRecent := time.Date(2021, 1, 3, 12, 0, 0, 0, time.UTC)
 		cutoff := time.Date(2021, 1, 2, 0, 0, 0, 0, time.UTC)
 
-		th.CreateAttempt(t, tsOld, "old-run", core.Succeeded)
-		th.CreateAttempt(t, tsRecent, "recent-run", core.Succeeded)
+		oldAttempt := th.CreateAttempt(t, tsOld, "old-run", core.Succeeded)
+		recentAttempt := th.CreateAttempt(t, tsRecent, "recent-run", core.Succeeded)
+		// canRemoveDAGRun gates on status-file mtime as well as recorded run time.
+		require.NoError(t, os.Chtimes(oldAttempt.file, tsOld, tsOld))
+		require.NoError(t, os.Chtimes(recentAttempt.file, tsRecent, tsRecent))
 
 		removedIDs, err := th.Store.RemoveOldDAGRuns(
 			th.Context,

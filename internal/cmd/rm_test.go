@@ -149,4 +149,24 @@ func TestRmCommand(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid --older-than")
 	})
+
+	t.Run("DryRunDoesNotDelete", func(t *testing.T) {
+		t.Parallel()
+
+		th := test.SetupCommand(t)
+		dag := th.DAG(t, `steps:
+  - name: "1"
+    run: echo "hello"
+`)
+		th.RunCommand(t, cmd.Start(), test.CmdTest{
+			Args: []string{"start", dag.Location},
+		})
+		dag.AssertLatestStatus(t, core.Succeeded)
+		dag.AssertDAGRunCount(t, 1)
+
+		th.RunCommand(t, cmd.Rm(), test.CmdTest{
+			Args: []string{"rm", "-H", "--dry-run", dag.Name},
+		})
+		dag.AssertDAGRunCount(t, 1)
+	})
 }

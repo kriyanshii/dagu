@@ -27,6 +27,7 @@ Flags:
   -t, --older-than    With --history: delete runs older than a duration
                       (e.g. 10d, 24h, 1w). Omitted = delete all history
   -f, --force         Skip confirmation prompt
+      --dry-run       Preview what would be deleted without deleting
 
 Active runs are never deleted from history. Definition deletion is refused
 while the DAG has alive processes.
@@ -35,6 +36,7 @@ Examples:
   dagu rm -H my-workflow                 # Delete all history (with confirmation)
   dagu rm -H -t 10d my-workflow          # Delete history older than 10 days
   dagu rm -H -t 24h -f my-workflow       # Delete history older than 24h, no prompt
+  dagu rm -H --dry-run my-workflow       # Preview history removals without deleting
   dagu rm -d my-workflow                 # Delete DAG YAML definition
   dagu rm -H -d my-workflow              # Delete history and definition
 `,
@@ -50,6 +52,7 @@ var rmFlags = []commandLineFlag{
 	rmDefinitionFlag,
 	rmOlderThanFlag,
 	rmForceFlag,
+	dryRunFlag,
 }
 
 type rmOptions struct {
@@ -67,6 +70,7 @@ func runRm(ctx *Context, args []string) error {
 	deleteHist, _ := ctx.Command.Flags().GetBool("history")
 	deleteDef, _ := ctx.Command.Flags().GetBool("definition")
 	force, _ := ctx.Command.Flags().GetBool("force")
+	dryRun, _ := ctx.Command.Flags().GetBool("dry-run")
 	olderThan, err := ctx.StringParam("older-than")
 	if err != nil {
 		return fmt.Errorf("failed to get older-than: %w", err)
@@ -90,6 +94,7 @@ func runRm(ctx *Context, args []string) error {
 		deleteDef:   deleteDef,
 		olderThan:   olderThan,
 		force:       force,
+		dryRun:      dryRun,
 		skipConfirm: force || ctx.Quiet,
 	})
 }
@@ -133,6 +138,9 @@ func executeRm(ctx *Context, opts rmOptions) error {
 	}
 
 	if opts.deleteDef {
+		if err := ensureNoAliveProcs(ctx, opts.dagName); err != nil {
+			return err
+		}
 		if err := ctx.DAGStore.Delete(ctx, opts.dagName); err != nil {
 			return fmt.Errorf("failed to delete DAG definition %q: %w", opts.dagName, err)
 		}
