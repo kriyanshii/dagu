@@ -74,6 +74,7 @@ func NewDAGStore(cfg *config.Config, opts ...DAGStoreOption) (exec.DAGStore, err
 		filedag.WithWorkspaceBaseConfigDir(workspace.BaseConfigDir(cfg.Paths.DAGsDir)),
 		filedag.WithFileCache(options.Cache),
 		filedag.WithSkipExamples(skipExamples),
+		filedag.WithRecursiveDiscovery(cfg.DAGDiscovery.Recursive),
 		filedag.WithSkipDirectoryCreation(options.SkipDirectoryCreation),
 	)
 	if s, ok := store.(*filedag.Storage); ok {

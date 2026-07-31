@@ -314,7 +314,11 @@ func (f *testFixture) startSchedulerWithOptions(
 ) {
 	f.t.Helper()
 
-	em := scheduler.NewEntryReader(f.coord.Config.Paths.DAGsDir, f.coord.DAGStore)
+	em := scheduler.NewEntryReader(
+		f.coord.Config.Paths.DAGsDir,
+		f.coord.DAGStore,
+		f.coord.Config.DAGDiscovery.Recursive,
+	)
 
 	schedulerInst, err := scheduler.New(
 		f.coord.Config,

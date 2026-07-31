@@ -57,7 +57,11 @@ func NewScheduler(cfg SchedulerConfig) (*scheduler.Scheduler, error) {
 	}
 
 	coordinatorClient := NewCoordinatorClient(ctx, cfg.Config, cfg.ServiceRegistry)
-	entryReader := scheduler.NewEntryReader(cfg.Config.Paths.DAGsDir, dagStore)
+	entryReader := scheduler.NewEntryReader(
+		cfg.Config.Paths.DAGsDir,
+		dagStore,
+		cfg.Config.DAGDiscovery.Recursive,
+	)
 	watermarkStore := scheduler.NewWatermarkStore(
 		file.NewCollection(filepath.Join(cfg.Config.Paths.DataDir, "scheduler"), file.WithIndentedJSON()),
 	)
