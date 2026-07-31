@@ -137,6 +137,50 @@ func TestStateExecutorRequiresStateStore(t *testing.T) {
 	assert.Contains(t, err.Error(), "state store")
 }
 
+func TestStateConfigAllowsExpectedVersionExpression(t *testing.T) {
+	t.Parallel()
+
+	err := core.ValidateExecutorConfig(executorType, map[string]any{
+		"key":              "cursors/api",
+		"value":            "next",
+		"expected_version": "${steps.load.outputs.version}",
+	})
+
+	require.NoError(t, err)
+}
+
+func TestStateStepValidationExpectedVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		expectedVersion any
+		wantErr         bool
+	}{
+		{name: "Integer", expectedVersion: int64(7)},
+		{name: "NumericString", expectedVersion: "7"},
+		{name: "RuntimeExpression", expectedVersion: "${steps.load.outputs.version}"},
+		{name: "InvalidString", expectedVersion: "latest", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateStep(stateStep(opSet, map[string]any{
+				"key":              "cursors/api",
+				"value":            "next",
+				"expected_version": tt.expectedVersion,
+			}))
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func newStateStoreForTest(t *testing.T) dagstate.Store {
 	t.Helper()
 	return store.NewDAGStateStore(testutil.NewMemoryBackend().Collection("dag_state"))
