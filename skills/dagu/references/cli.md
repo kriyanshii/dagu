@@ -148,6 +148,8 @@ List running DAG processes.
 dagu ps [-d <dag-name>] [-r <run-id>]
 ```
 
+`-r`/`--run-id` accepts a partial run ID and matches accordingly.
+
 ### dagu cleanup
 
 Remove old DAG run history. Active runs are never deleted.

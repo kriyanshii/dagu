@@ -82,7 +82,9 @@ func runPs(ctx *Context, args []string) error {
 
 	if len(matched) == 0 {
 		if !ctx.Quiet {
-			fmt.Fprintln(ctx.Command.OutOrStdout(), "No running processes")
+			if _, err := fmt.Fprintln(ctx.Command.OutOrStdout(), "No running processes"); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
