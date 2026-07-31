@@ -172,6 +172,55 @@ func toOIDCWorkspaceMappings(mappings map[string][]config.OIDCWorkspaceGrant) ma
 	return result
 }
 
+func toOIDCPolicy(policy config.OIDCPolicy) oidcprovision.Policy {
+	return oidcprovision.Policy{
+		AutoSignup:     policy.AutoSignup,
+		AllowedDomains: policy.AllowedDomains,
+		Whitelist:      policy.Whitelist,
+		RoleMapping: oidcprovision.RoleMapperConfig{
+			GroupsClaim:            policy.RoleMapping.GroupsClaim,
+			GroupMappings:          policy.RoleMapping.GroupMappings,
+			WorkspaceMappings:      toOIDCWorkspaceMappings(policy.RoleMapping.WorkspaceMappings),
+			DefaultWorkspaceAccess: policy.RoleMapping.DefaultWorkspaceAccess,
+			RoleAttributePath:      policy.RoleMapping.RoleAttributePath,
+			RoleAttributeStrict:    policy.RoleMapping.RoleAttributeStrict,
+			SkipOrgRoleSync:        policy.RoleMapping.SkipOrgRoleSync,
+			DefaultRole:            authmodel.Role(policy.RoleMapping.DefaultRole),
+		},
+	}
+}
+
+func toConfigOIDCWorkspaceMappings(mappings map[string][]oidcprovision.WorkspaceGrantConfig) map[string][]config.OIDCWorkspaceGrant {
+	if len(mappings) == 0 {
+		return nil
+	}
+	result := make(map[string][]config.OIDCWorkspaceGrant, len(mappings))
+	for group, grants := range mappings {
+		converted := make([]config.OIDCWorkspaceGrant, len(grants))
+		for i, grant := range grants {
+			converted[i] = config.OIDCWorkspaceGrant{
+				Workspace: grant.Workspace,
+				Role:      grant.Role,
+			}
+		}
+		result[group] = converted
+	}
+	return result
+}
+
+func toConfigOIDCMapping(mapping oidcprovision.RoleMapperConfig) config.OIDCRoleMapping {
+	return config.OIDCRoleMapping{
+		GroupsClaim:            mapping.GroupsClaim,
+		GroupMappings:          mapping.GroupMappings,
+		WorkspaceMappings:      toConfigOIDCWorkspaceMappings(mapping.WorkspaceMappings),
+		DefaultWorkspaceAccess: mapping.DefaultWorkspaceAccess,
+		RoleAttributePath:      mapping.RoleAttributePath,
+		RoleAttributeStrict:    mapping.RoleAttributeStrict,
+		SkipOrgRoleSync:        mapping.SkipOrgRoleSync,
+		DefaultRole:            string(mapping.DefaultRole),
+	}
+}
+
 func toTrustedProxyGroupMappings(mappings map[string]string) map[string]authmodel.Role {
 	if len(mappings) == 0 {
 		return nil
@@ -340,22 +389,26 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		if oidcCfg.IsConfigured() {
 			oidcEnabled = true
 			oidcButtonLabel = oidcCfg.ButtonLabel
+			configPolicy := oidcCfg.Policy()
+			policy := toOIDCPolicy(configPolicy)
+			loader := config.NewOIDCPolicyLoader(
+				cfg.Paths.ConfigFilesUsed,
+				configPolicy,
+			)
 
 			provisionCfg := oidcprovision.Config{
 				Issuer:         oidcCfg.Issuer,
-				AutoSignup:     oidcCfg.AutoSignup,
-				DefaultRole:    authmodel.Role(oidcCfg.RoleMapping.DefaultRole),
-				AllowedDomains: oidcCfg.AllowedDomains,
-				Whitelist:      oidcCfg.Whitelist,
-				RoleMapping: oidcprovision.RoleMapperConfig{
-					GroupsClaim:            oidcCfg.RoleMapping.GroupsClaim,
-					GroupMappings:          oidcCfg.RoleMapping.GroupMappings,
-					WorkspaceMappings:      toOIDCWorkspaceMappings(oidcCfg.RoleMapping.WorkspaceMappings),
-					DefaultWorkspaceAccess: oidcCfg.RoleMapping.DefaultWorkspaceAccess,
-					RoleAttributePath:      oidcCfg.RoleMapping.RoleAttributePath,
-					RoleAttributeStrict:    oidcCfg.RoleMapping.RoleAttributeStrict,
-					SkipOrgRoleSync:        oidcCfg.RoleMapping.SkipOrgRoleSync,
-					DefaultRole:            authmodel.Role(oidcCfg.RoleMapping.DefaultRole),
+				AutoSignup:     policy.AutoSignup,
+				DefaultRole:    policy.RoleMapping.DefaultRole,
+				AllowedDomains: policy.AllowedDomains,
+				Whitelist:      policy.Whitelist,
+				RoleMapping:    policy.RoleMapping,
+				LoadPolicy: func(context.Context) (oidcprovision.Policy, error) {
+					policy, err := loader.Load()
+					if err != nil {
+						return oidcprovision.Policy{}, err
+					}
+					return toOIDCPolicy(policy), nil
 				},
 			}
 			provisionCfg.WorkspaceExists = workspaceExists
@@ -363,6 +416,11 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 			if err != nil {
 				return nil, fmt.Errorf("failed to create OIDC provisioning service: %w", err)
 			}
+			apiOpts = append(apiOpts, apiv1.WithOIDCRoleMapping(
+				func() config.OIDCRoleMapping {
+					return toConfigOIDCMapping(provisionSvc.RoleMapping())
+				},
+			))
 
 			builtinOIDCCfg, err = auth.InitBuiltinOIDCConfig(
 				ctx,

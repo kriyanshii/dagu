@@ -94,6 +94,7 @@ type API struct {
 	schedulerStateStore  scheduler.WatermarkStore
 	dagMutationNotifier  func(fileName string)
 	baseConfigFactory    WorkspaceBaseConfigStoreFactory
+	oidcRoleMapping      func() config.OIDCRoleMapping
 }
 
 type WorkspaceBaseConfigStoreFactory func(dagsDir, workspaceName string) (baseconfig.Store, error)
@@ -282,6 +283,13 @@ func WithRemoteNodeStore(s remotenode.Store) APIOption {
 func WithWorkspaceStore(s workspace.Store) APIOption {
 	return func(a *API) {
 		a.workspaceStore = s
+	}
+}
+
+// WithOIDCRoleMapping sets the source used for current OIDC policy metadata.
+func WithOIDCRoleMapping(load func() config.OIDCRoleMapping) APIOption {
+	return func(a *API) {
+		a.oidcRoleMapping = load
 	}
 }
 
