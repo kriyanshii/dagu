@@ -89,6 +89,12 @@ curl -fsSL https://raw.githubusercontent.com/dagucloud/dagu/main/scripts/install
 brew install dagu
 ```
 
+**npm:**
+
+```sh
+npm install -g --ignore-scripts=false @dagucloud/dagu
+```
+
 **Windows (PowerShell):**
 
 ```powershell
