@@ -1,33 +1,68 @@
 <div align="center">
-  <img src="./assets/images/hero-logo.webp" width="900" alt="Dagu local-first workflow engine for ops automation and AI-assisted workflows">
+  <img src="./assets/images/hero-logo.webp" width="720" alt="Dagu workflow engine">
   <p>
-    <a href="https://discord.gg/gpahPUjGRk">Community</a>
+    <a href="https://docs.dagu.sh">Docs</a> ·
+    <a href="https://docs.dagu.sh/writing-workflows/examples">Examples</a> ·
+    <a href="https://dagu-demo-f5e33d0e.dagu.sh">Live Demo</a> ·
+    <a href="https://discord.gg/gpahPUjGRk">Discord</a>
   </p>
 </div>
 
 <h1>Dagu</h1>
 
-Dagu is a local-first workflow engine for ops automation and AI-assisted operations. It is open source and self-hostable: a single binary with a built-in Web UI, no external database or message broker, running on Linux / Mac / Windows. Define [DAGs](https://en.wikipedia.org/wiki/Directed_acyclic_graph) in a declarative YAML format. It natively supports shell commands, Docker containers, Kubernetes Jobs, remote commands via SSH, external coding-agent CLIs through `harness.run`, and more through Dagu Actions.
+Turn existing scripts and commands into reliable YAML workflows. Dagu adds schedules, retries, approvals, logs, and a Web UI in one open-source binary, with no external database or message broker.
 
-Dagu turns existing scripts, runbooks, and agent-driven jobs into production workflows with scheduling, retries, approvals, and run history. It runs where your data and credentials live: on-prem, air-gapped, edge, or cloud, and scales from a single node to a distributed worker fleet.
+## Quick start
 
-**Highlights:**
+Install Dagu on macOS or Linux:
 
-- Single binary file installation.
-- Declarative YAML format for defining DAGs.
-- Web UI for visually managing, retrying, and monitoring pipelines.
-- Use existing scripts or tools without any modifications.
-- Self-contained, with no need for a DBMS.
-- Built-in MCP support for AI agents to manage workflows.
-- Run external coding-agent CLIs through `harness.run` when workflows need AI assistance.
+```sh
+curl -fsSL https://raw.githubusercontent.com/dagucloud/dagu/main/scripts/installer.sh | bash
+```
 
-## Quick Look
+The guided installer can add Dagu to your `PATH`, set up a background service, and create the first admin account. For Windows, Docker, Homebrew, npm, Kubernetes, and manual installation, see the [installation guide](https://docs.dagu.sh/getting-started/installation/).
 
-For a quick look at how workflows are defined, see the examples.
+Create `hello.yaml`:
+
+```yaml
+steps:
+  - id: hello
+    run: echo "Hello from Dagu!"
+  - id: done
+    run: echo "Workflow finished"
+    depends: hello
+```
+
+Run the workflow:
+
+```sh
+dagu start hello.yaml
+```
+
+Open the Web UI:
+
+```sh
+dagu start-all --dags .
+```
+
+Visit <http://localhost:8080>. The [full quickstart](https://docs.dagu.sh/getting-started/quickstart) includes expected output, Docker commands, validation, and common next steps.
+
+If Dagu is useful to you, [star the repository](https://github.com/dagucloud/dagu) so other developers can find it.
+
+## What you get
+
+- Keep existing scripts, commands, containers, and tools unchanged.
+- Define dependencies, schedules, retries, and approvals in readable YAML.
+- Inspect live status, step logs, and run history in the built-in Web UI.
+- Start with local file-backed state, then add queues or distributed workers when needed.
+
+## See it in action
+
+Browse the [workflow examples](https://docs.dagu.sh/writing-workflows/examples) or watch the short demo below.
 
 <div align="center">
   <a href="./assets/images/dagu-demo.mp4?raw=1">
-    <img src="./assets/images/dagu-demo.gif" width="720" alt="Dagu demo showing workflow definitions, the cockpit view, scheduling, built-in actions, and production features">
+    <img src="./assets/images/dagu-demo.gif" width="560" alt="Dagu demo showing workflow definitions, the cockpit view, scheduling, built-in actions, and production features">
   </a>
 </div>
 
@@ -73,75 +108,7 @@ Dagu stores state in local files and reaches production throughput without exter
 | Customer support automation | Run self-service support tools that non-engineering teams can use to run approved workflows for running diagnostics, querying databases, and performing common support tasks without escalating to engineering. |
 | IoT and edge workflows | Run sensor polling, local ML inference, data preprocessing, backups, offline sync, health checks, etc. Dagu keeps these jobs close to the data source while still providing Web UI visibility. |
 
-## Quick Start
-
-### Install
-
-**macOS/Linux:**
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/dagucloud/dagu/main/scripts/installer.sh | bash
-```
-
-**Homebrew:**
-
-```sh
-brew install dagu
-```
-
-**npm:**
-
-```sh
-npm install -g --ignore-scripts=false @dagucloud/dagu
-```
-
-**Windows (PowerShell):**
-
-```powershell
-irm https://raw.githubusercontent.com/dagucloud/dagu/main/scripts/installer.ps1 | iex
-```
-
-**Docker:**
-
-```sh
-docker run --rm -v ~/.dagu:/var/lib/dagu -p 8080:8080 ghcr.io/dagucloud/dagu:latest dagu start-all
-```
-
-**Kubernetes (Helm):**
-
-```sh
-helm repo add dagu https://dagucloud.github.io/dagu
-helm repo update
-helm install dagu dagu/dagu --set persistence.storageClass=<your-rwx-storage-class>
-```
-
-> Replace `<your-rwx-storage-class>` with a StorageClass that supports `ReadWriteMany`. See [charts/dagu/README.md](./charts/dagu/README.md) for chart configuration.
-
-The script installers run a guided wizard that can add Dagu to your PATH, set it up as a background service, and create the initial admin account. Homebrew, npm, Docker, and Helm install without the wizard. See the [Installation documentation](https://docs.dagu.sh/getting-started/installation/) for all options.
-
-### Create and run a workflow
-
-Create `hello.yaml`:
-
-```yaml
-steps:
-  - id: hello
-    run: echo "hello from Dagu"
-```
-
-Run the workflow with:
-
-```sh
-dagu start hello.yaml
-```
-
-### Start the server
-
-```sh
-dagu start-all --dags .
-```
-
-Visit http://localhost:8080
+## AI tools
 
 ### Connect AI agents through MCP
 
