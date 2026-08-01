@@ -558,6 +558,26 @@ func TestTransformArtifactPathsUsesDAGSpecificDirWithoutGlobalArtifactDir(t *tes
 	assert.Equal(t, filepath.Join(baseDir, "test-dag", "dag-run_20260412_000000Z_run-123"), incoming.ArchiveDir)
 }
 
+func TestCreateAttemptForTaskCarriesDAGLabels(t *testing.T) {
+	registerCommandExecutorCapsForCoordinatorTest()
+
+	h := NewHandler(HandlerConfig{DAGRunStore: newMockDAGRunStore()})
+	task := &coordinatorv1.Task{
+		DagRunId:   "run-123",
+		Target:     "daily",
+		SourceFile: "/dags/daily-file.yaml",
+		Definition: "name: daily\nlabels: [workspace=ops, team=platform]\nsteps:\n  - name: step1\n    run: echo hello",
+	}
+	prepared, err := h.createAttemptForTask(context.Background(), task)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+
+	assert.Equal(t, "workspace=ops,team=platform", task.Labels)
+	status, err := prepared.attempt.ReadStatus(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"workspace=ops", "team=platform"}, status.Labels)
+}
+
 // Thread-safe getters for test assertions
 func (m *mockDAGRunAttempt) WasOpened() bool {
 	m.mu.Lock()
@@ -3040,6 +3060,39 @@ func TestHandler_ReportStatus(t *testing.T) {
 		assert.WithinDuration(t, time.Now(), time.UnixMilli(status.LeaseAt), 2*time.Second)
 	})
 
+	t.Run("PreservesPersistedLabels", func(t *testing.T) {
+		t.Parallel()
+
+		store := newMockDAGRunStore()
+		h := NewHandler(HandlerConfig{DAGRunStore: store})
+		ctx := context.Background()
+
+		ref := exec.DAGRunRef{Name: "test-dag", ID: "run-123"}
+		attempt := store.addAttempt(ref, &exec.DAGRunStatus{
+			Name:      ref.Name,
+			DAGRunID:  ref.ID,
+			AttemptID: "attempt-1",
+			Status:    core.Running,
+			Labels:    []string{"workspace=ops"},
+		})
+
+		protoStatus, convErr := convert.DAGRunStatusToProto(&exec.DAGRunStatus{
+			Name:      ref.Name,
+			DAGRunID:  ref.ID,
+			AttemptID: "attempt-1",
+			Status:    core.Failed,
+		})
+		require.NoError(t, convErr)
+
+		resp, err := h.ReportStatus(ctx, &coordinatorv1.ReportStatusRequest{Status: protoStatus})
+		require.NoError(t, err)
+		require.True(t, resp.Accepted)
+
+		persisted, err := attempt.ReadStatus(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"workspace=ops"}, persisted.Labels)
+	})
+
 	t.Run("WaitingStatusClosesCachedAttemptBeforePersisting", func(t *testing.T) {
 		t.Parallel()
 
@@ -3446,6 +3499,8 @@ func TestHandler_ReportStatus(t *testing.T) {
 			Status:             runningProto,
 			WorkerId:           "worker-1",
 			OwnerCoordinatorId: "coord-a",
+			SourceFile:         "/dags/child-file.yaml",
+			Labels:             "workspace=ops, team=platform",
 		})
 		require.NoError(t, err)
 		require.NotNil(t, resp)
@@ -3464,6 +3519,11 @@ func TestHandler_ReportStatus(t *testing.T) {
 		assert.Equal(t, attemptKey, current.AttemptKey)
 		assert.Equal(t, core.Running, current.Status)
 		assert.Equal(t, "worker-1", current.WorkerID)
+		assert.Equal(t, []string{"workspace=ops", "team=platform"}, current.Labels)
+		dag, err := attempt.ReadDAG(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "child-dag", dag.Name)
+		assert.Equal(t, "/dags/child-file.yaml", dag.SourceFile)
 
 		lease, err := leaseStore.Get(ctx, attemptKey)
 		require.NoError(t, err)

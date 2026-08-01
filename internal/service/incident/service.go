@@ -349,12 +349,12 @@ func (s *Service) NotificationDestinations() []string {
 	if !s.incidentsAllowed() || s.store == nil {
 		return nil
 	}
-	policySets, err := s.ListPolicySets(context.Background())
+	ctx := context.Background()
+	var destinations []string
+	policySets, err := s.ListPolicySets(ctx)
 	if err != nil {
 		s.logger.Warn("Failed to list incident destinations", slog.String("error", err.Error()))
-		return nil
 	}
-	var destinations []string
 	for _, policySet := range policySets {
 		if !policySetDeliversOwnPolicies(policySet) {
 			continue
@@ -364,6 +364,16 @@ func (s *Service) NotificationDestinations() []string {
 				destinations = append(destinations, policyDestinationID(policySet, policy.ID))
 			}
 		}
+	}
+	states, err := s.store.ListOpenStates(ctx)
+	if err != nil {
+		s.logger.Warn("Failed to list open incident destinations", slog.String("error", err.Error()))
+	}
+	for _, state := range states {
+		if state == nil || state.ProviderID == "" || state.DedupKey == "" {
+			continue
+		}
+		destinations = append(destinations, stateDestinationID(state.ProviderID, state.DedupKey))
 	}
 	slices.Sort(destinations)
 	return destinations
@@ -395,7 +405,7 @@ func (s *Service) resolveDestinationsForEvent(ctx context.Context, event chatbri
 	if s.store == nil || event.Status == nil || event.Status.Name == "" {
 		return nil
 	}
-	states, err := s.store.ListOpenStatesByDAG(ctx, event.Status.Name)
+	states, err := s.store.ListOpenStates(ctx)
 	if err != nil {
 		s.logger.Warn("Failed to list open incident states",
 			slog.String("dag", event.Status.Name),
@@ -405,7 +415,10 @@ func (s *Service) resolveDestinationsForEvent(ctx context.Context, event chatbri
 	}
 	destinations := make([]string, 0, len(states))
 	for _, state := range states {
-		if state == nil || state.ProviderID == "" || state.DedupKey == "" {
+		if !stateMatchesEvent(state, event) {
+			continue
+		}
+		if state.ProviderID == "" || state.DedupKey == "" {
 			continue
 		}
 		destinations = append(destinations, stateDestinationID(state.ProviderID, state.DedupKey))
@@ -592,7 +605,7 @@ func (s *Service) resolveIncident(ctx context.Context, provider *incidentmodel.P
 	if state.Status != incidentmodel.IncidentStatusOpen {
 		return true
 	}
-	if event.Status != nil && state.DAGName != "" && state.DAGName != event.Status.Name {
+	if !stateMatchesEvent(state, event) {
 		return true
 	}
 	delivery, err := s.withRetry(ctx, func() (*providerDeliveryResult, error) {
@@ -622,7 +635,9 @@ func (s *Service) resolveIncident(ctx context.Context, provider *incidentmodel.P
 	if delivery.EventID != "" {
 		state.LastEventID = delivery.EventID
 	}
-	state.PolicyID = policy.ID
+	if policy.ID != "" {
+		state.PolicyID = policy.ID
+	}
 	normalized, err := incidentmodel.NormalizeState(state)
 	if err != nil {
 		s.logger.Warn("Failed to normalize resolved incident state", slog.String("error", err.Error()))
@@ -638,13 +653,14 @@ func (s *Service) effectivePolicySetForEvent(ctx context.Context, event chatbrid
 	if event.Status == nil {
 		return nil
 	}
-	if policySet, err := s.loadPolicySet(ctx, incidentmodel.PolicyScopeDAG, "", event.Status.Name); err == nil {
+	routeKey := event.DAGRouteKey()
+	if policySet, err := s.loadPolicySet(ctx, incidentmodel.PolicyScopeDAG, "", routeKey); err == nil {
 		if !policySet.InheritParent {
 			return policySet
 		}
 	} else if !errors.Is(err, incidentmodel.ErrPolicySetNotFound) {
 		s.logger.Warn("Failed to load DAG incident policy set",
-			slog.String("dag", event.Status.Name),
+			slog.String("dag", routeKey),
 			slog.String("error", err.Error()),
 		)
 	}
@@ -719,6 +735,9 @@ func incidentEventSupported(event chatbridge.NotificationEvent) bool {
 	if event.Status == nil || event.Status.Name == "" {
 		return false
 	}
+	if _, state := eventWorkspace(event); state == exec.WorkspaceLabelInvalid {
+		return false
+	}
 	switch event.Type {
 	case eventstore.TypeDAGRunFailed:
 		return isFinalFailure(event.Status)
@@ -745,14 +764,26 @@ func isFinalFailure(status *exec.DAGRunStatus) bool {
 }
 
 func eventWorkspaceName(event chatbridge.NotificationEvent) string {
-	if event.Status == nil {
-		return ""
-	}
-	workspaceName, state := exec.WorkspaceLabelFromLabels(core.NewLabels(event.Status.Labels))
+	workspaceName, state := eventWorkspace(event)
 	if state == exec.WorkspaceLabelValid {
 		return workspaceName
 	}
 	return ""
+}
+
+func eventWorkspace(event chatbridge.NotificationEvent) (string, exec.WorkspaceLabelState) {
+	if event.Status == nil {
+		return "", exec.WorkspaceLabelMissing
+	}
+	return exec.WorkspaceLabelFromLabels(core.NewLabels(event.Status.Labels))
+}
+
+func stateMatchesEvent(state *incidentmodel.IncidentState, event chatbridge.NotificationEvent) bool {
+	if state == nil || event.Status == nil || state.DAGName != event.Status.Name {
+		return false
+	}
+	workspaceName, workspaceState := eventWorkspace(event)
+	return workspaceState != exec.WorkspaceLabelInvalid && state.Workspace == workspaceName
 }
 
 func findPolicy(policySet *incidentmodel.PolicySet, policyID string) (incidentmodel.Policy, bool) {
