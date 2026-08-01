@@ -157,6 +157,7 @@ Dagu can also run containers, Kubernetes Jobs, SSH commands, SQL, HTTP requests,
 |---|---|---|
 | Single server | One `dagu start-all` process | Development, scheduled jobs, and internal automation |
 | Self-hosted workers | Server and workers on your infrastructure | Private networks, heavier workloads, and multiple execution hosts |
+| Licensed self-hosted | Server and workers on your infrastructure, with a paid server license | Teams that need SSO, RBAC, audit logs, incident routing, additional API keys, and support; see [plans and pricing](https://dagu.sh/pricing#self-host) |
 | Managed | A dedicated managed Dagu instance, with optional private workers | Teams that want Dagu operated for them |
 
 The same YAML works across these models. See [deployment models](https://docs.dagu.sh/overview/deployment-models) for the architecture, security boundaries, and setup details.
