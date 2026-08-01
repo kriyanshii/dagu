@@ -204,3 +204,19 @@ func TestDefaultFunctionsExposeLicenseGraceEndsAt(t *testing.T) {
 		assert.Equal(t, "2026-03-29T12:00:00Z", graceEndsAtFn())
 	})
 }
+
+func TestDefaultFunctionsExposeConfiguredLicenseFailure(t *testing.T) {
+	t.Setenv("DAGU_LICENSE", "invalid-license-token")
+	t.Setenv("DAGU_LICENSE_KEY", "")
+	t.Setenv("DAGU_LICENSE_FILE", "")
+
+	pubKey, err := license.PublicKey()
+	require.NoError(t, err)
+	manager := license.NewManager(license.ManagerConfig{LicenseDir: t.TempDir()}, pubKey, nil, nil)
+	require.NoError(t, manager.Start(context.Background()))
+
+	funcs := defaultFunctions(&funcsConfig{LicenseManager: manager})
+	licenseError, ok := funcs["licenseError"].(func() string)
+	require.True(t, ok)
+	assert.Contains(t, licenseError(), "License token verification failed")
+}

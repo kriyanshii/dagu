@@ -71,7 +71,7 @@ type DiscoveryResult struct {
 //  2. DAGU_LICENSE_KEY env var (needs activation)
 //  3. configKey parameter (needs activation)
 //  4. activation.json via store (has token)
-//  5. DAGU_LICENSE_FILE env var or $DAGU_HOME/license.jwt (offline JWT)
+//  5. DAGU_LICENSE_FILE env var or licenseDir/license.jwt (offline JWT)
 func Discover(licenseDir, configKey string, store ActivationStore) (*DiscoveryResult, error) {
 	// 1. Inline JWT from env
 	if token := os.Getenv("DAGU_LICENSE"); token != "" {

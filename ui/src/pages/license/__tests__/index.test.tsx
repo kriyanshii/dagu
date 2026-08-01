@@ -53,6 +53,7 @@ function makeConfig(licenseOverrides: Partial<LicenseStatus> = {}): Config {
       community: false,
       source: 'file',
       warningCode: '',
+      error: '',
       ...licenseOverrides,
     },
     paths: {
@@ -149,5 +150,19 @@ describe('LicensePage', () => {
     expect(
       screen.getByRole('button', { name: 'Deactivate License' })
     ).toBeInTheDocument();
+  });
+
+  it('shows a configured license failure instead of community status', () => {
+    renderPage({
+      valid: false,
+      community: true,
+      error:
+        'License token verification failed. Check the configured token and server logs.',
+    });
+
+    expect(screen.getByText('License Error')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'License token verification failed'
+    );
   });
 });

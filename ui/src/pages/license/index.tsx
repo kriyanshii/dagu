@@ -60,6 +60,7 @@ export default function LicensePage() {
           community: false,
           source: 'file',
           warningCode: '',
+          error: '',
         },
       });
       setKey('');
@@ -94,6 +95,7 @@ export default function LicensePage() {
           community: true,
           source: '',
           warningCode: '',
+          error: '',
         },
       });
       setSuccessMessage('License deactivated. Running in community mode.');
@@ -124,7 +126,12 @@ export default function LicensePage() {
         <div className="grid grid-cols-[120px_1fr] gap-y-2 text-sm">
           <span className="text-muted-foreground">Status</span>
           <span className="flex items-center gap-1.5">
-            {license.gracePeriod ? (
+            {license.error ? (
+              <>
+                <XCircle className="h-3.5 w-3.5 text-red-500" />
+                License Error
+              </>
+            ) : license.gracePeriod ? (
               <>
                 <XCircle className="h-3.5 w-3.5 text-amber-500" />
                 Grace Period
@@ -159,6 +166,11 @@ export default function LicensePage() {
             </>
           )}
         </div>
+        {license.error && (
+          <div role="alert" className="text-sm text-red-600 dark:text-red-400">
+            {license.error}
+          </div>
+        )}
       </div>
 
       {/* Deactivate license */}

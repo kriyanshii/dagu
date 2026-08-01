@@ -145,6 +145,44 @@ func TestNewManager_FieldsSetCorrectly(t *testing.T) {
 	})
 }
 
+func TestManager_FailureReflectsCurrentClaims(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		claims func() *LicenseClaims
+		want   string
+	}{
+		{
+			name:   "valid license",
+			claims: validClaims,
+			want:   "",
+		},
+		{
+			name:   "expired license in grace period",
+			claims: expiredInGraceClaims,
+			want:   "",
+		},
+		{
+			name:   "expired license past grace period",
+			claims: expiredPastGraceClaims,
+			want:   licenseExpiredFailure,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			pub, _ := testKeyPair(t)
+			m := NewManager(ManagerConfig{LicenseDir: t.TempDir()}, pub, nil, slog.Default())
+			m.state.Update(tc.claims(), "token")
+
+			assert.Equal(t, tc.want, m.Failure())
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Start — no license
 // ---------------------------------------------------------------------------
@@ -166,6 +204,7 @@ func TestManager_Start_CommunityMode(t *testing.T) {
 		checker := m.Checker()
 		assert.True(t, checker.IsCommunity())
 		assert.Equal(t, "", checker.Plan())
+		assert.Empty(t, m.Failure())
 	})
 }
 
@@ -196,6 +235,7 @@ func TestManager_Start_EnvInlineJWT(t *testing.T) {
 		assert.True(t, checker.IsFeatureEnabled(FeatureAudit))
 		assert.True(t, checker.IsFeatureEnabled(FeatureRBAC))
 		assert.True(t, checker.IsFeatureEnabled(FeatureSSO))
+		assert.Empty(t, m.Failure())
 	})
 
 	t.Run("garbage token gracefully degrades to community mode", func(t *testing.T) {
@@ -211,6 +251,7 @@ func TestManager_Start_EnvInlineJWT(t *testing.T) {
 		require.NoError(t, err, "invalid token must not cause Start to return an error")
 
 		assert.True(t, m.Checker().IsCommunity(), "bad token should fall back to community mode")
+		assert.Equal(t, licenseVerificationFailure, m.Failure())
 	})
 
 	t.Run("expired-in-grace token uses lenient verify and updates state", func(t *testing.T) {
@@ -231,6 +272,25 @@ func TestManager_Start_EnvInlineJWT(t *testing.T) {
 		assert.False(t, checker.IsCommunity())
 		assert.Equal(t, "pro", checker.Plan())
 		assert.True(t, checker.IsGracePeriod(), "expired-in-grace token should put state in grace period")
+		assert.Empty(t, m.Failure())
+	})
+
+	t.Run("expired token outside grace reports a license failure", func(t *testing.T) {
+		pub, priv := testKeyPair(t)
+		token := signToken(t, priv, expiredPastGraceClaims())
+
+		t.Setenv("DAGU_LICENSE", token)
+		t.Setenv("DAGU_LICENSE_KEY", "")
+		t.Setenv("DAGU_LICENSE_FILE", "")
+
+		m := NewManager(ManagerConfig{LicenseDir: t.TempDir()}, pub, nil, slog.Default())
+
+		err := m.Start(context.Background())
+		require.NoError(t, err)
+
+		assert.False(t, m.Checker().IsCommunity())
+		assert.False(t, m.Checker().IsGracePeriod())
+		assert.Equal(t, licenseExpiredFailure, m.Failure())
 	})
 }
 
@@ -290,6 +350,7 @@ func TestManager_Start_EnvLicenseKey(t *testing.T) {
 		require.NoError(t, err, "activation failure must not propagate as an error from Start")
 
 		assert.True(t, m.Checker().IsCommunity())
+		assert.Equal(t, licenseActivationFailure, m.Failure())
 	})
 }
 
@@ -357,6 +418,7 @@ func TestManager_Start_OfflineFallback(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.True(t, m.Checker().IsCommunity(), "no cached data should fall back to community mode")
+		assert.Equal(t, licenseActivationFailure, m.Failure())
 	})
 
 	t.Run("offline with key mismatch falls back to community mode", func(t *testing.T) {
@@ -387,6 +449,7 @@ func TestManager_Start_OfflineFallback(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.True(t, m.Checker().IsCommunity(), "mismatched key should fall back to community mode")
+		assert.Equal(t, licenseActivationFailure, m.Failure())
 	})
 
 	t.Run("offline with store load error falls back to community mode", func(t *testing.T) {
@@ -411,6 +474,7 @@ func TestManager_Start_OfflineFallback(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.True(t, m.Checker().IsCommunity(), "store load error should fall back to community mode")
+		assert.Equal(t, licenseActivationFailure, m.Failure())
 	})
 }
 
@@ -511,6 +575,7 @@ func TestManager_Start_DiscoveryError(t *testing.T) {
 		require.NoError(t, err, "discovery error must not be returned; manager degrades gracefully")
 
 		assert.True(t, m.Checker().IsCommunity())
+		assert.Equal(t, licenseDiscoveryFailure, m.Failure())
 	})
 }
 
@@ -744,6 +809,7 @@ func TestManager_doHeartbeat(t *testing.T) {
 		m.doHeartbeat(context.Background(), makeAD("server-001"))
 
 		assert.True(t, m.Checker().IsCommunity(), "in-memory state must be cleared after 410 Gone")
+		assert.Equal(t, licenseRevokedFailure, m.Failure())
 		assert.Equal(t, 0, store.removeCalls, "stored activation must NOT be removed by heartbeat failure")
 	})
 
@@ -768,6 +834,7 @@ func TestManager_doHeartbeat(t *testing.T) {
 		m.doHeartbeat(context.Background(), makeAD("server-001"))
 
 		assert.True(t, m.Checker().IsCommunity(), "in-memory state must be cleared after 401")
+		assert.Equal(t, licenseUnauthorizedFailure, m.Failure())
 		assert.Equal(t, 0, store.removeCalls, "stored activation must NOT be removed by heartbeat failure")
 	})
 
@@ -817,6 +884,31 @@ func TestManager_doHeartbeat(t *testing.T) {
 		assert.False(t, m.Checker().IsCommunity())
 		assert.Equal(t, "pro", m.Checker().Plan())
 		assert.True(t, m.Checker().IsGracePeriod())
+		assert.Empty(t, m.Failure())
+	})
+
+	t.Run("400 Bad Request reports expiry after grace ends", func(t *testing.T) {
+		t.Parallel()
+
+		pub, priv := testKeyPair(t)
+		claims := expiredPastGraceClaims()
+		token := signToken(t, priv, claims)
+
+		srv := newMockCloudServer(t, mockCloudServerConfig{
+			heartbeatHandler: errorHandlerFn(http.StatusBadRequest, "license has expired"),
+		})
+
+		m := NewManager(ManagerConfig{
+			LicenseDir: t.TempDir(),
+			CloudURL:   srv.URL,
+		}, pub, nil, slog.Default())
+		m.state.Update(claims, token)
+
+		m.doHeartbeat(context.Background(), makeAD("server-001"))
+
+		assert.False(t, m.Checker().IsCommunity())
+		assert.False(t, m.Checker().IsGracePeriod())
+		assert.Equal(t, licenseExpiredFailure, m.Failure())
 	})
 
 	t.Run("invalid refreshed token leaves state unchanged", func(t *testing.T) {
