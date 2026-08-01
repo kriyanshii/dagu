@@ -5,7 +5,8 @@
   <p>
     <a href="https://docs.dagu.sh">Docs</a> ·
     <a href="https://docs.dagu.sh/writing-workflows/examples">Examples</a> ·
-    <a href="https://dagu-demo-f5e33d0e.dagu.sh">Live demo</a> ·
+    <a href="https://dagu-demo-f5e33d0e.dagu.sh">Live demo</a>
+    (<code>username: demouser</code>, <code>password: demouser</code>) ·
     <a href="https://discord.gg/gpahPUjGRk">Discord</a>
   </p>
 </div>
@@ -16,13 +17,33 @@ Dagu turns scripts and commands into reliable YAML workflows. It adds schedules,
 
 ## Quick start
 
-Install Dagu on macOS or Linux:
+### 1. Install
+
+On macOS or Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dagucloud/dagu/main/scripts/installer.sh | bash
 ```
 
-The installer can add Dagu to your `PATH`, set up a background service, and create the first admin account. See the [installation guide](https://docs.dagu.sh/getting-started/installation/) for Windows, Docker, Homebrew, npm, Kubernetes, and manual options.
+On Windows, run this in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/dagucloud/dagu/main/scripts/installer.ps1 | iex
+```
+
+The installers can add Dagu to `PATH`, set up a background service, and create the first admin account. See the [Windows installation guide](https://docs.dagu.sh/getting-started/installation/windows) for service and manual installation options.
+
+Prefer Docker? Start the Web UI with the [official image](https://github.com/dagucloud/dagu/pkgs/container/dagu):
+
+```sh
+docker run --rm -p 8080:8080 -v dagu-data:/var/lib/dagu ghcr.io/dagucloud/dagu:latest dagu start-all
+```
+
+Open <http://localhost:8080>. The named volume keeps workflows, logs, history, and settings between runs. See the [Docker guide](https://docs.dagu.sh/getting-started/installation/docker) for Docker Compose, image tags, and host workflow mounts.
+
+The native-install quickstart continues below. For Homebrew, npm, Kubernetes, and manual options, see [all installation methods](https://docs.dagu.sh/getting-started/installation/).
+
+### 2. Run your first workflow
 
 Save this as `hello.yaml`:
 
@@ -41,13 +62,17 @@ Run it:
 dagu start hello.yaml
 ```
 
+### 3. Open the Web UI
+
 Start the Web UI in the same directory:
 
 ```sh
 dagu start-all --dags .
 ```
 
-Open <http://localhost:8080> to see the run, step logs, and history. The [full quickstart](https://docs.dagu.sh/getting-started/quickstart) also covers Docker, validation, expected output, and next steps.
+Open <http://localhost:8080> to see the run, step logs, and history. The [full quickstart](https://docs.dagu.sh/getting-started/quickstart) also covers validation, expected output, and next steps.
+
+Running Dagu as a persistent or shared service? Review [server configuration](https://docs.dagu.sh/server-admin/configuration) and [authentication](https://docs.dagu.sh/server-admin/authentication/) before exposing it beyond localhost.
 
 If Dagu is useful, click **Star** at the top of this page. It helps other developers find the project.
 
@@ -73,7 +98,7 @@ Click the image to watch the short product walkthrough.
 |---|---|
 | ![Run details in dark mode](./assets/images/readme-run-details-dark.png) | ![Workflow logs in dark mode](./assets/images/readme-logs-dark.png) |
 
-You can also open the [live demo](https://dagu-demo-f5e33d0e.dagu.sh) and sign in with `demouser` / `demouser`.
+You can also open the [live demo](https://dagu-demo-f5e33d0e.dagu.sh) and sign in with username `demouser` and password `demouser`.
 
 ## Why Dagu
 
@@ -157,6 +182,9 @@ The basic workflow engine does not require an AI provider. Start with the [MCP g
 | Topic | Documentation |
 |---|---|
 | Install and first run | [Quickstart](https://docs.dagu.sh/getting-started/quickstart) |
+| Install on Windows | [PowerShell, Windows service, and manual install](https://docs.dagu.sh/getting-started/installation/windows) |
+| Run with Docker | [Docker, Compose, volumes, and image tags](https://docs.dagu.sh/getting-started/installation/docker) |
+| Configure a server | [Configuration files, environment variables, and precedence](https://docs.dagu.sh/server-admin/configuration) |
 | Workflow syntax | [Writing workflows](https://docs.dagu.sh/writing-workflows/) |
 | Ready-to-run YAML | [Examples](https://docs.dagu.sh/writing-workflows/examples) |
 | Built-in and packaged actions | [Dagu Actions](https://docs.dagu.sh/dagu-actions/) |
