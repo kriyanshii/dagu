@@ -6,7 +6,7 @@
     <a href="https://docs.dagu.sh">Docs</a> ·
     <a href="https://docs.dagu.sh/writing-workflows/examples">Examples</a> ·
     <a href="https://dagu-demo-f5e33d0e.dagu.sh">Live demo</a>
-    (<code>username: demouser</code>, <code>password: demouser</code>) ·
+    <code>(username/password: demouser)</code> ·
     <a href="https://discord.gg/gpahPUjGRk">Discord</a>
   </p>
 </div>
