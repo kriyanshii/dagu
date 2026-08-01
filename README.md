@@ -180,6 +180,8 @@ See [Controller Workflows](https://docs.dagu.sh/writing-workflows/controller).
 
 The direction also reverses: AI tools can run Dagu. The MCP endpoint (`http://localhost:8080/mcp`) lets MCP clients inspect workflows, start and control runs, and read results.
 
+MCP Apps hosts can render run-related `dagu_read` and `dagu_execute` results in an interactive inspector with step status, scheduler and per-step logs, refresh, stop, retry, and a link to the full run page in Dagu. Other MCP clients continue to receive the same text and structured results.
+
 For workflow-authoring help in Claude Code, Codex, Gemini CLI, and other coding tools, install the Dagu skill:
 
 ```sh

@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -39,11 +40,74 @@ func TestServerAdvertisesSupportedCapabilities(t *testing.T) {
 
 	result := session.InitializeResult()
 	require.NotNil(t, result)
-	require.Equal(t, &mcpsdk.ServerCapabilities{
-		Prompts:   &mcpsdk.PromptCapabilities{},
-		Resources: &mcpsdk.ResourceCapabilities{Subscribe: true},
-		Tools:     &mcpsdk.ToolCapabilities{},
-	}, result.Capabilities)
+	require.Equal(t, &mcpsdk.PromptCapabilities{}, result.Capabilities.Prompts)
+	require.Equal(t, &mcpsdk.ResourceCapabilities{Subscribe: true}, result.Capabilities.Resources)
+	require.Equal(t, &mcpsdk.ToolCapabilities{}, result.Capabilities.Tools)
+	apps, ok := result.Capabilities.Extensions[mcpAppsExtensionURI].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, []any{mcpAppMIMEType}, apps["mimeTypes"])
+}
+
+func TestServerExposesMCPAppRunInspector(t *testing.T) {
+	ctx := context.Background()
+	session := connectTestClient(t, ctx, NewServer(nil))
+
+	tools, err := session.ListTools(ctx, nil)
+	require.NoError(t, err)
+	for _, name := range []string{toolRead, toolExecute} {
+		tool := findTool(t, tools.Tools, name)
+		require.Equal(t, runInspectorURI, tool.Meta[runInspectorMetaKey])
+		ui, ok := tool.Meta["ui"].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, runInspectorURI, ui["resourceUri"])
+		require.Equal(t, []any{"model", "app"}, ui["visibility"])
+	}
+
+	resources, err := session.ListResources(ctx, nil)
+	require.NoError(t, err)
+	resource := findResource(t, resources.Resources, runInspectorURI)
+	require.Equal(t, mcpAppMIMEType, resource.MIMEType)
+	require.NotEmpty(t, resource.Meta)
+
+	result, err := session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: runInspectorURI})
+	require.NoError(t, err)
+	require.Len(t, result.Contents, 1)
+	require.Equal(t, mcpAppMIMEType, result.Contents[0].MIMEType)
+	require.Contains(t, result.Contents[0].Text, "<!doctype html>")
+	require.Contains(t, result.Contents[0].Text, `name: "`+toolExecute+`"`)
+	require.NotEmpty(t, result.Contents[0].Meta)
+}
+
+func TestServerExposesStepLogResource(t *testing.T) {
+	ctx := context.Background()
+	session := connectTestClient(t, ctx, NewServer(nil))
+
+	templates, err := session.ListResourceTemplates(ctx, nil)
+	require.NoError(t, err)
+	require.True(t, slices.ContainsFunc(templates.ResourceTemplates, func(template *mcpsdk.ResourceTemplate) bool {
+		return template.URITemplate == "dagu://runs/{name}/{dagRunId}/steps/{stepName}/logs"
+	}))
+
+	const expectedURI = "dagu://runs/demo%20dag/run%2F1/steps/build%2Foutput/logs"
+	require.Equal(t, expectedURI, stepLogURI("demo dag", "run/1", "build/output"))
+	input, readErr := parseReadResourceURI(expectedURI)
+	require.Nil(t, readErr)
+	require.Equal(t, readTargetStepLog, input.Target)
+	require.Equal(t, "demo dag", input.Name)
+	require.Equal(t, "run/1", input.DAGRunID)
+	require.Equal(t, "build/output", input.StepName)
+
+	input, readErr = parseReadToolInput(json.RawMessage(`{
+		"target":"step_log",
+		"name":"demo dag",
+		"dagRunId":"run/1",
+		"stepName":"build/output"
+	}`))
+	require.Nil(t, readErr)
+	require.Equal(t, expectedURI, input.URI)
+
+	_, err = session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: expectedURI + "?tail=100"})
+	require.Error(t, err)
 }
 
 func TestHTTPHandlerServesStreamableMCP(t *testing.T) {
@@ -63,6 +127,10 @@ func TestHTTPHandlerServesStreamableMCP(t *testing.T) {
 	result, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
 	require.Len(t, result.Tools, 3)
+
+	resource, err := session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: runInspectorURI})
+	require.NoError(t, err)
+	require.Len(t, resource.Contents, 1)
 }
 
 func TestServerExposesReferenceResourcesAndPrompts(t *testing.T) {
@@ -184,4 +252,26 @@ func connectTestClient(t *testing.T, ctx context.Context, server *mcpsdk.Server)
 	t.Cleanup(func() { _ = clientSession.Close() })
 
 	return clientSession
+}
+
+func findTool(t *testing.T, tools []*mcpsdk.Tool, name string) *mcpsdk.Tool {
+	t.Helper()
+	for _, tool := range tools {
+		if tool.Name == name {
+			return tool
+		}
+	}
+	t.Fatalf("tool %q not found", name)
+	return nil
+}
+
+func findResource(t *testing.T, resources []*mcpsdk.Resource, uri string) *mcpsdk.Resource {
+	t.Helper()
+	for _, resource := range resources {
+		if resource.URI == uri {
+			return resource
+		}
+	}
+	t.Fatalf("resource %q not found", uri)
+	return nil
 }

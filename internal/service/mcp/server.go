@@ -76,6 +76,9 @@ func NewServer(api *frontendapi.API) *mcpsdk.Server {
 		Version: config.Version,
 	}, &mcpsdk.ServerOptions{
 		Capabilities: &mcpsdk.ServerCapabilities{
+			Extensions: map[string]any{
+				mcpAppsExtensionURI: mcpAppsCapability(),
+			},
 			Prompts:   &mcpsdk.PromptCapabilities{},
 			Resources: &mcpsdk.ResourceCapabilities{Subscribe: true},
 			Tools:     &mcpsdk.ToolCapabilities{},
@@ -118,6 +121,7 @@ func registerTools(server *mcpsdk.Server, svc *Service) {
 	truePtr := new(true)
 
 	server.AddTool(&mcpsdk.Tool{
+		Meta:        runInspectorToolMeta(),
 		Name:        toolRead,
 		Title:       "Read Dagu state",
 		Description: "Read DAG specs, DAG details, DAG-run details, logs, list views, and Dagu MCP reference resources.",
@@ -142,6 +146,7 @@ func registerTools(server *mcpsdk.Server, svc *Service) {
 	}, svc.changeTool)
 
 	mcpsdk.AddTool(server, &mcpsdk.Tool{
+		Meta:        runInspectorToolMeta(),
 		Name:        toolExecute,
 		Title:       "Execute, enqueue, retry, or stop DAG-runs",
 		Description: "Run control entry point. action=start or enqueue launches a DAG or inline spec; action=retry retries a DAG-run; action=stop terminates a DAG-run.",
@@ -154,6 +159,15 @@ func registerTools(server *mcpsdk.Server, svc *Service) {
 }
 
 func registerResources(server *mcpsdk.Server, svc *Service) {
+	server.AddResource(&mcpsdk.Resource{
+		Meta:        runInspectorResourceMeta(),
+		URI:         runInspectorURI,
+		Name:        runInspectorResource,
+		Title:       "Dagu run inspector",
+		Description: "Interactive run status, step, and log view for MCP Apps hosts.",
+		MIMEType:    mcpAppMIMEType,
+	}, svc.readResource)
+
 	for _, ref := range referenceResources() {
 		server.AddResource(&mcpsdk.Resource{
 			URI:         ref.uri,
@@ -185,6 +199,14 @@ func registerResources(server *mcpsdk.Server, svc *Service) {
 		Name:        "dag_run_logs",
 		Title:       "DAG-run logs",
 		Description: "DAG-run logs. Supports query parameters accepted by Dagu log readers, such as tail=100.",
+		MIMEType:    resourceMIMEJSON,
+	}, svc.readResource)
+
+	server.AddResourceTemplate(&mcpsdk.ResourceTemplate{
+		URITemplate: "dagu://runs/{name}/{dagRunId}/steps/{stepName}/logs",
+		Name:        "dag_run_step_log",
+		Title:       "DAG-run step log",
+		Description: "Standard output and standard error for a DAG-run step.",
 		MIMEType:    resourceMIMEJSON,
 	}, svc.readResource)
 }
@@ -573,6 +595,12 @@ func (svc *Service) readResourceText(ctx context.Context, rawURI string) (string
 	if err != nil {
 		return "", "", err
 	}
+	if parsed.Scheme == "ui" {
+		if rawURI == runInspectorURI {
+			return runInspectorHTML, mcpAppMIMEType, nil
+		}
+		return "", "", mcpsdk.ResourceNotFoundError(rawURI)
+	}
 	if parsed.Scheme != "dagu" {
 		return "", "", mcpsdk.ResourceNotFoundError(rawURI)
 	}
@@ -606,7 +634,10 @@ func (svc *Service) readResourceText(ctx context.Context, rawURI string) (string
 		rawSpec, _ := spec["spec"].(string)
 		return rawSpec, resourceMIMEYAML, nil
 	case "runs":
-		if !isRunResourceSegments(segments) {
+		if !isRunResourceSegments(segments) && !isStepLogResourceSegments(segments) {
+			return "", "", mcpsdk.ResourceNotFoundError(rawURI)
+		}
+		if isStepLogResourceSegments(segments) && parsed.RawQuery != "" {
 			return "", "", mcpsdk.ResourceNotFoundError(rawURI)
 		}
 		if err := svc.requireAPI(); err != nil {
@@ -614,7 +645,13 @@ func (svc *Service) readResourceText(ctx context.Context, rawURI string) (string
 		}
 		identifier := segments[0] + "/" + segments[1]
 		var data any
-		if len(segments) == 3 {
+		if isStepLogResourceSegments(segments) {
+			data, err = svc.api.GetStepLogDataByRef(
+				ctx,
+				exec.NewDAGRunRef(segments[0], segments[1]),
+				segments[3],
+			)
+		} else if len(segments) == 3 {
 			if parsed.RawQuery != "" {
 				identifier += "?" + parsed.RawQuery
 			}
@@ -769,6 +806,10 @@ func isRunResourceSegments(segments []string) bool {
 	return len(segments) == 2 || (len(segments) == 3 && segments[2] == "logs")
 }
 
+func isStepLogResourceSegments(segments []string) bool {
+	return len(segments) == 5 && segments[2] == "steps" && segments[4] == "logs"
+}
+
 func isTerminalStatus(status int) bool {
 	switch status {
 	case 2, 3, 4, 6, 8:
@@ -863,6 +904,10 @@ func runLogsURIWithQuery(name, dagRunID, query string) string {
 		return uri
 	}
 	return uri + "?" + query
+}
+
+func stepLogURI(name, dagRunID, stepName string) string {
+	return runURI(name, dagRunID) + "/steps/" + pathEscape(stepName) + "/logs"
 }
 
 func pathEscape(s string) string {
