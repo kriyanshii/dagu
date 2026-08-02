@@ -149,12 +149,14 @@ With `type: controller`, steps become a catalog and `tasks` state the goals; an 
 ```yaml
 type: controller
 
-env:
-  - ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+secrets:
+  - name: OPENROUTER_API_KEY
+    provider: env
+    key: OPENROUTER_API_KEY
 
 llm:
-  provider: anthropic
-  model: claude-opus-5
+  provider: openrouter
+  model: deepseek/deepseek-v4-flash
 
 steps:
   - name: extract
