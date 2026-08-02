@@ -43,8 +43,8 @@ func Generate(opts Options) ([]byte, error) {
 	buf.WriteString("Dagu is a self-contained workflow orchestration engine for running DAGs defined in YAML. ")
 	buf.WriteString("It runs as a single binary without requiring an external database or message broker. ")
 	buf.WriteString("It stores state locally by default and supports local, queued, and distributed execution modes.\n\n")
-	buf.WriteString("Use this compact reference when authoring, validating, or troubleshooting Dagu workflows with an AI agent. ")
-	buf.WriteString("It summarizes repository-local workflow references.\n")
+	buf.WriteString("Use this compact reference with an AI agent when authoring, validating, or troubleshooting Dagu workflows, ")
+	buf.WriteString("or when operating Dagu through its CLI. It summarizes repository-local workflow and CLI references.\n")
 
 	for _, file := range sourceFiles {
 		path := filepath.Join(sourceDir, file)

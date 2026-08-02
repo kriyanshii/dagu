@@ -1,6 +1,6 @@
 ---
 name: dagu
-description: Writes, validates, and debugs DAG workflow definitions in YAML. Use when creating, editing, or troubleshooting DAGs.
+description: Authors, validates, and troubleshoots Dagu DAG definitions and assists with Dagu CLI operations. Use when creating or debugging DAG YAML, choosing Dagu commands, or inspecting and managing DAGs and runs from the CLI.
 ---
 
 # DAG Authoring
@@ -200,6 +200,6 @@ Load only the file you need:
 
 - `references/steptypes.md` when choosing an action or checking action-specific behavior such as `human.task`, `dag.run`, `parallel`, `git.worktree.*`, `jq.filter`, `file.*`, `state.*`, or `template.render`
 - `references/dagu-action.md` when creating a reusable `dagu-action.yaml` package or checking action input/output schema behavior
-- `references/cli.md` when you need command flags or lookup commands such as `dagu schema`, `dagu config`, or `dagu history`
+- `references/cli.md` when choosing or using Dagu CLI commands, including workflow inspection, execution, and cleanup operations
 - `references/context.md` when using `${context.*}` metadata references or declared step `outputs:`
 - `references/harnesses.md` only when the DAG invokes external CLI harnesses through `harness.run`

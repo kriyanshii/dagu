@@ -2,7 +2,7 @@
 
 Dagu is a self-contained workflow orchestration engine for running DAGs defined in YAML. It runs as a single binary without requiring an external database or message broker. It stores state locally by default and supports local, queued, and distributed execution modes.
 
-Use this compact reference when authoring, validating, or troubleshooting Dagu workflows with an AI agent. It summarizes repository-local workflow references.
+Use this compact reference with an AI agent when authoring, validating, or troubleshooting Dagu workflows, or when operating Dagu through its CLI. It summarizes repository-local workflow and CLI references.
 
 ---
 
@@ -203,7 +203,7 @@ Load only the file you need:
 
 - `references/steptypes.md` when choosing an action or checking action-specific behavior such as `human.task`, `dag.run`, `parallel`, `git.worktree.*`, `jq.filter`, `file.*`, `state.*`, or `template.render`
 - `references/dagu-action.md` when creating a reusable `dagu-action.yaml` package or checking action input/output schema behavior
-- `references/cli.md` when you need command flags or lookup commands such as `dagu schema`, `dagu config`, or `dagu history`
+- `references/cli.md` when choosing or using Dagu CLI commands, including workflow inspection, execution, and cleanup operations
 - `references/context.md` when using `${context.*}` metadata references or declared step `outputs:`
 - `references/harnesses.md` only when the DAG invokes external CLI harnesses through `harness.run`
 

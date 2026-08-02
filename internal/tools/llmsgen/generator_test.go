@@ -30,6 +30,8 @@ func TestGenerateBuildsLLMsTextFromBundledSkillSources(t *testing.T) {
 		"# Dagu",
 		"Dagu is a self-contained workflow orchestration engine for running DAGs defined in YAML.",
 		"It runs as a single binary without requiring an external database or message broker.",
+		"operating Dagu through its CLI",
+		"repository-local workflow and CLI references",
 		"# DAG Authoring",
 		"# Actions",
 		"# Remote Action Packages",
