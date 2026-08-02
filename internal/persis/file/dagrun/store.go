@@ -591,7 +591,7 @@ func (store *Store) RemoveOldDAGRuns(ctx context.Context, dagName string, retent
 	root := NewDataRootWithArtifactDir(store.baseDir, dagName, store.artifactDir)
 
 	if options.OlderThan != nil {
-		return root.RemoveOldBefore(ctx, exec.NewUTC(*options.OlderThan), options.DryRun)
+		return root.removeOldBefore(ctx, exec.NewUTC(*options.OlderThan), options.DryRun)
 	}
 
 	if retentionDays < 0 {

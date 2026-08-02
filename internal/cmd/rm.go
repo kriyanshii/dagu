@@ -119,11 +119,11 @@ func executeRm(ctx *Context, opts rmOptions) error {
 		}
 	}
 
-	actionDesc := buildRmActionDesc(opts)
-
 	if opts.dryRun {
 		return previewRm(ctx, opts)
 	}
+
+	actionDesc := buildRmActionDesc(opts)
 
 	if !opts.skipConfirm {
 		fmt.Printf("This will delete %s.\n", actionDesc)
@@ -194,7 +194,7 @@ func previewRm(ctx *Context, opts rmOptions) error {
 		return nil
 	}
 
-	runIDs, err := removeHistory(ctx, opts, exec.WithDryRun())
+	runIDs, err := removeHistory(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("failed to check history for %q: %w", opts.dagName, err)
 	}
@@ -214,10 +214,12 @@ func previewRm(ctx *Context, opts rmOptions) error {
 	return nil
 }
 
-func removeHistory(ctx *Context, opts rmOptions, extra ...exec.RemoveOldDAGRunsOption) ([]string, error) {
+func removeHistory(ctx *Context, opts rmOptions) ([]string, error) {
 	retentionDays := 0
 	var removeOpts []exec.RemoveOldDAGRunsOption
-	removeOpts = append(removeOpts, extra...)
+	if opts.dryRun {
+		removeOpts = append(removeOpts, exec.WithDryRun())
+	}
 
 	switch {
 	case opts.retentionDays != nil:

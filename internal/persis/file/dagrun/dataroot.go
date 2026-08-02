@@ -369,13 +369,13 @@ func (dr DataRoot) RemoveOld(ctx context.Context, retentionDays int, dryRun bool
 		return nil, nil
 	}
 	keepTime := exec.NewUTC(time.Now().AddDate(0, 0, -retentionDays))
-	return dr.RemoveOldBefore(ctx, keepTime, dryRun)
+	return dr.removeOldBefore(ctx, keepTime, dryRun)
 }
 
-// RemoveOldBefore removes dag-runs whose recorded time is strictly before keepTime.
+// removeOldBefore removes dag-runs whose recorded time is strictly before keepTime.
 // Active (non-final) runs are never removed. If dryRun is true, it returns the run
 // IDs that would be removed without actually deleting them.
-func (dr DataRoot) RemoveOldBefore(ctx context.Context, keepTime exec.TimeInUTC, dryRun bool) ([]string, error) {
+func (dr DataRoot) removeOldBefore(ctx context.Context, keepTime exec.TimeInUTC, dryRun bool) ([]string, error) {
 	dagRuns := dr.listDAGRunsInRange(ctx, exec.TimeInUTC{}, keepTime, &listDAGRunsInRangeOpts{})
 
 	var removedRunIDs []string
