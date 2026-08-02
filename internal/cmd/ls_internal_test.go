@@ -4,12 +4,42 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"testing"
 	"time"
 
 	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+type warningDAGStore struct {
+	exec.DAGStore
+}
+
+func (warningDAGStore) List(_ context.Context, opts exec.ListDAGsOptions) (exec.PaginatedResult[*core.DAG], []string, error) {
+	return exec.NewPaginatedResult([]*core.DAG{}, 0, *opts.Paginator), []string{"catalog warning"}, nil
+}
+
+func TestRunLsWritesWarningsToCommandErrorStream(t *testing.T) {
+	t.Parallel()
+
+	command := Ls()
+	command.SetOut(io.Discard)
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
+
+	err := runLs(&Context{
+		Context:  context.Background(),
+		Command:  command,
+		DAGStore: warningDAGStore{},
+	}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "warning: catalog warning\n", stderr.String())
+}
 
 func TestSortLsRowsByLastRun(t *testing.T) {
 	t.Parallel()

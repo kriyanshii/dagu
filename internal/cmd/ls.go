@@ -6,7 +6,7 @@ package cmd
 import (
 	"fmt"
 	"io"
-	"os"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -86,7 +86,7 @@ func runLs(ctx *Context, args []string) error {
 	}
 
 	now := time.Now()
-	pg := exec.NewPaginator(1, int(^uint(0)>>1))
+	pg := exec.NewPaginator(1, math.MaxInt)
 	listOpts := exec.ListDAGsOptions{
 		Paginator: &pg,
 		Name:      pattern,
@@ -113,7 +113,7 @@ func runLs(ctx *Context, args []string) error {
 		return fmt.Errorf("failed to list DAGs: %w", err)
 	}
 	for _, e := range errs {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", e)
+		_, _ = fmt.Fprintf(ctx.Command.ErrOrStderr(), "warning: %s\n", e)
 	}
 
 	needEnrich := showLast || showHistory || sortLast
