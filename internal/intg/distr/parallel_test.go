@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/test/intgharness"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/test/intgharness"
 	"github.com/stretchr/testify/require"
 )
 
@@ -130,6 +130,41 @@ steps:
 			t.Fatal("RESULTS output not found")
 		}
 	})
+}
+
+func TestParallel_ChildSelectorParams(t *testing.T) {
+	f := newTestFixture(t, `
+steps:
+  - name: route-item
+    action: dag.run
+    with:
+      dag: child-routed
+      params: "FACILITY=${ITEM}"
+    parallel:
+      items: ["serverA"]
+
+---
+name: child-routed
+params:
+  - name: FACILITY
+    type: string
+    required: true
+worker_selector:
+  host: ${FACILITY}
+steps:
+  - name: process
+    run: echo "$FACILITY"
+`, withLabels(map[string]string{"host": "serverA"}))
+
+	agent := f.dagWrapper.Agent()
+	agent.RunSuccess(t)
+	f.dagWrapper.AssertLatestStatus(t, core.Succeeded)
+
+	status, err := f.latestStatus()
+	require.NoError(t, err)
+	require.Len(t, status.Nodes, 1)
+	require.Len(t, status.Nodes[0].SubRuns, 1)
+	require.Equal(t, `FACILITY="serverA"`, status.Nodes[0].SubRuns[0].Params)
 }
 
 func TestParallel_PartialFailure(t *testing.T) {

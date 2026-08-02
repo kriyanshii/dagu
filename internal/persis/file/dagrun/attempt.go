@@ -21,12 +21,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/service/eventstore"
 )
 
 // Error definitions for common issues
@@ -171,6 +171,14 @@ func (att *Attempt) Open(ctx context.Context) error {
 		}
 		if err := fileutil.WriteFileAtomic(filepath.Join(dir, DAGDefinition), dagJSON, 0600); err != nil {
 			return fmt.Errorf("failed to write DAG definition: %w", err)
+		}
+	} else {
+		dag, err := att.ReadDAG(ctx)
+		switch {
+		case err == nil:
+			att.dag = dag
+		case !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("failed to restore DAG definition: %w", err)
 		}
 	}
 

@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/dagucloud/dagu/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/service/eventstore"
 )
 
 func TestNotificationSeenKeyIncludesStatus(t *testing.T) {
@@ -277,6 +277,7 @@ func TestNotificationBatcher_ClonesStatusSnapshot(t *testing.T) {
 
 	status := &exec.DAGRunStatus{
 		Name:      "briefing",
+		Labels:    []string{"workspace=ops"},
 		DAGRunID:  "run-1",
 		AttemptID: "a1",
 		Status:    core.Failed,
@@ -293,18 +294,24 @@ func TestNotificationBatcher_ClonesStatusSnapshot(t *testing.T) {
 			Error: "handler failed",
 		},
 	}
-	require.True(t, batcher.Enqueue("dest-1", testNotificationEvent(status)))
+	event := testNotificationEvent(status)
+	event.DAGFile = "briefing-file"
+	require.True(t, batcher.Enqueue("dest-1", event))
 
 	status.Error = "mutated error"
+	status.Labels[0] = "workspace=mutated"
 	status.Nodes[0].Error = "mutated node error"
 	status.Nodes[0].Step.Name = "mutated"
 	status.OnFailure.Error = "mutated handler error"
 
 	ready := waitForReadyBatch(t, batcher)
 	require.Len(t, ready.Batch.Events, 1)
-	got := ready.Batch.Events[0].Status
+	gotEvent := ready.Batch.Events[0]
+	assert.Equal(t, "briefing-file", gotEvent.DAGFile)
+	got := gotEvent.Status
 	require.NotNil(t, got)
 	assert.Equal(t, "original error", got.Error)
+	assert.Equal(t, []string{"workspace=ops"}, got.Labels)
 	require.Len(t, got.Nodes, 1)
 	assert.Equal(t, "fetch", got.Nodes[0].Step.Name)
 	assert.Equal(t, "node failed", got.Nodes[0].Error)

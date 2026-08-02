@@ -7,21 +7,34 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/proto/convert"
-	"github.com/dagucloud/dagu/internal/runtime"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
-	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/proto/convert"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	coordinatorv1 "github.com/dagucloud/dagu/v2/proto/coordinator/v1"
 )
 
 var _ runtime.StatusPusher = (*StatusPusher)(nil)
 
 // StatusPusher sends status updates to coordinator via gRPC
 type StatusPusher struct {
-	client   coordinator.Client
-	workerID string
-	owner    exec.HostInfo
-	claimKey string
+	client     coordinator.Client
+	workerID   string
+	owner      exec.HostInfo
+	claimKey   string
+	sourceFile string
+	labels     string
+}
+
+// NewTaskStatusPusher creates a StatusPusher bound to a dispatched task.
+func NewTaskStatusPusher(client coordinator.Client, workerID string, task *coordinatorv1.Task, owner ...exec.HostInfo) *StatusPusher {
+	if task == nil {
+		return NewStatusPusher(client, workerID, "", owner...)
+	}
+	pusher := NewStatusPusher(client, workerID, task.AttemptKey, owner...)
+	pusher.sourceFile = task.SourceFile
+	pusher.labels = task.Labels
+	return pusher
 }
 
 // AttemptRejectedError indicates the coordinator explicitly rejected a status
@@ -72,6 +85,8 @@ func (p *StatusPusher) Push(ctx context.Context, status exec.DAGRunStatus) error
 		WorkerId:           p.workerID,
 		Status:             protoStatus,
 		OwnerCoordinatorId: p.owner.ID,
+		SourceFile:         p.sourceFile,
+		Labels:             p.labels,
 	}
 
 	var resp *coordinatorv1.ReportStatusResponse

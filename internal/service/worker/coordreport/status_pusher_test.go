@@ -8,13 +8,13 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dagucloud/dagu/internal/cmn/backoff"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/proto/convert"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
-	"github.com/dagucloud/dagu/internal/service/worker/coordreport"
-	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
+	"github.com/dagucloud/dagu/v2/internal/cmn/backoff"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/proto/convert"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	"github.com/dagucloud/dagu/v2/internal/service/worker/coordreport"
+	coordinatorv1 "github.com/dagucloud/dagu/v2/proto/coordinator/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -133,7 +133,11 @@ func TestPush(t *testing.T) {
 			},
 		}
 
-		pusher := coordreport.NewStatusPusher(client, "worker-1", "claim-key")
+		pusher := coordreport.NewTaskStatusPusher(client, "worker-1", &coordinatorv1.Task{
+			AttemptKey: "claim-key",
+			SourceFile: "/dags/daily-file.yaml",
+			Labels:     "workspace=ops,team=platform",
+		})
 		status := exec.DAGRunStatus{
 			Name:     "test-dag",
 			DAGRunID: "run-123",
@@ -145,6 +149,8 @@ func TestPush(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, capturedReq)
 		assert.Equal(t, "worker-1", capturedReq.WorkerId)
+		assert.Equal(t, "/dags/daily-file.yaml", capturedReq.SourceFile)
+		assert.Equal(t, "workspace=ops,team=platform", capturedReq.Labels)
 		assert.NotNil(t, capturedReq.Status)
 		assert.NotEmpty(t, capturedReq.Status.JsonData)
 		// Verify the JSON contains the expected data

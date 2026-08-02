@@ -10,11 +10,11 @@ import (
 	"os"
 	"sync"
 
-	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/cmn/cmdutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
 )
 
 // CloseExecutor safely closes an executor if it implements io.Closer.
@@ -113,9 +113,10 @@ type ParallelExecutor interface {
 
 // RunParams holds the parameters for running a sub DAG.
 type RunParams struct {
-	RunID   string
-	Params  string
-	DAGName string
+	RunID          string
+	Params         string
+	DAGName        string
+	WorkerSelector map[string]string
 }
 
 // ChatMessageHandler is an interface for executors that handle chat session messages.

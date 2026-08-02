@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/incident"
+	"github.com/dagucloud/dagu/v2/internal/cmn/crypto"
+	"github.com/dagucloud/dagu/v2/internal/incident"
 )
 
 func TestStoreEncryptsIncidentProviderSecretsAtRest(t *testing.T) {
@@ -97,7 +97,7 @@ func TestStorePersistsPolicySetAndState(t *testing.T) {
 	assert.Equal(t, incident.IncidentStatusOpen, loadedState.Status)
 	assert.Equal(t, "daily", loadedState.DAGName)
 
-	openStates, err := store.ListOpenStatesByDAG(context.Background(), "daily")
+	openStates, err := store.ListOpenStates(context.Background())
 	require.NoError(t, err)
 	require.Len(t, openStates, 1)
 	assert.Equal(t, state.DedupKey, openStates[0].DedupKey)

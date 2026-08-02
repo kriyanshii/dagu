@@ -14,11 +14,11 @@ import (
 	"strings"
 
 	"dario.cat/mergo"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/spec/types"
-	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	cmnvalue "github.com/dagucloud/dagu/v2/internal/cmn/value"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/spec/types"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 	"github.com/go-viper/mapstructure/v2"
 
 	"github.com/goccy/go-yaml"
@@ -894,6 +894,7 @@ func buildBaseDAG(ctx BuildContext, baseDef *dag) (*core.DAG, error) {
 	buildOpts := ctx.opts
 	buildOpts.Parameters = ""
 	buildOpts.ParametersList = nil
+	buildOpts.Flags |= BuildFlagDeferWorkerSelector
 
 	customStepTypes, err := buildCustomStepActionRegistry(stepTypesOf(baseDef), nil, actionsOf(baseDef), nil)
 	if err != nil {

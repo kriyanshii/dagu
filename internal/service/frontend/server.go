@@ -27,42 +27,42 @@ import (
 	"github.com/go-chi/httplog/v2"
 	"github.com/prometheus/client_golang/prometheus"
 
-	authmodel "github.com/dagucloud/dagu/internal/auth"
-	"github.com/dagucloud/dagu/internal/cmn/backoff"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	cmnschema "github.com/dagucloud/dagu/internal/cmn/schema"
-	"github.com/dagucloud/dagu/internal/cmn/signalctx"
-	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/gitsync"
-	"github.com/dagucloud/dagu/internal/license"
-	_ "github.com/dagucloud/dagu/internal/llm/allproviders" // Register LLM providers
-	"github.com/dagucloud/dagu/internal/remotenode"
-	"github.com/dagucloud/dagu/internal/runtime"
-	"github.com/dagucloud/dagu/internal/service/audit"
-	authservice "github.com/dagucloud/dagu/internal/service/auth"
-	"github.com/dagucloud/dagu/internal/service/authmapping"
-	"github.com/dagucloud/dagu/internal/service/chatbridge"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
-	"github.com/dagucloud/dagu/internal/service/frontend/api/pathutil"
-	apiv1 "github.com/dagucloud/dagu/internal/service/frontend/api/v1"
-	"github.com/dagucloud/dagu/internal/service/frontend/auth"
-	"github.com/dagucloud/dagu/internal/service/frontend/metrics"
-	"github.com/dagucloud/dagu/internal/service/frontend/sse"
-	"github.com/dagucloud/dagu/internal/service/frontend/terminal"
-	incidentservice "github.com/dagucloud/dagu/internal/service/incident"
-	dagumcp "github.com/dagucloud/dagu/internal/service/mcp"
-	notificationservice "github.com/dagucloud/dagu/internal/service/notification"
-	"github.com/dagucloud/dagu/internal/service/oidcprovision"
-	"github.com/dagucloud/dagu/internal/service/resource"
-	"github.com/dagucloud/dagu/internal/service/trustedproxyprovision"
-	"github.com/dagucloud/dagu/internal/tunnel"
-	"github.com/dagucloud/dagu/internal/upgrade"
-	workspacepkg "github.com/dagucloud/dagu/internal/workspace"
+	authmodel "github.com/dagucloud/dagu/v2/internal/auth"
+	"github.com/dagucloud/dagu/v2/internal/cmn/backoff"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/crypto"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	cmnschema "github.com/dagucloud/dagu/v2/internal/cmn/schema"
+	"github.com/dagucloud/dagu/v2/internal/cmn/signalctx"
+	cmnvalue "github.com/dagucloud/dagu/v2/internal/cmn/value"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/gitsync"
+	"github.com/dagucloud/dagu/v2/internal/license"
+	_ "github.com/dagucloud/dagu/v2/internal/llm/allproviders" // Register LLM providers
+	"github.com/dagucloud/dagu/v2/internal/remotenode"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/service/audit"
+	authservice "github.com/dagucloud/dagu/v2/internal/service/auth"
+	"github.com/dagucloud/dagu/v2/internal/service/authmapping"
+	"github.com/dagucloud/dagu/v2/internal/service/chatbridge"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	"github.com/dagucloud/dagu/v2/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/service/frontend/api/pathutil"
+	apiv1 "github.com/dagucloud/dagu/v2/internal/service/frontend/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/service/frontend/auth"
+	"github.com/dagucloud/dagu/v2/internal/service/frontend/metrics"
+	"github.com/dagucloud/dagu/v2/internal/service/frontend/sse"
+	"github.com/dagucloud/dagu/v2/internal/service/frontend/terminal"
+	incidentservice "github.com/dagucloud/dagu/v2/internal/service/incident"
+	dagumcp "github.com/dagucloud/dagu/v2/internal/service/mcp"
+	notificationservice "github.com/dagucloud/dagu/v2/internal/service/notification"
+	"github.com/dagucloud/dagu/v2/internal/service/oidcprovision"
+	"github.com/dagucloud/dagu/v2/internal/service/resource"
+	"github.com/dagucloud/dagu/v2/internal/service/trustedproxyprovision"
+	"github.com/dagucloud/dagu/v2/internal/tunnel"
+	"github.com/dagucloud/dagu/v2/internal/upgrade"
+	workspacepkg "github.com/dagucloud/dagu/v2/internal/workspace"
 )
 
 const (
@@ -170,6 +170,55 @@ func toOIDCWorkspaceMappings(mappings map[string][]config.OIDCWorkspaceGrant) ma
 		result[group] = converted
 	}
 	return result
+}
+
+func toOIDCPolicy(policy config.OIDCPolicy) oidcprovision.Policy {
+	return oidcprovision.Policy{
+		AutoSignup:     policy.AutoSignup,
+		AllowedDomains: policy.AllowedDomains,
+		Whitelist:      policy.Whitelist,
+		RoleMapping: oidcprovision.RoleMapperConfig{
+			GroupsClaim:            policy.RoleMapping.GroupsClaim,
+			GroupMappings:          policy.RoleMapping.GroupMappings,
+			WorkspaceMappings:      toOIDCWorkspaceMappings(policy.RoleMapping.WorkspaceMappings),
+			DefaultWorkspaceAccess: policy.RoleMapping.DefaultWorkspaceAccess,
+			RoleAttributePath:      policy.RoleMapping.RoleAttributePath,
+			RoleAttributeStrict:    policy.RoleMapping.RoleAttributeStrict,
+			SkipOrgRoleSync:        policy.RoleMapping.SkipOrgRoleSync,
+			DefaultRole:            authmodel.Role(policy.RoleMapping.DefaultRole),
+		},
+	}
+}
+
+func toConfigOIDCWorkspaceMappings(mappings map[string][]oidcprovision.WorkspaceGrantConfig) map[string][]config.OIDCWorkspaceGrant {
+	if len(mappings) == 0 {
+		return nil
+	}
+	result := make(map[string][]config.OIDCWorkspaceGrant, len(mappings))
+	for group, grants := range mappings {
+		converted := make([]config.OIDCWorkspaceGrant, len(grants))
+		for i, grant := range grants {
+			converted[i] = config.OIDCWorkspaceGrant{
+				Workspace: grant.Workspace,
+				Role:      grant.Role,
+			}
+		}
+		result[group] = converted
+	}
+	return result
+}
+
+func toConfigOIDCMapping(mapping oidcprovision.RoleMapperConfig) config.OIDCRoleMapping {
+	return config.OIDCRoleMapping{
+		GroupsClaim:            mapping.GroupsClaim,
+		GroupMappings:          mapping.GroupMappings,
+		WorkspaceMappings:      toConfigOIDCWorkspaceMappings(mapping.WorkspaceMappings),
+		DefaultWorkspaceAccess: mapping.DefaultWorkspaceAccess,
+		RoleAttributePath:      mapping.RoleAttributePath,
+		RoleAttributeStrict:    mapping.RoleAttributeStrict,
+		SkipOrgRoleSync:        mapping.SkipOrgRoleSync,
+		DefaultRole:            string(mapping.DefaultRole),
+	}
 }
 
 func toTrustedProxyGroupMappings(mappings map[string]string) map[string]authmodel.Role {
@@ -340,22 +389,26 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 		if oidcCfg.IsConfigured() {
 			oidcEnabled = true
 			oidcButtonLabel = oidcCfg.ButtonLabel
+			configPolicy := oidcCfg.Policy()
+			policy := toOIDCPolicy(configPolicy)
+			loader := config.NewOIDCPolicyLoader(
+				cfg.Paths.ConfigFilesUsed,
+				configPolicy,
+			)
 
 			provisionCfg := oidcprovision.Config{
 				Issuer:         oidcCfg.Issuer,
-				AutoSignup:     oidcCfg.AutoSignup,
-				DefaultRole:    authmodel.Role(oidcCfg.RoleMapping.DefaultRole),
-				AllowedDomains: oidcCfg.AllowedDomains,
-				Whitelist:      oidcCfg.Whitelist,
-				RoleMapping: oidcprovision.RoleMapperConfig{
-					GroupsClaim:            oidcCfg.RoleMapping.GroupsClaim,
-					GroupMappings:          oidcCfg.RoleMapping.GroupMappings,
-					WorkspaceMappings:      toOIDCWorkspaceMappings(oidcCfg.RoleMapping.WorkspaceMappings),
-					DefaultWorkspaceAccess: oidcCfg.RoleMapping.DefaultWorkspaceAccess,
-					RoleAttributePath:      oidcCfg.RoleMapping.RoleAttributePath,
-					RoleAttributeStrict:    oidcCfg.RoleMapping.RoleAttributeStrict,
-					SkipOrgRoleSync:        oidcCfg.RoleMapping.SkipOrgRoleSync,
-					DefaultRole:            authmodel.Role(oidcCfg.RoleMapping.DefaultRole),
+				AutoSignup:     policy.AutoSignup,
+				DefaultRole:    policy.RoleMapping.DefaultRole,
+				AllowedDomains: policy.AllowedDomains,
+				Whitelist:      policy.Whitelist,
+				RoleMapping:    policy.RoleMapping,
+				LoadPolicy: func(context.Context) (oidcprovision.Policy, error) {
+					policy, err := loader.Load()
+					if err != nil {
+						return oidcprovision.Policy{}, err
+					}
+					return toOIDCPolicy(policy), nil
 				},
 			}
 			provisionCfg.WorkspaceExists = workspaceExists
@@ -363,6 +416,11 @@ func NewServer(ctx context.Context, cfg *config.Config, dr exec.DAGStore, drs ex
 			if err != nil {
 				return nil, fmt.Errorf("failed to create OIDC provisioning service: %w", err)
 			}
+			apiOpts = append(apiOpts, apiv1.WithOIDCRoleMapping(
+				func() config.OIDCRoleMapping {
+					return toConfigOIDCMapping(provisionSvc.RoleMapping())
+				},
+			))
 
 			builtinOIDCCfg, err = auth.InitBuiltinOIDCConfig(
 				ctx,
@@ -932,6 +990,7 @@ func incidentMonitorConfig() chatbridge.NotificationMonitorConfig {
 	cfg.InterestedEventTypes = []eventstore.EventType{
 		eventstore.TypeDAGRunFailed,
 		eventstore.TypeDAGRunSucceeded,
+		eventstore.TypeDAGRunPartiallySucceeded,
 	}
 	return cfg
 }
