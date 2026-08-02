@@ -300,6 +300,54 @@ func TestJSONDB(t *testing.T) {
 		assert.Equal(t, "dagrun-id-1", dagRunStatus.DAGRunID)
 		assert.Equal(t, core.Running, dagRunStatus.Status)
 	})
+	t.Run("RemoveOldWithOlderThanCutoff", func(t *testing.T) {
+		th := setupTestStore(t)
+
+		tsOld := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
+		tsRecent := time.Date(2021, 1, 3, 12, 0, 0, 0, time.UTC)
+		cutoff := time.Date(2021, 1, 2, 0, 0, 0, 0, time.UTC)
+
+		oldAttempt := th.CreateAttempt(t, tsOld, "old-run", core.Succeeded)
+		recentAttempt := th.CreateAttempt(t, tsRecent, "recent-run", core.Succeeded)
+		// canRemoveDAGRun gates on status-file mtime as well as recorded run time.
+		require.NoError(t, os.Chtimes(oldAttempt.file, tsOld, tsOld))
+		require.NoError(t, os.Chtimes(recentAttempt.file, tsRecent, tsRecent))
+
+		removedIDs, err := th.Store.RemoveOldDAGRuns(
+			th.Context,
+			"test_DAG",
+			30, // ignored when OlderThan is set
+			exec.WithOlderThan(cutoff),
+		)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"old-run"}, removedIDs)
+
+		attempts := th.Store.RecentAttempts(th.Context, "test_DAG", 3)
+		require.Len(t, attempts, 1)
+		status, err := attempts[0].ReadStatus(th.Context)
+		require.NoError(t, err)
+		assert.Equal(t, "recent-run", status.DAGRunID)
+	})
+	t.Run("RemoveOldWithZeroOlderThanCutoff", func(t *testing.T) {
+		th := setupTestStore(t)
+
+		th.CreateAttempt(t, time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC), "completed-run", core.Succeeded)
+
+		removedIDs, err := th.Store.RemoveOldDAGRuns(
+			th.Context,
+			"test_DAG",
+			30,
+			exec.WithOlderThan(time.Time{}),
+		)
+		require.NoError(t, err)
+		assert.Empty(t, removedIDs)
+
+		attempts := th.Store.RecentAttempts(th.Context, "test_DAG", 1)
+		require.Len(t, attempts, 1)
+		status, err := attempts[0].ReadStatus(th.Context)
+		require.NoError(t, err)
+		assert.Equal(t, "completed-run", status.DAGRunID)
+	})
 	t.Run("RemoveDAGRunRejectsActiveWhenRequested", func(t *testing.T) {
 		th := setupTestStore(t)
 		ts := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
