@@ -36,8 +36,9 @@ steps:
 `)
 
 		runID := "ps-run-1"
+		startedAt := time.Date(2026, time.July, 29, 12, 34, 56, 0, time.UTC)
 		proc, err := th.ProcStore.Acquire(th.Context, dag.ProcGroup(), exec.ProcMeta{
-			StartedAt:    time.Now().UnixMilli(),
+			StartedAt:    startedAt.Unix(),
 			Name:         dag.Name,
 			DAGRunID:     runID,
 			AttemptID:    "attempt-1",
@@ -52,6 +53,7 @@ steps:
 		out := runPsWithStdout(t, th, cmd.Ps(), []string{"ps"})
 		assert.Contains(t, out, dag.Name)
 		assert.Contains(t, out, runID)
+		assert.Contains(t, out, startedAt.Format(time.RFC3339))
 
 		out = runPsWithStdout(t, th, cmd.Ps(), []string{"ps", "-d", dag.Name, "-r", "ps-run"})
 		assert.Contains(t, out, dag.Name)

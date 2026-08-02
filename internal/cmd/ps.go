@@ -101,7 +101,7 @@ func renderPsTable(out io.Writer, entries []exec.ProcEntry) error {
 	for _, entry := range entries {
 		started := "-"
 		if entry.Meta.StartedAt > 0 {
-			started = time.UnixMilli(entry.Meta.StartedAt).UTC().Format(time.RFC3339)
+			started = time.Unix(entry.Meta.StartedAt, 0).UTC().Format(time.RFC3339)
 		}
 		fresh := "yes"
 		if !entry.Fresh {
