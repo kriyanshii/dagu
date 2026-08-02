@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/dagucloud/dagu/v2/internal/core"
 	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
 	"github.com/spf13/cobra"
 )
 
@@ -91,6 +94,11 @@ func runLs(ctx *Context, args []string) error {
 		Order:     "asc",
 		Time:      &now,
 	}
+	var nextRunProjection func(*core.DAG, time.Time) time.Time
+	if showNext {
+		nextRunProjection = lsNextRunProjection(ctx)
+		listOpts.NextRunProjection = nextRunProjection
+	}
 	if showNext && !sortLast {
 		listOpts.Sort = "nextRun"
 		if reverse {
@@ -113,7 +121,7 @@ func runLs(ctx *Context, args []string) error {
 	for _, dag := range result.Items {
 		row := lsRow{dag: dag}
 		if showNext {
-			row.nextRun = dag.NextRun(now)
+			row.nextRun = nextRunProjection(dag, now)
 		}
 		if needEnrich {
 			enrichLsRow(ctx, &row, showLast || sortLast, showHistory)
@@ -126,6 +134,25 @@ func runLs(ctx *Context, args []string) error {
 	}
 
 	return renderLsTable(ctx.Command.OutOrStdout(), rows, showNext, showLast, showHistory)
+}
+
+func lsNextRunProjection(ctx *Context) func(*core.DAG, time.Time) time.Time {
+	stateStore := scheduler.NewWatermarkStore(
+		file.NewCollection(filepath.Join(ctx.Config.Paths.DataDir, "scheduler"), file.WithIndentedJSON()),
+	)
+	state, err := stateStore.Load(ctx)
+	if err != nil {
+		_, _ = fmt.Fprintf(ctx.Command.ErrOrStderr(), "warning: failed to load scheduler state: %s\n", err)
+		state = nil
+	}
+
+	projectNextRun := scheduler.NewNextRunProjection(ctx.Config.Core.Location, state)
+	return func(dag *core.DAG, now time.Time) time.Time {
+		if ctx.DAGStore.IsSuspended(ctx, dag.FileName()) {
+			return time.Time{}
+		}
+		return projectNextRun(dag, now)
+	}
 }
 
 func sortLsRowsByLastRun(rows []lsRow, reverse bool) {

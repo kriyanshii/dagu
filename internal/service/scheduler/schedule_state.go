@@ -254,3 +254,33 @@ func NextPlannedRun(dag *core.DAG, now time.Time, state *SchedulerState) time.Ti
 	}
 	return nextPlannedRunFromSchedules(dag.Schedule, now, dagState)
 }
+
+// NewNextRunProjection returns a scheduler-aware next-run projection for DAG listings.
+func NewNextRunProjection(location *time.Location, state *SchedulerState) func(*core.DAG, time.Time) time.Time {
+	if location == nil {
+		location = time.Local
+	}
+	return func(dag *core.DAG, now time.Time) time.Time {
+		if state != nil {
+			if nextRun, ok := ProjectedNextRun(dag, state); ok {
+				return nextRun
+			}
+			if hasProfileSchedule(dag) {
+				return time.Time{}
+			}
+		}
+		return NextPlannedRun(dag, now.In(location), state)
+	}
+}
+
+func hasProfileSchedule(dag *core.DAG) bool {
+	if dag == nil {
+		return false
+	}
+	for _, schedule := range dag.Schedule {
+		if schedule.Profile != "" {
+			return true
+		}
+	}
+	return false
+}
