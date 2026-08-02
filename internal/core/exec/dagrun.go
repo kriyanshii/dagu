@@ -258,7 +258,8 @@ func WithRetentionRuns(runs int) RemoveOldDAGRunsOption {
 	}
 }
 
-// WithOlderThan deletes dag-runs older than the given cutoff time.
+// WithOlderThan deletes dag-runs older than the given cutoff time. A zero cutoff
+// removes no dag-runs.
 // When set, the retentionDays argument to RemoveOldDAGRuns is ignored.
 func WithOlderThan(t time.Time) RemoveOldDAGRunsOption {
 	return func(o *RemoveOldDAGRunsOptions) {

@@ -376,6 +376,10 @@ func (dr DataRoot) RemoveOld(ctx context.Context, retentionDays int, dryRun bool
 // Active (non-final) runs are never removed. If dryRun is true, it returns the run
 // IDs that would be removed without actually deleting them.
 func (dr DataRoot) removeOldBefore(ctx context.Context, keepTime exec.TimeInUTC, dryRun bool) ([]string, error) {
+	if keepTime.IsZero() {
+		return nil, nil
+	}
+
 	dagRuns := dr.listDAGRunsInRange(ctx, exec.TimeInUTC{}, keepTime, &listDAGRunsInRangeOpts{})
 
 	var removedRunIDs []string

@@ -5,6 +5,7 @@ package cmd_test
 
 import (
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/dagucloud/dagu/v2/internal/cmd"
@@ -104,6 +105,33 @@ steps:
 
 		_, err := th.DAGStore.GetMetadata(th.Context, dag.Location)
 		require.Error(t, err)
+	})
+
+	t.Run("QuietStillRequiresConfirmation", func(t *testing.T) {
+		th := test.SetupCommand(t)
+		dag := th.DAG(t, `steps:
+  - name: "1"
+    run: echo "hello"
+`)
+
+		stdin, input, err := os.Pipe()
+		require.NoError(t, err)
+		originalStdin := os.Stdin
+		os.Stdin = stdin
+		t.Cleanup(func() {
+			os.Stdin = originalStdin
+			require.NoError(t, stdin.Close())
+		})
+		_, err = input.WriteString("n\n")
+		require.NoError(t, err)
+		require.NoError(t, input.Close())
+
+		th.RunCommand(t, cmd.Rm(), test.CmdTest{
+			Args: []string{"rm", "--definition", "--quiet", dag.Location},
+		})
+
+		_, err = th.DAGStore.GetMetadata(th.Context, dag.Location)
+		require.NoError(t, err)
 	})
 
 	t.Run("RefusesDefinitionDeleteWhenAlive", func(t *testing.T) {

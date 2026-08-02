@@ -108,7 +108,7 @@ func runRm(ctx *Context, args []string) error {
 		deleteDef:    deleteDef,
 		olderThan:    olderThan,
 		dryRun:       dryRun,
-		skipConfirm:  force || ctx.Quiet,
+		skipConfirm:  force,
 	})
 }
 
