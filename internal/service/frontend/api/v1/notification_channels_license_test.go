@@ -9,14 +9,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dagucloud/dagu/api/v1"
-	dagucrypto "github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/license"
-	notificationmodel "github.com/dagucloud/dagu/internal/notification"
-	filenotification "github.com/dagucloud/dagu/internal/persis/file/notification"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
-	"github.com/dagucloud/dagu/internal/service/frontend"
-	"github.com/dagucloud/dagu/internal/test"
+	"github.com/dagucloud/dagu/v2/api/v1"
+	dagucrypto "github.com/dagucloud/dagu/v2/internal/cmn/crypto"
+	"github.com/dagucloud/dagu/v2/internal/license"
+	notificationmodel "github.com/dagucloud/dagu/v2/internal/notification"
+	filenotification "github.com/dagucloud/dagu/v2/internal/persis/file/notification"
+	"github.com/dagucloud/dagu/v2/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/service/frontend"
+	"github.com/dagucloud/dagu/v2/internal/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -82,7 +82,10 @@ func TestNotificationRoutes_GlobalAndWorkspaceRouteSets(t *testing.T) {
 			Id:        new("global-route"),
 			ChannelId: channel.Id,
 			Enabled:   true,
-			Events:    &[]api.NotificationEventType{api.NotificationEventTypeDagRunFailed},
+			Events: &[]api.NotificationEventType{
+				api.NotificationEventTypeDagRunFailed,
+				api.NotificationEventTypeDagRunPartiallySucceeded,
+			},
 		}},
 	}).ExpectStatus(http.StatusOK).Send(t)
 	var globalRoutes api.NotificationRouteSet
@@ -91,6 +94,8 @@ func TestNotificationRoutes_GlobalAndWorkspaceRouteSets(t *testing.T) {
 	assert.True(t, globalRoutes.InheritGlobal)
 	require.Len(t, globalRoutes.Routes, 1)
 	assert.Equal(t, "global-route", globalRoutes.Routes[0].Id)
+	require.NotNil(t, globalRoutes.Routes[0].Events)
+	assert.Contains(t, *globalRoutes.Routes[0].Events, api.NotificationEventTypeDagRunPartiallySucceeded)
 
 	server.Client().Post("/api/v1/workspaces", api.CreateWorkspaceRequest{
 		Name: "ops",

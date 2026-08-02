@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/service/eventstore"
 )
 
 const (
@@ -38,7 +38,19 @@ type NotificationEvent struct {
 	Key        string
 	Type       eventstore.EventType
 	Status     *exec.DAGRunStatus
+	DAGFile    string
 	ObservedAt time.Time
+}
+
+// DAGRouteKey returns the DAG-scoped configuration key, falling back to the runtime name.
+func (e NotificationEvent) DAGRouteKey() string {
+	if e.DAGFile != "" {
+		return e.DAGFile
+	}
+	if e.Status != nil {
+		return e.Status.Name
+	}
+	return ""
 }
 
 // NotificationBatch is a flushed batch of buffered notification events.
@@ -194,12 +206,9 @@ func (b *NotificationBatcher) Enqueue(destination string, event NotificationEven
 	if observedAt.IsZero() {
 		observedAt = time.Now().UTC()
 	}
-	snapshot := NotificationEvent{
-		Key:        event.Key,
-		Type:       eventType,
-		Status:     cloneNotificationStatus(event.Status),
-		ObservedAt: observedAt,
-	}
+	snapshot := cloneNotificationEvent(event)
+	snapshot.Type = eventType
+	snapshot.ObservedAt = observedAt
 	runKey := NotificationRunKey(snapshot.Status)
 	destRunKey := notificationDestinationRunKey(destination, runKey)
 
@@ -423,7 +432,7 @@ func NotificationClassForEvent(eventType eventstore.EventType, status core.Statu
 	switch eventType {
 	case eventstore.TypeDAGRunFailed, eventstore.TypeDAGRunWaiting:
 		return NotificationClassUrgent, true
-	case eventstore.TypeDAGRunSucceeded:
+	case eventstore.TypeDAGRunSucceeded, eventstore.TypeDAGRunPartiallySucceeded:
 		return NotificationClassSuccessDigest, true
 	case eventstore.TypeDAGRunQueued, eventstore.TypeDAGRunRunning:
 		return NotificationClassInformational, true
@@ -749,6 +758,12 @@ func cloneNotificationStatus(status *exec.DAGRunStatus) *exec.DAGRunStatus {
 		return &fallback
 	}
 	return &clone
+}
+
+func cloneNotificationEvent(event NotificationEvent) NotificationEvent {
+	clone := event
+	clone.Status = cloneNotificationStatus(event.Status)
+	return clone
 }
 
 func notificationBatchFromBucket(bucket *notificationBucket, windowEnd time.Time) NotificationBatch {

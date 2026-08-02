@@ -12,8 +12,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/dagucloud/dagu/internal/auth"
-	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/dagucloud/dagu/v2/internal/auth"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 )
 
 // Config holds the overall configuration for the application.
@@ -23,6 +23,7 @@ type Config struct {
 	EventStore      EventStoreConfig
 	Webhooks        WebhooksConfig
 	Paths           PathsConfig
+	DAGDiscovery    DAGDiscoveryConfig
 	Secrets         SecretsConfig
 	UI              UI
 	Queues          Queues
@@ -38,6 +39,11 @@ type Config struct {
 	License         LicenseConfig
 	Notices         []string
 	Warnings        []string
+}
+
+// DAGDiscoveryConfig controls how DAG definitions are discovered.
+type DAGDiscoveryConfig struct {
+	Recursive bool
 }
 
 const DefaultWebhookMaxPayloadSize = 1 * 1024 * 1024
@@ -289,6 +295,24 @@ type AuthOIDC struct {
 	RoleMapping    OIDCRoleMapping
 }
 
+// OIDCPolicy contains the OIDC settings evaluated for each login.
+type OIDCPolicy struct {
+	AutoSignup     bool
+	AllowedDomains []string
+	Whitelist      []string
+	RoleMapping    OIDCRoleMapping
+}
+
+// Policy returns the login-time policy from the OIDC configuration.
+func (o AuthOIDC) Policy() OIDCPolicy {
+	return OIDCPolicy{
+		AutoSignup:     o.AutoSignup,
+		AllowedDomains: o.AllowedDomains,
+		Whitelist:      o.Whitelist,
+		RoleMapping:    o.RoleMapping,
+	}
+}
+
 // IsConfigured returns true if all required OIDC fields are set.
 func (o AuthOIDC) IsConfigured() bool {
 	return o.ClientID != "" && o.ClientSecret != "" && o.ClientURL != "" && o.Issuer != ""
@@ -389,6 +413,7 @@ type PathsConfig struct {
 	WorkspacesDir      string
 	ViewsDir           string
 	ConfigFileUsed     string
+	ConfigFilesUsed    []string
 }
 
 // SecretsConfig holds global defaults for external secret providers.
@@ -426,8 +451,11 @@ type AlibabaSecretsConfig struct {
 
 // VaultSecretsConfig holds shared HashiCorp Vault client defaults.
 type VaultSecretsConfig struct {
-	Address string
-	Token   string
+	Address    string
+	Token      string
+	CACert     string
+	ClientCert string
+	ClientKey  string
 }
 
 // KubernetesSecretsConfig holds shared Kubernetes client defaults.

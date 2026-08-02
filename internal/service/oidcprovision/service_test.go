@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dagucloud/dagu/internal/auth"
-	authservice "github.com/dagucloud/dagu/internal/service/auth"
+	"github.com/dagucloud/dagu/v2/internal/auth"
+	authservice "github.com/dagucloud/dagu/v2/internal/service/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -576,13 +576,10 @@ func TestIsEmailAllowed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := &Service{
-				config: Config{
-					AllowedDomains: tt.allowedDomains,
-					Whitelist:      tt.whitelist,
-				},
-			}
-			result := svc.isEmailAllowed(tt.email)
+			result := isEmailAllowed(Policy{
+				AllowedDomains: tt.allowedDomains,
+				Whitelist:      tt.whitelist,
+			}, tt.email)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -831,6 +828,93 @@ func TestProcessLogin_SyncsAuthorizationOnce(t *testing.T) {
 	_, _, err = svc.ProcessLogin(context.Background(), claims)
 	require.NoError(t, err)
 	assert.Equal(t, 1, store.updateCalls)
+}
+
+func TestProcessLoginLoadsCurrentPolicy(t *testing.T) {
+	store := newMockUserStore()
+	currentPolicy := Policy{
+		AutoSignup: true,
+		RoleMapping: RoleMapperConfig{
+			GroupMappings: map[string]string{"team": "manager"},
+			DefaultRole:   auth.RoleViewer,
+		},
+	}
+	loadCalls := 0
+	svc, err := New(store, Config{
+		Issuer:      "https://issuer.example.com",
+		AutoSignup:  true,
+		DefaultRole: auth.RoleViewer,
+		LoadPolicy: func(context.Context) (Policy, error) {
+			loadCalls++
+			return currentPolicy, nil
+		},
+	})
+	require.NoError(t, err)
+
+	claims := OIDCClaims{
+		Subject:           "subject",
+		Email:             "user@example.com",
+		PreferredUsername: "user",
+		RawClaims:         map[string]any{"groups": []any{"team"}},
+	}
+	user, created, err := svc.ProcessLogin(context.Background(), claims)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, auth.RoleManager, user.Role)
+
+	currentPolicy.RoleMapping.GroupMappings = map[string]string{"team": "viewer"}
+	user, created, err = svc.ProcessLogin(context.Background(), claims)
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, auth.RoleViewer, user.Role)
+	require.Equal(t, 2, loadCalls)
+}
+
+func TestProcessLoginKeepsLastValidPolicyWhenReloadFails(t *testing.T) {
+	store := newMockUserStore()
+	validPolicy := Policy{
+		AutoSignup: true,
+		RoleMapping: RoleMapperConfig{
+			GroupMappings: map[string]string{"team": "manager"},
+			DefaultRole:   auth.RoleViewer,
+		},
+	}
+	loadCalls := 0
+
+	svc, err := New(store, Config{
+		Issuer:      "https://issuer.example.com",
+		AutoSignup:  true,
+		DefaultRole: auth.RoleViewer,
+		LoadPolicy: func(context.Context) (Policy, error) {
+			loadCalls++
+			if loadCalls == 1 {
+				return validPolicy, nil
+			}
+			return Policy{}, errors.New("invalid mapping")
+		},
+	})
+	require.NoError(t, err)
+
+	first, created, err := svc.ProcessLogin(context.Background(), OIDCClaims{
+		Subject:           "first-subject",
+		Email:             "first@example.com",
+		PreferredUsername: "first",
+		RawClaims:         map[string]any{"groups": []any{"team"}},
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, auth.RoleManager, first.Role)
+
+	second, created, err := svc.ProcessLogin(context.Background(), OIDCClaims{
+		Subject:           "second-subject",
+		Email:             "second@example.com",
+		PreferredUsername: "second",
+		RawClaims:         map[string]any{"groups": []any{"team"}},
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, auth.RoleManager, second.Role)
+	require.Equal(t, 2, loadCalls)
 }
 
 type authorizationChangedAfterOIDCLookupStore struct {

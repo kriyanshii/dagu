@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Dagu?
 
-Dagu is a self-contained, single-binary workflow orchestration engine. Workflows are defined as DAGs (Directed Acyclic Graphs) in YAML. It requires no external databases or message brokers — all data is stored locally in files. It supports local, queue-based, and distributed (coordinator/worker) execution modes.
+Dagu is a self-contained, single-binary workflow orchestration engine. Workflows are defined as DAGs (Directed Acyclic Graphs) in YAML. It requires no external databases or message brokers — all control-plane data is stored locally in files. It supports local, queue-based, and distributed (coordinator/worker) execution modes, and can also be embedded in Go programs via the root `dagu` package.
 
 ## Build & Development Commands
 
@@ -15,70 +15,111 @@ Dagu is a self-contained, single-binary workflow orchestration engine. Workflows
 | `make ui` | Build frontend only (cleans node_modules, installs, webpack builds) |
 | `make run` | Run frontend server + scheduler (requires built UI assets) |
 | `make run-server` | Run backend server only |
-| `make test` | Run all tests (`gotestsum` with race detection) |
+| `make test` | Run Go tests except conformance (`gotestsum` with race detection) |
 | `make test TEST_TARGET=./internal/core/...` | Run tests for a specific package |
-| `make test-coverage` | Run tests with coverage, opens HTML report |
-| `make lint` | Run `golangci-lint` |
+| `make conformance` | Binary-level conformance tests (builds binary, sets `DAGU_BIN`) |
+| `make test-coverage` | Run tests with coverage, writes HTML report |
+| `make test-e2e` | Browser E2E tests (Playwright, builds UI + E2E binary) |
+| `make lint` | Run `golangci-lint` (with `--fix`, also under `GOOS=windows`) |
 | `make fmt` | Auto-format: `go fix` + `go fmt` + `golangci-lint --fix` |
 | `make check` | CI-style check: formatting + linting without modifications |
 | `make api` | Generate server code from OpenAPI spec (`api/v1/api.yaml`) |
-| `make api-validate` | Validate OpenAPI spec |
-| `make protoc` | Generate gRPC code from proto files |
+| `make proto` | Lint proto files + generate gRPC code |
+| `make llms` | Regenerate `llms.txt` from `skills/dagu` sources |
 
-**Frontend dev server**: `cd ui && pnpm install && pnpm dev` (runs on port 8081, backend on 8080).
+Run a single test directly: `go test -race -run TestName ./internal/runtime/...`
+
+**Frontend dev server**: `cd ui && pnpm install && pnpm dev` (port 8081, proxies API to backend on 8080).
 
 ## Architecture Overview
 
+### Embeddable engine API (repo root)
+
+The module root is package `dagu` — an experimental embedded API (`engine.go`, `executor.go`): `New(ctx, Options)` returns an `Engine` with `RunFile`/`RunYAML`/`Status`/`Stop`, supporting local file-backed and distributed (coordinator) modes. `RegisterExecutor` adds custom executors. It wraps `internal/engine`.
+
 ### Go Backend (`internal/`)
 
-- **`core/`** — DAG and step definitions, validation, status types. The DAG spec is rich (~100 fields) supporting schedules, lifecycle hooks, container specs, parameters, and three execution types: `graph`, `chain`, `agent`.
-- **`core/exec/`** — Interfaces for DAG run tracking, queue, and process stores (`DAGRunStore`, `QueueStore`, `ProcStore`, `Dispatcher`).
-- **`runtime/`** — Execution engine. `runner.go` orchestrates parallel execution with dependency resolution. `node.go` manages individual step execution with retry logic. `manager.go` coordinates the overall lifecycle.
-- **`runtime/builtin/`** — 18+ built-in executor implementations: `command`, `docker`, `http`, `ssh`, `jq`, `mail`, `sql`, `redis`, `s3`, `dag` (sub-DAG), `chat` (LLM), `router`, `agentstep`, etc.
-- **`runtime/executor/`** — Executor factory pattern with global registry. Executors implement `Run(ctx) error` with stdout/stderr/kill support.
-- **`persis/`** — File-based persistence layer. Store implementations include legacy file-backed packages (`filedag`, `filedagrun`, `fileproc`, etc.) and collection-backed adapters in `persis/store` such as the queue, user, session, and API-key stores.
-- **`service/frontend/`** — HTTP server using Chi router. REST API v1 with 43+ endpoint handlers, SSE for real-time updates, static asset serving. API handlers are in `api/v1/`.
-- **`service/scheduler/`** — Cron scheduling with timezone support, zombie detection, queue processing, distributed coordination.
-- **`service/coordinator/`** — gRPC server for distributed execution and service registry.
-- **`service/worker/`** — Polls coordinator for work, executes DAGs locally, reports status.
-- **`auth/`** — Authentication with RBAC roles (admin, manager, operator, viewer, developer). Supports Basic, OIDC, and built-in JWT auth.
-- **`cmn/`** — Shared utilities: config loading, expression evaluation, file operations, structured logging, secret management, OpenTelemetry, backoff strategies.
-- **`agent/`** — LLM-powered agent for workflow generation with session/skill/memory management.
-- **`cmd/`** — CLI command implementations (Cobra). ~20 commands: `start`, `stop`, `server`, `scheduler`, `coord`, `worker`, `validate`, `dry`, etc.
+- **`core/`** — Domain types: `DAG`, `Step`, and the full YAML spec surface (schedules, handlers, containers, params, retry/repeat, human tasks, routers). Three DAG execution types: `graph` (default), `chain`, `controller` (LLM-driven step ordering).
+- **`core/spec/`** — YAML loader/builder/normalizer. Also normalizes the step-level `action:` shorthand (~58 built-in action names like `file.*`, `state.*`, `git.worktree.*`, `human.task`) into executor configs (`step_v2.go`).
+- **`core/exec/`** — Execution-layer port interfaces: `DAGStore`, `DAGRunStore`, `DAGRunAttempt`, `ProcStore`, `QueueStore`, `Dispatcher`, `ServiceRegistry`, worker/lease/dispatch stores.
+- **`runtime/`** — Execution engine. `plan.go` builds the step graph (cycle validation), `runner.go` runs a plan (concurrency, lifecycle handlers, metrics), `node.go` is the per-step state machine (retry, repeat, output capture), `manager.go` starts/stops/inspects DAG runs. `runtime/agent/` is the DAG-run process agent (unix-socket control, signal propagation, status persistence) — not an LLM agent. `runtime/controller/` implements `type: controller` DAGs.
+- **`runtime/builtin/`** — 28 executor packages registering ~37 executor type names: `command`/`shell`, `docker`, `container`, `kubernetes`, `ssh`/`sftp`, `http`, `jq`, `mail`, `postgres`/`sqlite`, `redis`, `s3`, `dag`/`subworkflow`/`parallel`/`foreach`, `router`, `chat` (LLM), `controller`, `action` (reusable Dagu Actions from `owner/repo@version`), `harness` (external coding-agent CLIs: claude, codex, copilot, opencode, pi), plus `archive`, `artifact`, `data`, `file`, `git`, `state`, `template`, `wait`, etc.
+- **`runtime/executor/`** — Executor registry + `Executor` interface. Factory pattern: registered globally, instantiated by type name.
+- **`persis/`** — Storage layer behind a generic `Backend` → `Collection` → `Record` abstraction (`backend.go`). Only production backend is `persis/file` (local filesystem). `persis/store` holds collection-backed adapters (queue, user, API key, profile, secret, workspace, view, webhook, license, worker-heartbeat, etc.).
+- **`service/frontend/`** — HTTP server (chi router). REST API v1 handlers in `api/v1/` (~150 paths), SSE, terminal, static assets; also mounts the MCP server at `/mcp`.
+- **`service/scheduler/`** — Cron scheduling with timezones, catchup, zombie detection, queue processing, file watching.
+- **`service/coordinator/`** — gRPC server for distributed execution (`proto/coordinator/v1`: dispatch, heartbeats, log/artifact streaming, workspace bundles, shared state).
+- **`service/worker/`** — Polls coordinator for tasks, executes DAGs locally, reports status.
+- **`service/mcp/`** — Model Context Protocol server (read/change/execute tools, run-inspector MCP App).
+- **`auth/`** — RBAC roles (admin, manager, developer, operator, viewer), users, API keys, webhook auth. Basic, OIDC, and built-in JWT auth.
+- **`llm/`** — Provider-agnostic LLM abstraction (anthropic, openai, openrouter, gemini, zai, local) used by `chat` executor and controller DAGs.
+- **`engine/`** — Internal implementation behind the root `dagu` package.
+- **`cmd/`** — Cobra CLI implementations; entry point `cmd/main.go` at repo root registers 27 commands: `start`, `exec`, `enqueue`, `stop`, `restart`, `retry`, `dry`, `validate`, `status`, `server`, `scheduler`, `coordinator`, `worker`, `start-all` (server+scheduler+coordinator in one process), `sync`, `context`, `profile`, `license`, `human-task`, etc.
+- Domain feature packages, one concern each: `gitsync` (git-backed DAG sync), `humantask`, `incident`, `notification`, `dagstate` (cross-run persistent state), `dagsettings`, `profile`, `secret`, `workspace`, `remotenode`, `view`, `tunnel` (Tailscale), `license`, `upgrade`, `clicontext` (named remote CLI contexts), `dispatch` (local-vs-coordinator policy), `subflow`, `cmn` (config, logging, telemetry, backoff, secrets, etc.).
 
 ### Frontend (`ui/`)
 
-React 19 + TypeScript with Webpack 5. Uses Tailwind CSS 4, Radix UI/shadcn components, Monaco editor for YAML, xterm.js for terminal, SWR for data fetching, and `openapi-fetch` for typed API calls. API types generated from OpenAPI spec via `pnpm gen:api`.
+React 19 + TypeScript with Webpack 5. Tailwind CSS 4, Radix UI/shadcn components, Monaco editor for YAML, xterm.js terminal, SWR + `openapi-fetch` for typed API calls. Feature modules under `ui/src/features/` (dags, dag-runs, cockpit, dashboard, incidents, queues, workers, views...). Unit tests: Vitest (`pnpm test`). Browser E2E: Playwright (`ui/e2e/`).
+
+### Tests & specs
+
+- `specs/` — numbered behavior specs (001–032); `conformance/` contains matching black-box tests that shell out to the real binary (requires `DAGU_BIN`, handled by `make conformance`).
+- `internal/intg/` — Go integration tests (distributed, embed, queue).
+
+### Related but separate
+
+- **`cloud/`** — separate Go module (`github.com/dagu-org/cloud`): the SaaS backend (Postgres/sqlc, Stripe, licensing). Has its own `cloud/CLAUDE.md`; nothing in `internal/` depends on it.
+- **`skills/dagu/`** — source of truth for the bundled Dagu authoring skill; `make llms` flattens it into `llms.txt`.
 
 ### Key Data Flow
 
 ```
-CLI/API/UI → Command Handler (cmd/) → DAG Loader & Validator (core/)
-  → Runtime Engine (runtime/runner.go) → Node Execution (runtime/node.go)
-  → Executor (runtime/builtin/*) → File Storage (persis/)
-  → SSE → Web UI
+CLI/API/UI → cmd handler → DAG load & validate (core/spec) → intake (dagrun/)
+  → runtime agent → Plan (runtime/plan.go) → Runner → Node → Executor (runtime/builtin/*)
+  → persis/file storage → SSE → Web UI
 ```
 
-For distributed mode: Scheduler → Queue → Coordinator (gRPC) → Worker → Report back.
+Distributed mode: Scheduler → Queue → dispatch policy → Coordinator (gRPC) → Worker → report back.
 
 ## Code Generation
 
-- **REST API**: OpenAPI spec at `api/v1/api.yaml` → generated Go server code via `oapi-codegen`. Run `make api`.
-- **gRPC**: Proto files at `proto/coordinator/v1/` → generated Go code via `protoc`. Run `make protoc`.
+- **REST API**: `api/v1/api.yaml` → Go server code via `oapi-codegen`. Run `make api`.
+- **gRPC**: `proto/coordinator/v1/` + `proto/index/v1/` → Go code. Run `make proto`.
 - **Frontend API types**: `cd ui && pnpm gen:api` generates TypeScript types from the OpenAPI spec.
 
 ## Key Conventions
 
-- All storage is behind interfaces (in `core/exec/`) with file-based implementations (in `persis/`).
+- All storage is behind interfaces (`core/exec/`, `persis.Backend`) with file-based implementations (`persis/file`, `persis/store`).
 - Executors follow the factory pattern — registered globally, instantiated dynamically by type name.
-- DAGs can compose hierarchically — a step can invoke another DAG via the `dag` executor.
+- DAGs compose hierarchically — steps invoke other DAGs via the `dag` executor; `action:` is shorthand normalized at spec-build time.
 - Configuration uses `DAGU_*` environment variables, with fallback to `~/.config/dagu/config.yaml`.
-- Go commit message guidelines apply. Run `make fmt` before committing.
-- License: GPL v3. License headers on source files managed via `make addlicense`.
+- Run `make fmt` before committing (lint also runs under `GOOS=windows` — keep Windows builds green).
+- License: GPL v3 (root module). License headers managed via `make addlicense`.
+- `AGENTS.md` is a symlink to this file.
 
 ## Tech Stack Summary
 
-- **Go 1.26**, Chi router, Cobra CLI, gRPC, SQLite (modernc), pgx, go-redis
-- **Frontend**: React 19, TypeScript, pnpm, Webpack 5, Tailwind CSS 4, Vitest
+- **Go 1.26**, chi router, Cobra CLI, gRPC, goccy/go-yaml
+- SQLite (modernc) and pgx appear only as `sql` step-executor drivers — the OSS control plane is file-based, no SQL database
+- **Frontend**: React 19, TypeScript, pnpm, Webpack 5, Tailwind CSS 4, Vitest, Playwright
 - **Linting**: golangci-lint v2 (errcheck, govet, staticcheck, gosec, revive, etc.)
 - **Testing**: gotestsum with race detection, stretchr/testify assertions
+
+## Skill routing
+
+When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
+
+Key routing rules:
+- Product ideas/brainstorming → invoke /office-hours
+- Strategy/scope → invoke /plan-ceo-review
+- Architecture → invoke /plan-eng-review
+- Design system/plan review → invoke /design-consultation or /plan-design-review
+- Full review pipeline → invoke /autoplan
+- Bugs/errors → invoke /investigate
+- QA/testing site behavior → invoke /qa or /qa-only
+- Code review/diff check → invoke /review
+- Visual polish → invoke /design-review
+- Ship/deploy/PR → invoke /ship or /land-and-deploy
+- Save progress → invoke /context-save
+- Resume context → invoke /context-restore
+- Author a backlog-ready spec/issue → invoke /spec

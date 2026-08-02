@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,6 +30,28 @@ func testLoadWithError(t *testing.T, opts ...ConfigLoaderOption) error {
 	opts = append([]ConfigLoaderOption{WithAppHomeDir(t.TempDir())}, opts...)
 	_, err := NewConfigLoader(viper.New(), opts...).Load()
 	return err
+}
+
+func TestLoad_DAGDiscovery(t *testing.T) {
+	t.Run("Default", func(t *testing.T) {
+		t.Setenv("DAGU_DAG_DISCOVERY_RECURSIVE", "")
+		cfg := testLoad(t)
+		assert.False(t, cfg.DAGDiscovery.Recursive)
+	})
+
+	t.Run("YAML", func(t *testing.T) {
+		cfg := loadFromYAML(t, `
+dag_discovery:
+  recursive: true
+`)
+		assert.True(t, cfg.DAGDiscovery.Recursive)
+	})
+
+	t.Run("Environment", func(t *testing.T) {
+		t.Setenv("DAGU_DAG_DISCOVERY_RECURSIVE", "true")
+		cfg := testLoad(t)
+		assert.True(t, cfg.DAGDiscovery.Recursive)
+	})
 }
 
 func preserveTZEnv(t *testing.T) {
@@ -183,6 +205,7 @@ func TestLoad_Env(t *testing.T) {
 
 	require.NotEmpty(t, cfg.Paths.ConfigFileUsed)
 	cfg.Paths.ConfigFileUsed = ""
+	cfg.Paths.ConfigFilesUsed = nil
 
 	expected := &Config{
 		Core: Core{
@@ -1201,6 +1224,7 @@ func loadFromYAML(t *testing.T, yamlContent string) *Config {
 
 	cfg := testLoad(t, WithConfigFile(configFile))
 	cfg.Paths.ConfigFileUsed = ""
+	cfg.Paths.ConfigFilesUsed = nil
 	return cfg
 }
 
@@ -1466,6 +1490,9 @@ secrets:
   vault:
     address: "https://vault.example.com"
     token: "yaml-token"
+    ca_cert: "relative/vault-ca.pem"
+    client_cert: "relative/vault-client-cert.pem"
+    client_key: "relative/vault-client-key.pem"
   kubernetes:
     namespace: "secret-ns"
     kubeconfig: "relative/kubeconfig"
@@ -1485,6 +1512,9 @@ secrets:
 
 		assert.Equal(t, "https://vault.example.com", cfg.Secrets.Vault.Address)
 		assert.Equal(t, "yaml-token", cfg.Secrets.Vault.Token)
+		assert.Equal(t, resolvedTestPath(t, "relative/vault-ca.pem"), cfg.Secrets.Vault.CACert)
+		assert.Equal(t, resolvedTestPath(t, "relative/vault-client-cert.pem"), cfg.Secrets.Vault.ClientCert)
+		assert.Equal(t, resolvedTestPath(t, "relative/vault-client-key.pem"), cfg.Secrets.Vault.ClientKey)
 		assert.Equal(t, "secret-ns", cfg.Secrets.Kubernetes.Namespace)
 		assert.Equal(t, resolvedTestPath(t, "relative/kubeconfig"), cfg.Secrets.Kubernetes.Kubeconfig)
 		assert.Equal(t, "prod", cfg.Secrets.Kubernetes.Context)
@@ -1500,9 +1530,15 @@ secrets:
 	t.Run("FromEnv", func(t *testing.T) {
 		kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
 		alibabaCAFile := filepath.Join(t.TempDir(), "alibaba-ca.pem")
+		vaultCACert := filepath.Join(t.TempDir(), "vault-ca.pem")
+		vaultClientCert := filepath.Join(t.TempDir(), "vault-client-cert.pem")
+		vaultClientKey := filepath.Join(t.TempDir(), "vault-client-key.pem")
 		cfg := loadWithEnv(t, "# empty", map[string]string{
 			"DAGU_SECRETS_VAULT_ADDRESS":         "https://vault.example.com",
 			"DAGU_SECRETS_VAULT_TOKEN":           "env-token",
+			"DAGU_SECRETS_VAULT_CA_CERT":         vaultCACert,
+			"DAGU_SECRETS_VAULT_CLIENT_CERT":     vaultClientCert,
+			"DAGU_SECRETS_VAULT_CLIENT_KEY":      vaultClientKey,
 			"DAGU_SECRETS_KUBERNETES_NAMESPACE":  "env-ns",
 			"DAGU_SECRETS_KUBERNETES_KUBECONFIG": kubeconfig,
 			"DAGU_SECRETS_KUBERNETES_CONTEXT":    "env-context",
@@ -1517,6 +1553,9 @@ secrets:
 
 		assert.Equal(t, "https://vault.example.com", cfg.Secrets.Vault.Address)
 		assert.Equal(t, "env-token", cfg.Secrets.Vault.Token)
+		assert.Equal(t, vaultCACert, cfg.Secrets.Vault.CACert)
+		assert.Equal(t, vaultClientCert, cfg.Secrets.Vault.ClientCert)
+		assert.Equal(t, vaultClientKey, cfg.Secrets.Vault.ClientKey)
 		assert.Equal(t, "env-ns", cfg.Secrets.Kubernetes.Namespace)
 		assert.Equal(t, kubeconfig, cfg.Secrets.Kubernetes.Kubeconfig)
 		assert.Equal(t, "env-context", cfg.Secrets.Kubernetes.Context)

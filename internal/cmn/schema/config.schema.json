@@ -141,6 +141,9 @@
     "paths": {
       "$ref": "#/definitions/PathsDef"
     },
+    "dag_discovery": {
+      "$ref": "#/definitions/DAGDiscoveryDef"
+    },
     "secrets": {
       "$ref": "#/definitions/SecretsDef"
     },
@@ -775,6 +778,18 @@
         }
       }
     },
+    "DAGDiscoveryDef": {
+      "type": "object",
+      "description": "DAG definition discovery settings.",
+      "additionalProperties": false,
+      "properties": {
+        "recursive": {
+          "type": "boolean",
+          "description": "Discover DAG definitions in subdirectories.",
+          "default": false
+        }
+      }
+    },
     "SecretsDef": {
       "type": "object",
       "description": "Shared defaults for external secret providers.",
@@ -868,6 +883,18 @@
         "token": {
           "type": "string",
           "description": "Default Vault token."
+        },
+        "ca_cert": {
+          "type": "string",
+          "description": "CA certificate file for verifying a custom Vault TLS endpoint."
+        },
+        "client_cert": {
+          "type": "string",
+          "description": "Client certificate file for Vault mutual TLS authentication."
+        },
+        "client_key": {
+          "type": "string",
+          "description": "Client private key file for Vault mutual TLS authentication."
         }
       }
     },

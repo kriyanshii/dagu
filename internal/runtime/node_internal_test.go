@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	_ "github.com/dagucloud/dagu/internal/runtime/builtin/log"
+	cmnvalue "github.com/dagucloud/dagu/v2/internal/cmn/value"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	_ "github.com/dagucloud/dagu/v2/internal/runtime/builtin/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -272,6 +272,27 @@ func TestBuildSubDAGRunsAddressesPreviousAttemptRuns(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, firstAttempt, buildIDs(t, retried))
+}
+
+func TestBuildChildRunParams_SelectorConflict(t *testing.T) {
+	t.Parallel()
+
+	subDAG := &core.SubDAG{Name: "child", Params: "MODE=batch"}
+	step := core.Step{
+		Name:           "run-child",
+		SubDAG:         subDAG,
+		WorkerSelector: map[string]string{"host": "${ITEM}"},
+		Parallel: &core.ParallelConfig{
+			Items: []core.ParallelItem{{Value: "serverA"}, {Value: "serverB"}},
+		},
+	}
+	dag := &core.DAG{Name: "root", Steps: []core.Step{step}}
+	ctx := NewContextForTest(context.Background(), dag, "root-run", "")
+	ctx = WithEnv(ctx, NewEnv(ctx, step))
+
+	_, err := NewNode(step, NodeState{}).buildChildRunParams(ctx, subDAG)
+	require.ErrorContains(t, err, "same sub-DAG run")
+	require.ErrorContains(t, err, "different worker selectors")
 }
 
 // TestSetupExecutor_HarnessCommandPreservesLiteralCodeFences verifies that

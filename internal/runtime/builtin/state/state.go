@@ -13,10 +13,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/dagstate"
-	"github.com/dagucloud/dagu/internal/runtime"
-	"github.com/dagucloud/dagu/internal/runtime/executor"
+	cmnvalue "github.com/dagucloud/dagu/v2/internal/cmn/value"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/dagstate"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/runtime/executor"
 )
 
 const (
@@ -114,8 +115,17 @@ func validateStep(step core.Step) error {
 	if step.ExecutorConfig.Type != executorType {
 		return nil
 	}
+	rawConfig := step.ExecutorConfig.Config
+	if expectedVersion, ok := rawConfig["expected_version"].(string); ok && cmnvalue.IsExactRef(expectedVersion) {
+		rawConfig = make(map[string]any, len(step.ExecutorConfig.Config)-1)
+		for key, value := range step.ExecutorConfig.Config {
+			if key != "expected_version" {
+				rawConfig[key] = value
+			}
+		}
+	}
 	cfg := config{}
-	if err := decodeConfig(step.ExecutorConfig.Config, &cfg); err != nil {
+	if err := decodeConfig(rawConfig, &cfg); err != nil {
 		return err
 	}
 	return validateConfig(stepOperation(step), cfg)

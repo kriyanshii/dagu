@@ -4,7 +4,7 @@
 package cmd
 
 import (
-	"github.com/dagucloud/dagu/internal/cmn/stringutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -362,6 +362,45 @@ var (
 		shorthand: "r",
 		usage:     "Reverse sort order",
 		isBool:    true,
+	}
+
+	rmHistoryFlag = commandLineFlag{
+		name:      "history",
+		shorthand: "H",
+		usage:     "Delete DAG run history",
+		isBool:    true,
+	}
+
+	rmDefinitionFlag = commandLineFlag{
+		name:      "definition",
+		shorthand: "d",
+		usage:     "Delete the DAG YAML definition",
+		isBool:    true,
+	}
+
+	rmOlderThanFlag = commandLineFlag{
+		name:      "older-than",
+		shorthand: "t",
+		usage:     "With --history: delete runs older than duration (e.g. 10d, 24h, 1w). Omitted = delete all history",
+	}
+
+	rmForceFlag = commandLineFlag{
+		name:      "force",
+		shorthand: "f",
+		usage:     "Skip confirmation prompt",
+		isBool:    true,
+	}
+
+	psDAGFlag = commandLineFlag{
+		name:      "dag",
+		shorthand: "d",
+		usage:     "Filter by DAG name",
+	}
+
+	psRunIDFlag = commandLineFlag{
+		name:      "run-id",
+		shorthand: "r",
+		usage:     "Filter by run ID (partial match supported)",
 	}
 )
 

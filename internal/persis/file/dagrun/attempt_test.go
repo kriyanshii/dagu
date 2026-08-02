@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/stringutil"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/service/eventstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,6 +38,23 @@ func TestAttempt_Open(t *testing.T) {
 	// Cleanup
 	err = att.Close(context.Background())
 	assert.NoError(t, err)
+}
+
+func TestAttempt_OpenRejectsCorruptDAGDefinition(t *testing.T) {
+	dir := createTempDir(t)
+	file := filepath.Join(dir, "status.dat")
+	ctx := context.Background()
+
+	att, err := NewAttempt(file, nil, WithDAG(&core.DAG{Name: "test"}))
+	require.NoError(t, err)
+	require.NoError(t, att.Open(ctx))
+	require.NoError(t, att.Close(ctx))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, DAGDefinition), []byte("{"), 0600))
+
+	reopened, err := NewAttempt(file, nil)
+	require.NoError(t, err)
+	err = reopened.Open(ctx)
+	require.ErrorContains(t, err, "failed to restore DAG definition")
 }
 
 func TestAttempt_Write(t *testing.T) {
@@ -906,7 +923,11 @@ func TestAttempt_WriteEmitsLifecycleTransitionsAndStatusUpdates(t *testing.T) {
 	service := eventstore.New(store)
 	ctx := eventstore.WithContext(context.Background(), service, eventstore.Source{Service: eventstore.SourceServiceServer})
 
-	dag := &core.DAG{Name: "TestDAG", Location: filepath.Join(dir, "test-dag.yaml")}
+	dag := &core.DAG{
+		Name:     "TestDAG",
+		Location: filepath.Join(dir, "test-dag.yaml"),
+		Labels:   core.NewLabels([]string{"workspace=ops"}),
+	}
 	att, err := NewAttempt(file, nil, WithDAG(dag))
 	require.NoError(t, err)
 	require.NoError(t, att.Open(ctx))
@@ -914,6 +935,7 @@ func TestAttempt_WriteEmitsLifecycleTransitionsAndStatusUpdates(t *testing.T) {
 	queued := createTestStatus(core.Queued)
 	queued.AttemptID = "attempt-1"
 	queued.QueuedAt = time.Now().UTC().Format(time.RFC3339)
+	queued.Labels = dag.Labels.Strings()
 	require.NoError(t, att.Write(ctx, queued))
 	require.NoError(t, att.Write(ctx, queued))
 
@@ -942,6 +964,7 @@ func TestAttempt_WriteEmitsLifecycleTransitionsAndStatusUpdates(t *testing.T) {
 	snapshot, err := eventstore.DAGRunSnapshotFromEvent(store.events[0])
 	require.NoError(t, err)
 	assert.Equal(t, "test-dag", snapshot.DAGFile)
+	assert.Equal(t, []string{"workspace=ops"}, snapshot.Labels)
 	assert.Equal(t, core.Queued, snapshot.Status)
 }
 
@@ -966,7 +989,7 @@ func TestAttempt_OpenRestoresLastEmittedLifecycleState(t *testing.T) {
 	require.NoError(t, att.Close(ctx))
 	require.Len(t, store.events, 1)
 
-	reopened, err := NewAttempt(file, nil, WithDAG(dag))
+	reopened, err := NewAttempt(file, nil)
 	require.NoError(t, err)
 	require.NoError(t, reopened.Open(ctx))
 	require.NoError(t, reopened.Write(ctx, queued))
@@ -982,6 +1005,9 @@ func TestAttempt_OpenRestoresLastEmittedLifecycleState(t *testing.T) {
 		eventstore.TypeDAGRunUpdated,
 		eventstore.TypeDAGRunRunning,
 	}, captureEventTypes(store.events))
+	snapshot, err := eventstore.DAGRunSnapshotFromEvent(store.events[2])
+	require.NoError(t, err)
+	assert.Equal(t, "test-dag", snapshot.DAGFile)
 }
 
 type captureEventStore struct {

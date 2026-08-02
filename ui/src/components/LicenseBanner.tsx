@@ -29,6 +29,17 @@ export function LicenseBanner() {
     setDismissed7d(localStorage.getItem(`license-banner-dismissed-7d-${expiryKey}`) === 'true');
   }, [expiryKey]);
 
+  if (license.error) {
+    return (
+      <div
+        role="alert"
+        className="bg-red-50 dark:bg-red-950 border-b border-red-200 dark:border-red-800 px-4 py-1.5 flex items-center text-sm"
+      >
+        <span className="text-red-800 dark:text-red-200">{license.error}</span>
+      </div>
+    );
+  }
+
   // Community mode: no banner
   if (license.community) return null;
 

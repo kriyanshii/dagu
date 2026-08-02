@@ -50,6 +50,9 @@ type Definition struct {
 	// Paths (structured)
 	Paths *PathsDef `mapstructure:"paths"`
 
+	// DAG discovery
+	DAGDiscovery *DAGDiscoveryDef `mapstructure:"dag_discovery"`
+
 	// Secrets
 	Secrets *SecretsDef `mapstructure:"secrets"`
 
@@ -91,6 +94,11 @@ type Definition struct {
 	GitSync    *GitSyncDef    `mapstructure:"git_sync"`
 	Tunnel     *TunnelDef     `mapstructure:"tunnel"`
 	License    *LicenseDef    `mapstructure:"license"`
+}
+
+// DAGDiscoveryDef configures DAG definition discovery.
+type DAGDiscoveryDef struct {
+	Recursive *bool `mapstructure:"recursive"`
 }
 
 // -----------------------------------------------------------------------------
@@ -270,8 +278,11 @@ type AlibabaSecretsDef struct {
 
 // VaultSecretsDef configures global HashiCorp Vault client defaults.
 type VaultSecretsDef struct {
-	Address string `mapstructure:"address"`
-	Token   string `mapstructure:"token"`
+	Address    string `mapstructure:"address"`
+	Token      string `mapstructure:"token"`
+	CACert     string `mapstructure:"ca_cert"`
+	ClientCert string `mapstructure:"client_cert"`
+	ClientKey  string `mapstructure:"client_key"`
 }
 
 // KubernetesSecretsDef configures global Kubernetes client defaults.

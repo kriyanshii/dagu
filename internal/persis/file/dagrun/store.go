@@ -12,11 +12,11 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
 )
 
 // Error definitions for common issues
@@ -563,9 +563,10 @@ func (store *Store) CreateSubAttempt(ctx context.Context, rootRef exec.DAGRunRef
 	return subDAGRun.CreateAttempt(ctx, exec.NewUTC(time.Now()), store.cache, "")
 }
 
-// RemoveOldDAGRuns removes old history records by retention days, or by run count when configured by option.
-// Without run-count options, it only removes records older than the specified retention days.
-// If retentionDays is negative, no files will be removed.
+// RemoveOldDAGRuns removes old history records by retention days, absolute cutoff, or run count.
+// Without run-count options, it removes records older than the specified retention days,
+// or older than WithOlderThan when that option is set (in which case retentionDays is ignored).
+// If retentionDays is negative and OlderThan is not set, no files will be removed.
 // If retentionDays is zero, all files will be removed.
 // If retentionDays is positive, only files older than the specified number of days will be removed.
 // Returns a list of file paths that were removed (or would be removed in dry-run mode).
@@ -587,6 +588,12 @@ func (store *Store) RemoveOldDAGRuns(ctx context.Context, dagName string, retent
 		return root.RemoveOldByRuns(ctx, retentionRuns, options.DryRun)
 	}
 
+	root := NewDataRootWithArtifactDir(store.baseDir, dagName, store.artifactDir)
+
+	if options.OlderThan != nil {
+		return root.removeOldBefore(ctx, exec.NewUTC(*options.OlderThan), options.DryRun)
+	}
+
 	if retentionDays < 0 {
 		logger.Warn(ctx, "Negative retentionDays, no files will be removed",
 			slog.Int("retention-days", retentionDays),
@@ -594,7 +601,6 @@ func (store *Store) RemoveOldDAGRuns(ctx context.Context, dagName string, retent
 		return nil, nil
 	}
 
-	root := NewDataRootWithArtifactDir(store.baseDir, dagName, store.artifactDir)
 	return root.RemoveOld(ctx, retentionDays, options.DryRun)
 }
 

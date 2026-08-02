@@ -156,9 +156,37 @@ Flags:
 - `--sort-last/-t` — Sort by last run time
 - `--reverse/-r` — Reverse sort order
 
+### dagu rm
+
+Remove DAG run history and/or the DAG YAML definition. At least one of `--history` or `--definition` is required. Active runs are never deleted from history; definition deletion is refused while the DAG has alive processes. With `--definition`, identify the DAG by filename, stem, or configured path.
+
+```sh
+dagu rm [--history|-H] [--definition|-d] [-t <duration>] [-f] [--dry-run] <dag>
+```
+
+Flags:
+
+- `--history/-H` — Delete run history
+- `--definition/-d` — Delete the DAG YAML definition
+- `--older-than/-t` — With `--history`: delete runs older than a duration (e.g. `10d`, `24h`, `1w`). Omitted = delete all history
+- `--force/-f` — Skip confirmation prompt
+- `--dry-run` — Preview deletions without removing history or the definition
+
+### dagu ps
+
+List running DAG processes.
+
+```sh
+dagu ps [-d <dag-name>] [-r <run-id>]
+```
+
+`-r`/`--run-id` accepts a partial run ID and matches accordingly.
+
 ### dagu cleanup
 
 Remove old DAG run history. Active runs are never deleted.
+
+Deprecated: prefer `dagu rm --history`.
 
 ```sh
 dagu cleanup <dag-name> [--retention-days <n>] [--dry-run] [--yes/-y]

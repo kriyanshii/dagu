@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core"
 )
 
 // Errors related to dag-run management
@@ -82,8 +82,9 @@ type DAGRunStore interface {
 	// This is used for distributed sub-DAG execution where the coordinator needs
 	// to create the attempt directory before the worker reports status.
 	CreateSubAttempt(ctx context.Context, rootRef DAGRunRef, subDAGRunID string) (DAGRunAttempt, error)
-	// RemoveOldDAGRuns deletes dag-run records older than retentionDays, or by run count when configured by option.
-	// If retentionDays is negative, it won't delete any records.
+	// RemoveOldDAGRuns deletes dag-run records older than retentionDays, by absolute
+	// cutoff (WithOlderThan), or by run count (WithRetentionRuns).
+	// If retentionDays is negative and OlderThan is not set, it won't delete any records.
 	// If retentionDays is zero, it will delete all records for the DAG name.
 	// But it will not delete the records with non-final statuses (e.g., running, queued).
 	// Returns a list of dag-run IDs that were removed (or would be removed in dry-run mode).
@@ -235,6 +236,9 @@ type RemoveOldDAGRunsOptions struct {
 	DryRun bool
 	// RetentionRuns keeps the most recent number of dag-runs when set.
 	RetentionRuns *int
+	// OlderThan when set, deletes dag-runs whose recorded time is strictly before this
+	// cutoff. When set, the retentionDays argument is ignored.
+	OlderThan *time.Time
 }
 
 // RemoveOldDAGRunsOption is a functional option for configuring RemoveOldDAGRunsOptions
@@ -251,6 +255,16 @@ func WithDryRun() RemoveOldDAGRunsOption {
 func WithRetentionRuns(runs int) RemoveOldDAGRunsOption {
 	return func(o *RemoveOldDAGRunsOptions) {
 		o.RetentionRuns = &runs
+	}
+}
+
+// WithOlderThan deletes dag-runs older than the given cutoff time. A zero cutoff
+// removes no dag-runs.
+// When set, the retentionDays argument to RemoveOldDAGRuns is ignored.
+func WithOlderThan(t time.Time) RemoveOldDAGRunsOption {
+	return func(o *RemoveOldDAGRunsOptions) {
+		cutoff := t.UTC()
+		o.OlderThan = &cutoff
 	}
 }
 

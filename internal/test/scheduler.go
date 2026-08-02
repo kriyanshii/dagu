@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis/file"
-	"github.com/dagucloud/dagu/internal/persis/store"
-	"github.com/dagucloud/dagu/internal/runtime"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
-	"github.com/dagucloud/dagu/internal/service/scheduler"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	"github.com/dagucloud/dagu/v2/internal/persis/store"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
 	"github.com/stretchr/testify/require"
 )
 
@@ -69,7 +69,11 @@ func SetupScheduler(t *testing.T, opts ...HelperOption) *Scheduler {
 
 	// Create entry reader
 	coordinatorCli := coordinator.New(helper.ServiceRegistry, coordinator.DefaultConfig())
-	em := scheduler.NewEntryReader(helper.Config.Paths.DAGsDir, ds)
+	em := scheduler.NewEntryReader(
+		helper.Config.Paths.DAGsDir,
+		ds,
+		helper.Config.DAGDiscovery.Recursive,
+	)
 
 	// Update helper with scheduler-specific stores
 	helper.DAGStore = ds

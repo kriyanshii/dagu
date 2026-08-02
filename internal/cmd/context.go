@@ -18,31 +18,31 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/dagucloud/dagu/internal/clicontext"
-	cmdprocess "github.com/dagucloud/dagu/internal/cmd/process"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/cmn/logpath"
-	"github.com/dagucloud/dagu/internal/cmn/signalctx"
-	"github.com/dagucloud/dagu/internal/cmn/stringutil"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/dagstate"
-	"github.com/dagucloud/dagu/internal/license"
-	"github.com/dagucloud/dagu/internal/node"
-	"github.com/dagucloud/dagu/internal/persis/file"
-	"github.com/dagucloud/dagu/internal/persis/store"
-	"github.com/dagucloud/dagu/internal/runtime"
-	runtimeexec "github.com/dagucloud/dagu/internal/runtime/executor"
-	"github.com/dagucloud/dagu/internal/runtime/transform"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
-	"github.com/dagucloud/dagu/internal/service/frontend"
-	"github.com/dagucloud/dagu/internal/service/resource"
-	"github.com/dagucloud/dagu/internal/service/scheduler"
+	"github.com/dagucloud/dagu/v2/internal/clicontext"
+	cmdprocess "github.com/dagucloud/dagu/v2/internal/cmd/process"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/crypto"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logpath"
+	"github.com/dagucloud/dagu/v2/internal/cmn/signalctx"
+	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/dagstate"
+	"github.com/dagucloud/dagu/v2/internal/license"
+	"github.com/dagucloud/dagu/v2/internal/node"
+	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	"github.com/dagucloud/dagu/v2/internal/persis/store"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	runtimeexec "github.com/dagucloud/dagu/v2/internal/runtime/executor"
+	"github.com/dagucloud/dagu/v2/internal/runtime/transform"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	"github.com/dagucloud/dagu/v2/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/service/frontend"
+	"github.com/dagucloud/dagu/v2/internal/service/resource"
+	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -242,9 +242,9 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 		opts = append(opts, logger.WithFormat(cfg.Core.LogFormat))
 	}
 	ctx = logger.WithLogger(ctx, logger.NewLogger(opts...))
-	// Log any warnings collected during configuration loading
+	// Log messages collected during configuration loading.
 	for _, notice := range cfg.Notices {
-		logger.Info(ctx, notice)
+		logger.Debug(ctx, notice)
 	}
 	for _, warning := range cfg.Warnings {
 		logger.Warn(ctx, warning)

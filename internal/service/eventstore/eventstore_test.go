@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,7 +29,7 @@ func TestPersistedDAGRunEventTypeForStatus(t *testing.T) {
 		{name: "Rejected", status: core.Rejected, want: TypeDAGRunRejected, ok: true},
 		{name: "Waiting", status: core.Waiting, want: TypeDAGRunWaiting, ok: true},
 		{name: "Succeeded", status: core.Succeeded, want: TypeDAGRunSucceeded, ok: true},
-		{name: "PartiallySucceeded", status: core.PartiallySucceeded, want: TypeDAGRunSucceeded, ok: true},
+		{name: "PartiallySucceeded", status: core.PartiallySucceeded, want: TypeDAGRunPartiallySucceeded, ok: true},
 		{name: "Failed", status: core.Failed, want: TypeDAGRunFailed, ok: true},
 		{name: "Aborted", status: core.Aborted, want: TypeDAGRunAborted, ok: true},
 	}
@@ -41,6 +41,13 @@ func TestPersistedDAGRunEventTypeForStatus(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestPartiallySucceededIsNotificationEventType(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, IsDAGRunEventType(KindDAGRun, TypeDAGRunPartiallySucceeded))
+	assert.True(t, IsNotificationEventType(KindDAGRun, TypeDAGRunPartiallySucceeded))
 }
 
 func TestServiceEmitDefaultsFieldsWithoutReadTimeRepair(t *testing.T) {
@@ -86,6 +93,7 @@ func TestNewDAGRunEventEmbedsDAGRunSnapshot(t *testing.T) {
 		Root:           exec.NewDAGRunRef("root-briefing", "root-run"),
 		Parent:         exec.NewDAGRunRef("root-briefing", "parent-run"),
 		Name:           "briefing",
+		Labels:         []string{"workspace=ops", "team=platform"},
 		DAGRunID:       "run-1",
 		AttemptID:      "attempt-1",
 		ProcGroup:      "priority-high",
@@ -125,6 +133,7 @@ func TestNewDAGRunEventEmbedsDAGRunSnapshot(t *testing.T) {
 	assert.Equal(t, status.Root.Name, snapshot.Root.Name)
 	assert.Equal(t, status.Parent.ID, snapshot.Parent.DAGRunID)
 	assert.Equal(t, status.ProcGroup, snapshot.ProcGroup)
+	assert.Equal(t, status.Labels, snapshot.Labels)
 
 	restored, err := DAGRunStatusFromEvent(event)
 	require.NoError(t, err)
@@ -132,6 +141,7 @@ func TestNewDAGRunEventEmbedsDAGRunSnapshot(t *testing.T) {
 	assert.Equal(t, status.Root, restored.Root)
 	assert.Equal(t, status.Parent, restored.Parent)
 	assert.Equal(t, status.Name, restored.Name)
+	assert.Equal(t, status.Labels, restored.Labels)
 	assert.Equal(t, status.DAGRunID, restored.DAGRunID)
 	assert.Equal(t, status.AttemptID, restored.AttemptID)
 	assert.Equal(t, status.ProcGroup, restored.ProcGroup)

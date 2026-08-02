@@ -14,29 +14,29 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/cmn/logpath"
-	"github.com/dagucloud/dagu/internal/cmn/secrets"
-	"github.com/dagucloud/dagu/internal/cmn/stringutil"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/core/spec"
-	"github.com/dagucloud/dagu/internal/dagstate"
-	"github.com/dagucloud/dagu/internal/node"
-	"github.com/dagucloud/dagu/internal/profile"
-	"github.com/dagucloud/dagu/internal/proto/convert"
-	"github.com/dagucloud/dagu/internal/runtime"
-	rtagent "github.com/dagucloud/dagu/internal/runtime/agent"
-	"github.com/dagucloud/dagu/internal/runtime/workspacebundle"
-	"github.com/dagucloud/dagu/internal/secret"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
-	"github.com/dagucloud/dagu/internal/service/worker/coordreport"
-	dagutools "github.com/dagucloud/dagu/internal/tools"
-	daguaqua "github.com/dagucloud/dagu/internal/tools/aqua"
-	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logpath"
+	"github.com/dagucloud/dagu/v2/internal/cmn/secrets"
+	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/core/spec"
+	"github.com/dagucloud/dagu/v2/internal/dagstate"
+	"github.com/dagucloud/dagu/v2/internal/node"
+	"github.com/dagucloud/dagu/v2/internal/profile"
+	"github.com/dagucloud/dagu/v2/internal/proto/convert"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	rtagent "github.com/dagucloud/dagu/v2/internal/runtime/agent"
+	"github.com/dagucloud/dagu/v2/internal/runtime/workspacebundle"
+	"github.com/dagucloud/dagu/v2/internal/secret"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	"github.com/dagucloud/dagu/v2/internal/service/worker/coordreport"
+	dagutools "github.com/dagucloud/dagu/v2/internal/tools"
+	daguaqua "github.com/dagucloud/dagu/v2/internal/tools/aqua"
+	coordinatorv1 "github.com/dagucloud/dagu/v2/proto/coordinator/v1"
 )
 
 var _ TaskHandler = (*remoteTaskHandler)(nil)
@@ -233,7 +233,7 @@ func retryTaskProfileName(status *exec.DAGRunStatus) string {
 
 func (h *remoteTaskHandler) reportTaskLoadFailure(ctx context.Context, run remoteRun, loadErr error) {
 	task := run.task
-	statusPusher := coordreport.NewStatusPusher(h.coordinatorClient, h.workerID, task.AttemptKey, run.owner)
+	statusPusher := coordreport.NewTaskStatusPusher(h.coordinatorClient, h.workerID, task, run.owner)
 	finishedAt := stringutil.FormatTime(time.Now())
 	logger.Warn(ctx, "Failed to load DAG on worker",
 		tag.Target(task.Target),
@@ -393,7 +393,7 @@ func taskExtraEnvs(task *coordinatorv1.Task) []string {
 // createRemoteHandlers creates the remote status, log, and artifact transport handlers.
 func (h *remoteTaskHandler) createRemoteHandlers(run remoteRun, dagName string) runHandlers {
 	task := run.task
-	statusPusher := coordreport.NewStatusPusher(h.coordinatorClient, h.workerID, task.AttemptKey, run.owner)
+	statusPusher := coordreport.NewTaskStatusPusher(h.coordinatorClient, h.workerID, task, run.owner)
 	reporter := newRemoteRunReporter(
 		h.coordinatorClient,
 		h.workerID,

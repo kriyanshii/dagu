@@ -22,12 +22,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/dirlock"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis/file/dagrun/dagrunindex"
+	"github.com/dagucloud/dagu/v2/internal/cmn/dirlock"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/persis/file/dagrun/dagrunindex"
 )
 
 // DataRoot manages the directory structure for run history data.
@@ -365,7 +365,21 @@ func (dr DataRoot) Rename(ctx context.Context, newRoot DataRoot) error {
 // If dryRun is true, it returns the run IDs that would be removed without actually deleting them.
 // Returns a list of dag-run IDs that were removed (or would be removed in dry-run mode).
 func (dr DataRoot) RemoveOld(ctx context.Context, retentionDays int, dryRun bool) ([]string, error) {
+	if retentionDays < 0 {
+		return nil, nil
+	}
 	keepTime := exec.NewUTC(time.Now().AddDate(0, 0, -retentionDays))
+	return dr.removeOldBefore(ctx, keepTime, dryRun)
+}
+
+// removeOldBefore removes dag-runs whose recorded time is strictly before keepTime.
+// Active (non-final) runs are never removed. If dryRun is true, it returns the run
+// IDs that would be removed without actually deleting them.
+func (dr DataRoot) removeOldBefore(ctx context.Context, keepTime exec.TimeInUTC, dryRun bool) ([]string, error) {
+	if keepTime.IsZero() {
+		return nil, nil
+	}
+
 	dagRuns := dr.listDAGRunsInRange(ctx, exec.TimeInUTC{}, keepTime, &listDAGRunsInRangeOpts{})
 
 	var removedRunIDs []string

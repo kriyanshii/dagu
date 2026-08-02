@@ -14,18 +14,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/launcher"
-	"github.com/dagucloud/dagu/internal/persis/file"
-	"github.com/dagucloud/dagu/internal/runtime/transform"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
-	"github.com/dagucloud/dagu/internal/service/scheduler"
-	"github.com/dagucloud/dagu/internal/service/worker"
-	"github.com/dagucloud/dagu/internal/test"
-	"github.com/dagucloud/dagu/internal/test/intgharness"
-	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/launcher"
+	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	"github.com/dagucloud/dagu/v2/internal/runtime/transform"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
+	"github.com/dagucloud/dagu/v2/internal/service/worker"
+	"github.com/dagucloud/dagu/v2/internal/test"
+	"github.com/dagucloud/dagu/v2/internal/test/intgharness"
+	coordinatorv1 "github.com/dagucloud/dagu/v2/proto/coordinator/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -314,7 +314,11 @@ func (f *testFixture) startSchedulerWithOptions(
 ) {
 	f.t.Helper()
 
-	em := scheduler.NewEntryReader(f.coord.Config.Paths.DAGsDir, f.coord.DAGStore)
+	em := scheduler.NewEntryReader(
+		f.coord.Config.Paths.DAGsDir,
+		f.coord.DAGStore,
+		f.coord.Config.DAGDiscovery.Recursive,
+	)
 
 	schedulerInst, err := scheduler.New(
 		f.coord.Config,

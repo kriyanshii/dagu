@@ -40,6 +40,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
       community: false,
       source: 'file',
       warningCode: '',
+      error: '',
     },
     paths: {
       dagsDir: '',
@@ -75,5 +76,27 @@ describe('LicenseBanner', () => {
       screen.getByText(/Features will be disabled on 2026-03-05\./)
     ).toBeInTheDocument();
     expect(screen.queryByText(/2026-03-15/)).not.toBeInTheDocument();
+  });
+
+  it('shows configured license failures in community mode', () => {
+    const config = makeConfig();
+    config.license = {
+      ...config.license,
+      valid: false,
+      community: true,
+      gracePeriod: false,
+      error:
+        'License token verification failed. Check the configured token and server logs.',
+    };
+
+    render(
+      <ConfigContext.Provider value={config}>
+        <LicenseBanner />
+      </ConfigContext.Provider>
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'License token verification failed'
+    );
   });
 });
