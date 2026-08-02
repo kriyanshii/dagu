@@ -328,6 +328,18 @@ var (
 		usage:     "Skip confirmation prompt",
 		isBool:    true,
 	}
+
+	psDAGFlag = commandLineFlag{
+		name:      "dag",
+		shorthand: "d",
+		usage:     "Filter by DAG name",
+	}
+
+	psRunIDFlag = commandLineFlag{
+		name:      "run-id",
+		shorthand: "r",
+		usage:     "Filter by run ID (partial match supported)",
+	}
 )
 
 // Tunnel flags
