@@ -58,15 +58,14 @@ var rmFlags = []commandLineFlag{
 }
 
 type rmOptions struct {
-	dagName      string
-	definitionID string
-	deleteHist   bool
-	deleteDef    bool
-	olderThan    string
-	force        bool
-	dryRun       bool
-	skipConfirm  bool
-	retentionDay *int // when set (cleanup alias), use day-based retention instead of olderThan
+	dagName       string
+	definitionID  string
+	deleteHist    bool
+	deleteDef     bool
+	olderThan     string
+	dryRun        bool
+	skipConfirm   bool
+	retentionDays *int // when set (cleanup alias), use day-based retention instead of olderThan
 }
 
 func runRm(ctx *Context, args []string) error {
@@ -108,7 +107,6 @@ func runRm(ctx *Context, args []string) error {
 		deleteHist:   deleteHist,
 		deleteDef:    deleteDef,
 		olderThan:    olderThan,
-		force:        force,
 		dryRun:       dryRun,
 		skipConfirm:  force || ctx.Quiet,
 	})
@@ -116,7 +114,7 @@ func runRm(ctx *Context, args []string) error {
 
 func executeRm(ctx *Context, opts rmOptions) error {
 	if opts.deleteDef {
-		if err := ensureNoAliveProcs(ctx, opts.dagName); err != nil {
+		if err := ensureNoActiveRuns(ctx, opts.dagName); err != nil {
 			return err
 		}
 	}
@@ -124,7 +122,7 @@ func executeRm(ctx *Context, opts rmOptions) error {
 	actionDesc := buildRmActionDesc(opts)
 
 	if opts.dryRun {
-		return dryRunRmHistory(ctx, opts)
+		return previewRm(ctx, opts)
 	}
 
 	if !opts.skipConfirm {
@@ -153,7 +151,7 @@ func executeRm(ctx *Context, opts rmOptions) error {
 	}
 
 	if opts.deleteDef {
-		if err := ensureNoAliveProcs(ctx, opts.dagName); err != nil {
+		if err := ensureNoActiveRuns(ctx, opts.dagName); err != nil {
 			return err
 		}
 		if err := ctx.DAGStore.Delete(ctx, opts.definitionID); err != nil {
@@ -171,8 +169,8 @@ func buildRmActionDesc(opts rmOptions) string {
 	var parts []string
 	if opts.deleteHist {
 		switch {
-		case opts.retentionDay != nil && *opts.retentionDay > 0:
-			parts = append(parts, fmt.Sprintf("history older than %d days for DAG %q", *opts.retentionDay, opts.dagName))
+		case opts.retentionDays != nil && *opts.retentionDays > 0:
+			parts = append(parts, fmt.Sprintf("history older than %d days for DAG %q", *opts.retentionDays, opts.dagName))
 		case opts.olderThan != "":
 			parts = append(parts, fmt.Sprintf("history older than %s for DAG %q", opts.olderThan, opts.dagName))
 		default:
@@ -188,7 +186,7 @@ func buildRmActionDesc(opts rmOptions) string {
 	return parts[0] + " and " + parts[1]
 }
 
-func dryRunRmHistory(ctx *Context, opts rmOptions) error {
+func previewRm(ctx *Context, opts rmOptions) error {
 	if !opts.deleteHist {
 		if !ctx.Quiet {
 			fmt.Printf("Dry run: would delete DAG definition %q\n", opts.dagName)
@@ -222,8 +220,8 @@ func removeHistory(ctx *Context, opts rmOptions, extra ...exec.RemoveOldDAGRunsO
 	removeOpts = append(removeOpts, extra...)
 
 	switch {
-	case opts.retentionDay != nil:
-		retentionDays = *opts.retentionDay
+	case opts.retentionDays != nil:
+		retentionDays = *opts.retentionDays
 	case opts.olderThan != "":
 		dur, err := parseRelativeDuration(opts.olderThan)
 		if err != nil {
@@ -240,7 +238,7 @@ func removeHistory(ctx *Context, opts rmOptions, extra ...exec.RemoveOldDAGRunsO
 	return runIDs, nil
 }
 
-func ensureNoAliveProcs(ctx *Context, dagName string) error {
+func ensureNoActiveRuns(ctx *Context, dagName string) error {
 	if ctx.ProcStore != nil {
 		entries, err := ctx.ProcStore.ListAllEntries(ctx)
 		if err != nil {

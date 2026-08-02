@@ -71,11 +71,10 @@ func runCleanup(ctx *Context, args []string) error {
 	skipConfirm, _ := ctx.Command.Flags().GetBool("yes")
 
 	return executeRm(ctx, rmOptions{
-		dagName:      dagName,
-		deleteHist:   true,
-		retentionDay: &retentionDays,
-		dryRun:       dryRun,
-		force:        skipConfirm,
-		skipConfirm:  skipConfirm || ctx.Quiet,
+		dagName:       dagName,
+		deleteHist:    true,
+		retentionDays: &retentionDays,
+		dryRun:        dryRun,
+		skipConfirm:   skipConfirm || ctx.Quiet,
 	})
 }

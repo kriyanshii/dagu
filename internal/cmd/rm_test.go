@@ -116,12 +116,11 @@ steps:
     run: %q
 `, holdUntilFileExistsCommand(release)))
 
-		done := make(chan struct{})
+		done := make(chan error, 1)
 		go func() {
-			th.RunCommand(t, cmd.Start(), test.CmdTest{
+			done <- th.ExecuteCommand(cmd.Start(), test.CmdTest{
 				Args: []string{"start", dag.Location},
 			})
-			close(done)
 		}()
 
 		dag.AssertLatestStatus(t, core.Running)
@@ -133,7 +132,7 @@ steps:
 		assert.Contains(t, err.Error(), "alive process")
 
 		releaseHoldFile(t, release)
-		<-done
+		require.NoError(t, <-done)
 	})
 
 	t.Run("RefusesDefinitionDeleteForDistributedRun", func(t *testing.T) {
