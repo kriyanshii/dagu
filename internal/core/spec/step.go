@@ -310,6 +310,15 @@ type llmConfig struct {
 	Tools []string `yaml:"tools,omitempty"`
 	// MaxToolIterations limits tool calling rounds (default: 10).
 	MaxToolIterations *int `yaml:"max_tool_iterations,omitempty"`
+	// MaxContextTokens activates controller observation aging at this prompt size.
+	// Zero disables proactive aging.
+	MaxContextTokens *int `yaml:"max_context_tokens,omitempty"`
+	// ObservationMaxBytes limits one controller observation in bytes. Zero disables
+	// the limit.
+	ObservationMaxBytes *int `yaml:"observation_max_bytes,omitempty"`
+	// ObservationKeepRecent controls how many recent observations remain complete.
+	// Zero disables observation aging.
+	ObservationKeepRecent *int `yaml:"observation_keep_recent,omitempty"`
 	// WebSearch configures provider-native web search.
 	WebSearch *webSearchConfig `yaml:"web_search,omitempty"`
 }
@@ -2525,6 +2534,9 @@ func buildStepLLM(ctx StepBuildContext, s *step, result *core.Step) error {
 				fmt.Errorf("max_tokens must be at least 1"))
 		}
 	}
+	if err := validateControllerLLMLimits(cfg, false); err != nil {
+		return err
+	}
 
 	// Validate top_p range
 	if cfg.TopP != nil {
@@ -2556,6 +2568,31 @@ func buildStepLLM(ctx StepBuildContext, s *step, result *core.Step) error {
 		WebSearch:         buildWebSearchConfig(cfg.WebSearch),
 	}
 
+	return nil
+}
+
+func validateControllerLLMLimits(cfg *llmConfig, controllerRoot bool) error {
+	limits := []struct {
+		path  string
+		value *int
+	}{
+		{path: "llm.max_context_tokens", value: cfg.MaxContextTokens},
+		{path: "llm.observation_max_bytes", value: cfg.ObservationMaxBytes},
+		{path: "llm.observation_keep_recent", value: cfg.ObservationKeepRecent},
+	}
+	for _, limit := range limits {
+		if limit.value == nil {
+			continue
+		}
+		if !controllerRoot {
+			return core.NewValidationError(limit.path, *limit.value,
+				fmt.Errorf("field is only valid in a controller DAG's root llm configuration"))
+		}
+		if *limit.value < 0 {
+			return core.NewValidationError(limit.path, *limit.value,
+				fmt.Errorf("value must be non-negative"))
+		}
+	}
 	return nil
 }
 
