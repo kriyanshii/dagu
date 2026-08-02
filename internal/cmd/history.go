@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -367,11 +368,14 @@ func parseRelativeDuration(s string) (time.Duration, error) {
 		'w': 7 * 24 * time.Hour,
 	}
 
-	if multiplier, ok := unitMultipliers[unit]; ok {
-		return time.Duration(value) * multiplier, nil
+	multiplier, ok := unitMultipliers[unit]
+	if !ok {
+		return 0, errors.New(expectedFormat)
 	}
-
-	return 0, errors.New(expectedFormat)
+	if int64(value) > math.MaxInt64/int64(multiplier) {
+		return 0, errors.New(expectedFormat)
+	}
+	return time.Duration(value) * multiplier, nil
 }
 
 // parseAbsoluteDateTime parses absolute date/time strings in UTC.

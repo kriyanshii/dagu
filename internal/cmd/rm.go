@@ -15,7 +15,7 @@ import (
 func Rm() *cobra.Command {
 	return NewCommand(
 		&cobra.Command{
-			Use:   "rm [flags] <DAG name>",
+			Use:   "rm [flags] <DAG>",
 			Short: "Remove DAG run history and/or DAG definition",
 			Long: `Remove DAG run history and/or the DAG YAML definition.
 
@@ -31,6 +31,8 @@ Flags:
 
 Active runs are never deleted from history. Definition deletion is refused
 while the DAG has alive processes.
+
+With --definition, identify the DAG by filename, stem, or configured path.
 
 Examples:
   dagu rm -H my-workflow                 # Delete all history (with confirmation)
@@ -57,6 +59,7 @@ var rmFlags = []commandLineFlag{
 
 type rmOptions struct {
 	dagName      string
+	definitionID string
 	deleteHist   bool
 	deleteDef    bool
 	olderThan    string
@@ -83,19 +86,31 @@ func runRm(ctx *Context, args []string) error {
 		return fmt.Errorf("--older-than (-t) requires --history (-H)")
 	}
 
-	dagName, err := extractDAGName(ctx, args[0])
-	if err != nil {
-		return fmt.Errorf("failed to extract DAG name: %w", err)
+	dagName := args[0]
+	definitionID := ""
+	if deleteDef {
+		dag, err := ctx.DAGStore.GetMetadata(ctx, args[0])
+		if err != nil {
+			return fmt.Errorf("failed to resolve DAG definition %q: %w", args[0], err)
+		}
+		dagName = dag.Name
+		definitionID = args[0]
+	} else {
+		dagName, err = extractDAGName(ctx, args[0])
+		if err != nil {
+			return fmt.Errorf("failed to extract DAG name: %w", err)
+		}
 	}
 
 	return executeRm(ctx, rmOptions{
-		dagName:     dagName,
-		deleteHist:  deleteHist,
-		deleteDef:   deleteDef,
-		olderThan:   olderThan,
-		force:       force,
-		dryRun:      dryRun,
-		skipConfirm: force || ctx.Quiet,
+		dagName:      dagName,
+		definitionID: definitionID,
+		deleteHist:   deleteHist,
+		deleteDef:    deleteDef,
+		olderThan:    olderThan,
+		force:        force,
+		dryRun:       dryRun,
+		skipConfirm:  force || ctx.Quiet,
 	})
 }
 
@@ -141,7 +156,7 @@ func executeRm(ctx *Context, opts rmOptions) error {
 		if err := ensureNoAliveProcs(ctx, opts.dagName); err != nil {
 			return err
 		}
-		if err := ctx.DAGStore.Delete(ctx, opts.dagName); err != nil {
+		if err := ctx.DAGStore.Delete(ctx, opts.definitionID); err != nil {
 			return fmt.Errorf("failed to delete DAG definition %q: %w", opts.dagName, err)
 		}
 		if !ctx.Quiet {
@@ -226,21 +241,30 @@ func removeHistory(ctx *Context, opts rmOptions, extra ...exec.RemoveOldDAGRunsO
 }
 
 func ensureNoAliveProcs(ctx *Context, dagName string) error {
-	if ctx.ProcStore == nil {
+	if ctx.ProcStore != nil {
+		entries, err := ctx.ProcStore.ListAllEntries(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to check alive processes for %q: %w", dagName, err)
+		}
+
+		for _, entry := range entries {
+			if entry.Fresh && entry.Meta.Name == dagName {
+				return fmt.Errorf("cannot delete definition for %q: DAG has alive process (run-id=%s)", dagName, entry.Meta.DAGRunID)
+			}
+		}
+	}
+
+	if ctx.ActiveDistributedRunStore == nil {
 		return nil
 	}
 
-	entries, err := ctx.ProcStore.ListAllEntries(ctx)
+	runs, err := ctx.ActiveDistributedRunStore.ListAll(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to check alive processes for %q: %w", dagName, err)
+		return fmt.Errorf("failed to check active distributed runs for %q: %w", dagName, err)
 	}
-
-	for _, entry := range entries {
-		if !entry.Fresh {
-			continue
-		}
-		if entry.Meta.Name == dagName {
-			return fmt.Errorf("cannot delete definition for %q: DAG has alive process (run-id=%s)", dagName, entry.Meta.DAGRunID)
+	for _, run := range runs {
+		if run.Status.IsActive() && (run.DAGRun.Name == dagName || run.Root.Name == dagName) {
+			return fmt.Errorf("cannot delete definition for %q: DAG has active distributed run (run-id=%s)", dagName, run.DAGRun.ID)
 		}
 	}
 	return nil

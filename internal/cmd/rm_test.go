@@ -9,6 +9,7 @@ import (
 
 	"github.com/dagucloud/dagu/v2/internal/cmd"
 	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
 	"github.com/dagucloud/dagu/v2/internal/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,17 +88,18 @@ func TestRmCommand(t *testing.T) {
 		assert.Contains(t, err.Error(), "--older-than")
 	})
 
-	t.Run("DeletesDefinition", func(t *testing.T) {
+	t.Run("DeletesDefinitionWhenNameDiffersFromFile", func(t *testing.T) {
 		t.Parallel()
 
 		th := test.SetupCommand(t)
-		dag := th.DAG(t, `steps:
+		dag := th.DAG(t, `name: explicit-definition-name
+steps:
   - name: "1"
     run: echo "hello"
 `)
 
 		th.RunCommand(t, cmd.Rm(), test.CmdTest{
-			Args: []string{"rm", "--definition", "--force", dag.Name},
+			Args: []string{"rm", "--definition", "--force", dag.Location},
 		})
 
 		_, err := th.DAGStore.GetMetadata(th.Context, dag.Location)
@@ -134,6 +136,33 @@ func TestRmCommand(t *testing.T) {
 		<-done
 	})
 
+	t.Run("RefusesDefinitionDeleteForDistributedRun", func(t *testing.T) {
+		t.Parallel()
+
+		th := test.SetupCommand(t)
+		dag := th.DAG(t, `name: distributed-definition
+steps:
+  - name: "1"
+    run: echo "hello"
+`)
+		require.NoError(t, th.ActiveDistributedRunStore.Upsert(th.Context, exec.ActiveDistributedRun{
+			AttemptKey: "distributed-attempt",
+			DAGRun:     exec.NewDAGRunRef(dag.Name, "distributed-run"),
+			AttemptID:  "attempt-1",
+			WorkerID:   "worker-1",
+			Status:     core.Running,
+		}))
+
+		err := th.RunCommandWithError(t, cmd.Rm(), test.CmdTest{
+			Args: []string{"rm", "-d", "-f", dag.Location},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "active distributed run")
+
+		_, err = th.DAGStore.GetMetadata(th.Context, dag.Location)
+		require.NoError(t, err)
+	})
+
 	t.Run("InvalidOlderThan", func(t *testing.T) {
 		t.Parallel()
 
@@ -148,6 +177,27 @@ func TestRmCommand(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid --older-than")
+	})
+
+	t.Run("RejectsOlderThanOverflow", func(t *testing.T) {
+		t.Parallel()
+
+		th := test.SetupCommand(t)
+		dag := th.DAG(t, `steps:
+  - name: "1"
+    run: echo "hello"
+`)
+		th.RunCommand(t, cmd.Start(), test.CmdTest{
+			Args: []string{"start", dag.Location},
+		})
+		dag.AssertLatestStatus(t, core.Succeeded)
+
+		err := th.RunCommandWithError(t, cmd.Rm(), test.CmdTest{
+			Args: []string{"rm", "-H", "-t", "2562048h", "-f", dag.Name},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid --older-than")
+		dag.AssertDAGRunCount(t, 1)
 	})
 
 	t.Run("DryRunDoesNotDelete", func(t *testing.T) {
