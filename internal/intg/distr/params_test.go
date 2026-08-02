@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core"
-	exec1 "github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	exec1 "github.com/dagucloud/dagu/v2/internal/core/exec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -110,13 +110,7 @@ steps:
 	require.Equal(t, core.Failed, rootStatus.Status)
 	require.Len(t, rootStatus.Nodes, 1)
 	require.Equal(t, core.NodeFailed, rootStatus.Nodes[0].Status)
-	require.Len(t, rootStatus.Nodes[0].SubRuns, 1)
-
-	rootRef := exec1.NewDAGRunRef(rootStatus.Name, rootStatus.DAGRunID)
-	subRunID := rootStatus.Nodes[0].SubRuns[0].DAGRunID
-	subStatus := readDistributedSubAttemptStatus(t, f, rootRef, subRunID)
-	require.NotEqual(t, core.Succeeded, subStatus.Status)
-	require.True(t, statusErrorsContain(subStatus.Errors(), "count"), "expected child status errors to mention count")
+	require.True(t, statusErrorsContain(rootStatus.Errors(), "count"), "expected parent status errors to mention count")
 }
 
 func TestParams_DistributedQueuedRunRuntimeParams(t *testing.T) {

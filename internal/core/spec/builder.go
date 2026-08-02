@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
-	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
-	"github.com/dagucloud/dagu/internal/core"
+	cmnvalue "github.com/dagucloud/dagu/v2/internal/cmn/value"
+	"github.com/dagucloud/dagu/v2/internal/core"
 	"github.com/go-viper/mapstructure/v2"
 )
 
@@ -102,6 +102,7 @@ const (
 	BuildFlagSkipSchemaValidation
 	BuildFlagSkipBaseHandlers // Skip merging handlerOn from base config (for sub-DAG runs)
 	BuildFlagValidateRuntimeParams
+	BuildFlagDeferWorkerSelector
 )
 
 // BuildOpts is used to control the behavior of the builder.

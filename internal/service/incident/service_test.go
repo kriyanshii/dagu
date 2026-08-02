@@ -7,20 +7,24 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	incidentmodel "github.com/dagucloud/dagu/internal/incident"
-	"github.com/dagucloud/dagu/internal/service/chatbridge"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	incidentmodel "github.com/dagucloud/dagu/v2/internal/incident"
+	"github.com/dagucloud/dagu/v2/internal/service/chatbridge"
+	"github.com/dagucloud/dagu/v2/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/testutil"
 )
 
 func TestServiceNotificationDestinationsUseDAGWorkspaceGlobalInheritance(t *testing.T) {
@@ -48,7 +52,7 @@ func TestServiceNotificationDestinationsUseDAGWorkspaceGlobalInheritance(t *test
 	})
 	dagSet := store.savePolicySet(t, &incidentmodel.PolicySet{
 		Scope:         incidentmodel.PolicyScopeDAG,
-		DAGName:       "daily",
+		DAGName:       "daily-file",
 		Enabled:       true,
 		InheritParent: false,
 		Policies: []incidentmodel.Policy{{
@@ -58,13 +62,14 @@ func TestServiceNotificationDestinationsUseDAGWorkspaceGlobalInheritance(t *test
 	})
 	svc := New(store)
 	event := failedEvent("daily", "run-1")
+	event.DAGFile = "daily-file"
 	event.Status.Labels = []string{"workspace=ops"}
 
 	destinations := svc.NotificationDestinationsForEvent(event)
 	require.Len(t, destinations, 1)
 	assert.Equal(t, dagSet.Policies[0].ID, parsePolicyDestinationID(destinations[0]).PolicyID)
 
-	require.NoError(t, store.DeletePolicySet(context.Background(), incidentmodel.PolicyScopeDAG, "", "daily"))
+	require.NoError(t, store.DeletePolicySet(context.Background(), incidentmodel.PolicyScopeDAG, "", "daily-file"))
 	destinations = svc.NotificationDestinationsForEvent(event)
 	require.Len(t, destinations, 1)
 	assert.Equal(t, workspaceSet.Policies[0].ID, parsePolicyDestinationID(destinations[0]).PolicyID)
@@ -74,6 +79,9 @@ func TestServiceNotificationDestinationsUseDAGWorkspaceGlobalInheritance(t *test
 	destinations = svc.NotificationDestinationsForEvent(event)
 	require.Len(t, destinations, 1)
 	assert.Equal(t, globalSet.Policies[0].ID, parsePolicyDestinationID(destinations[0]).PolicyID)
+
+	event.Status.Labels = []string{"workspace=ops", "workspace=engineering"}
+	assert.Empty(t, svc.NotificationDestinationsForEvent(event))
 }
 
 func TestServiceSuppressesFailureIncidentUntilAutoRetriesAreExhausted(t *testing.T) {
@@ -117,8 +125,10 @@ func TestServicePagerDutyTriggerAndResolvePayloads(t *testing.T) {
 	store := newMemoryStore(t)
 	provider := store.saveProvider(t, "PagerDuty", incidentmodel.ProviderPagerDuty)
 	policySet := store.savePolicySet(t, &incidentmodel.PolicySet{
-		Scope:   incidentmodel.PolicyScopeGlobal,
-		Enabled: true,
+		Scope:         incidentmodel.PolicyScopeDAG,
+		DAGName:       "daily-file",
+		Enabled:       true,
+		InheritParent: false,
 		Policies: []incidentmodel.Policy{{
 			ProviderID:          provider.ID,
 			Enabled:             true,
@@ -131,6 +141,7 @@ func TestServicePagerDutyTriggerAndResolvePayloads(t *testing.T) {
 	})
 	svc := New(store, WithHTTPClient(client), WithPublicURL("https://dagu.example.com/workflows"))
 	failure := failedEvent("daily", "run-1")
+	failure.DAGFile = "daily-file"
 	destinations := svc.NotificationDestinationsForEvent(failure)
 	require.Len(t, destinations, 1)
 
@@ -139,13 +150,13 @@ func TestServicePagerDutyTriggerAndResolvePayloads(t *testing.T) {
 	}, false)
 	require.True(t, ok)
 
-	success := failure
-	success.Type = eventstore.TypeDAGRunSucceeded
-	success.Status = cloneStatus(failure.Status)
-	success.Status.Status = core.Succeeded
-	success.Status.Error = ""
+	recovery := failure
+	recovery.Type = eventstore.TypeDAGRunPartiallySucceeded
+	recovery.Status = cloneStatus(failure.Status)
+	recovery.Status.Status = core.PartiallySucceeded
+	recovery.Status.Error = ""
 	ok = svc.FlushNotificationBatch(context.Background(), policyDestinationID(policySet, policySet.Policies[0].ID), chatbridge.NotificationBatch{
-		Events: []chatbridge.NotificationEvent{success},
+		Events: []chatbridge.NotificationEvent{recovery},
 	}, false)
 	require.True(t, ok)
 
@@ -226,6 +237,104 @@ func TestServiceResolvesOpenIncidentAfterRoutingIsDisabled(t *testing.T) {
 	assert.Equal(t, "trigger", requests[0]["event_action"])
 	assert.Equal(t, "resolve", requests[1]["event_action"])
 	assert.Equal(t, requests[0]["dedup_key"], requests[1]["dedup_key"])
+}
+
+func TestMonitorKeepsIncidentRecoveryWithinWorkspace(t *testing.T) {
+	requests := make(chan map[string]any, 1)
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		defer func() { _ = req.Body.Close() }()
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		requests <- payload
+		return &http.Response{
+			StatusCode: http.StatusAccepted,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})}
+
+	store := newMemoryStore(t)
+	provider := store.saveProvider(t, "PagerDuty", incidentmodel.ProviderPagerDuty)
+	const (
+		opsDedupKey         = "ops-dedup-key"
+		engineeringDedupKey = "engineering-dedup-key"
+	)
+	saveOpenState := func(workspace, dedupKey string) {
+		state, err := incidentmodel.NormalizeState(&incidentmodel.IncidentState{
+			ProviderID: provider.ID,
+			PolicyID:   workspace + "-policy",
+			Workspace:  workspace,
+			DAGName:    "daily",
+			DedupKey:   dedupKey,
+			Status:     incidentmodel.IncidentStatusOpen,
+		})
+		require.NoError(t, err)
+		require.NoError(t, store.SaveState(context.Background(), state))
+	}
+	saveOpenState("ops", opsDedupKey)
+	saveOpenState("engineering", engineeringDedupKey)
+
+	svc := New(store, WithHTTPClient(client))
+	success := failedEvent("daily", "run-1")
+	success.Type = eventstore.TypeDAGRunSucceeded
+	success.Status.Status = core.Succeeded
+	success.Status.Error = ""
+	success.Status.Labels = []string{"workspace=engineering"}
+	success.DAGFile = "daily-file"
+	require.Equal(t, []string{stateDestinationID(provider.ID, engineeringDedupKey)}, svc.NotificationDestinationsForEvent(success))
+
+	eventStore := &monitorEventStore{}
+	eventService := eventstore.New(eventStore)
+	cfg := chatbridge.DefaultNotificationMonitorConfig()
+	cfg.PollInterval = 5 * time.Millisecond
+	cfg.SuccessWindow = 5 * time.Millisecond
+	cfg.UrgentWindow = 5 * time.Millisecond
+	cfg.SeenEvictInterval = time.Hour
+	monitor := chatbridge.NewNotificationMonitor(
+		eventService,
+		filepath.Join(t.TempDir(), "state.json"),
+		svc,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg,
+	)
+	stopMonitor := testutil.StartContextRunner(t, monitor)
+	defer stopMonitor()
+	require.Eventually(t, eventStore.bootstrapped, time.Second, 10*time.Millisecond)
+
+	require.NoError(t, eventService.Emit(context.Background(), eventstore.NewDAGRunEvent(
+		eventstore.Source{Service: eventstore.SourceServiceServer, Instance: "test"},
+		eventstore.TypeDAGRunSucceeded,
+		success.Status,
+		map[string]any{eventstore.DAGFileNameDataKey: "daily-file"},
+	)))
+
+	var engineeringState *incidentmodel.IncidentState
+	require.Eventually(t, func() bool {
+		var err error
+		engineeringState, err = store.GetState(context.Background(), provider.ID, engineeringDedupKey)
+		return err == nil && engineeringState.Status == incidentmodel.IncidentStatusResolved
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, "engineering-policy", engineeringState.PolicyID)
+	opsState, err := store.GetState(context.Background(), provider.ID, opsDedupKey)
+	require.NoError(t, err)
+	assert.Equal(t, incidentmodel.IncidentStatusOpen, opsState.Status)
+
+	select {
+	case request := <-requests:
+		assert.Equal(t, "resolve", request["event_action"])
+		assert.Equal(t, engineeringDedupKey, request["dedup_key"])
+	default:
+		t.Fatal("expected PagerDuty resolution request")
+	}
+
+	require.True(t, svc.FlushNotificationBatch(context.Background(), stateDestinationID(provider.ID, opsDedupKey), chatbridge.NotificationBatch{
+		Events: []chatbridge.NotificationEvent{success},
+	}, false))
+	opsState, err = store.GetState(context.Background(), provider.ID, opsDedupKey)
+	require.NoError(t, err)
+	assert.Equal(t, incidentmodel.IncidentStatusOpen, opsState.Status)
 }
 
 func TestServiceReopenedIncidentUsesFreshOpenedAt(t *testing.T) {
@@ -391,4 +500,50 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
+}
+
+type monitorEventStore struct {
+	mu        sync.Mutex
+	events    []*eventstore.Event
+	headCalls int
+}
+
+var _ eventstore.Store = (*monitorEventStore)(nil)
+var _ eventstore.NotificationReader = (*monitorEventStore)(nil)
+
+func (s *monitorEventStore) Emit(_ context.Context, event *eventstore.Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, event)
+	return nil
+}
+
+func (s *monitorEventStore) Query(context.Context, eventstore.QueryFilter) (*eventstore.QueryResult, error) {
+	return &eventstore.QueryResult{}, nil
+}
+
+func (s *monitorEventStore) NotificationHeadCursor(context.Context) (eventstore.NotificationCursor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.headCalls++
+	return s.cursor(), nil
+}
+
+func (s *monitorEventStore) ReadNotificationEvents(_ context.Context, cursor eventstore.NotificationCursor) ([]*eventstore.Event, eventstore.NotificationCursor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := int(cursor.Normalize().CommittedOffsets["events"])
+	return append([]*eventstore.Event(nil), s.events[index:]...), s.cursor(), nil
+}
+
+func (s *monitorEventStore) bootstrapped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.headCalls > 0
+}
+
+func (s *monitorEventStore) cursor() eventstore.NotificationCursor {
+	return eventstore.NotificationCursor{
+		CommittedOffsets: map[string]int64{"events": int64(len(s.events))},
+	}
 }

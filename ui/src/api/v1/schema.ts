@@ -2615,6 +2615,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/license/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get license status
+         * @description Returns the current public license status without exposing license credentials.
+         */
+        get: operations["getLicenseStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/license/activate": {
         parameters: {
             query?: never;
@@ -3557,7 +3577,7 @@ export interface components {
          */
         NotificationProviderType: NotificationProviderType;
         /**
-         * @description DAG run event that can trigger server-side notifications
+         * @description DAG run event that can trigger server-side notifications. Rules configured for dag.run.succeeded also match dag.run.partially_succeeded; rules configured only for dag.run.partially_succeeded do not match clean successes.
          * @enum {string}
          */
         NotificationEventType: NotificationEventType;
@@ -5213,6 +5233,29 @@ export interface components {
              */
             expiresAt: string;
             user: components["schemas"]["User"];
+        };
+        /** @description Public status of the current Dagu license */
+        LicenseStatusResponse: {
+            /** @description Whether the loaded license token has not expired */
+            valid: boolean;
+            /** @description License plan name */
+            plan: string;
+            /** @description License expiration timestamp, or empty for a perpetual or absent license */
+            expiry: string;
+            /** @description Feature claims included in the license */
+            features: string[];
+            /** @description Whether the license is expired but still inside its grace period */
+            gracePeriod: boolean;
+            /** @description Grace-period end timestamp, or empty when the license has no expiration */
+            graceEndsAt: string;
+            /** @description Whether no license claims are loaded */
+            community: boolean;
+            /** @description Public license source category */
+            source: string;
+            /** @description Warning code included in the license token */
+            warningCode: string;
+            /** @description User-facing explanation when a configured license is unusable */
+            error: string;
         };
         /** @description Request body for changing password */
         ChangePasswordRequest: {
@@ -14142,6 +14185,38 @@ export interface operations {
             };
         };
     };
+    getLicenseStatus: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current license status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LicenseStatusResponse"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     activateLicense: {
         parameters: {
             query?: {
@@ -16735,6 +16810,7 @@ export enum NotificationProviderType {
 export enum NotificationEventType {
     dag_run_waiting = "dag.run.waiting",
     dag_run_succeeded = "dag.run.succeeded",
+    dag_run_partially_succeeded = "dag.run.partially_succeeded",
     dag_run_failed = "dag.run.failed",
     dag_run_aborted = "dag.run.aborted",
     dag_run_rejected = "dag.run.rejected"

@@ -10,21 +10,21 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/license"
-	"github.com/dagucloud/dagu/internal/persis/file"
-	"github.com/dagucloud/dagu/internal/runtime"
-	"github.com/dagucloud/dagu/internal/service/chatbridge"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
-	incidentservice "github.com/dagucloud/dagu/internal/service/incident"
-	notificationservice "github.com/dagucloud/dagu/internal/service/notification"
-	"github.com/dagucloud/dagu/internal/service/scheduler"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/crypto"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/license"
+	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/service/chatbridge"
+	"github.com/dagucloud/dagu/v2/internal/service/eventstore"
+	incidentservice "github.com/dagucloud/dagu/v2/internal/service/incident"
+	notificationservice "github.com/dagucloud/dagu/v2/internal/service/notification"
+	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
 )
 
 // SchedulerConfig contains the wiring needed to construct the scheduler process role.
@@ -57,7 +57,11 @@ func NewScheduler(cfg SchedulerConfig) (*scheduler.Scheduler, error) {
 	}
 
 	coordinatorClient := NewCoordinatorClient(ctx, cfg.Config, cfg.ServiceRegistry)
-	entryReader := scheduler.NewEntryReader(cfg.Config.Paths.DAGsDir, dagStore)
+	entryReader := scheduler.NewEntryReader(
+		cfg.Config.Paths.DAGsDir,
+		dagStore,
+		cfg.Config.DAGDiscovery.Recursive,
+	)
 	watermarkStore := scheduler.NewWatermarkStore(
 		file.NewCollection(filepath.Join(cfg.Config.Paths.DataDir, "scheduler"), file.WithIndentedJSON()),
 	)
@@ -192,6 +196,7 @@ func newIncidentMonitor(
 	monitorConfig.InterestedEventTypes = []eventstore.EventType{
 		eventstore.TypeDAGRunFailed,
 		eventstore.TypeDAGRunSucceeded,
+		eventstore.TypeDAGRunPartiallySucceeded,
 	}
 	return chatbridge.NewNotificationMonitor(
 		eventService,

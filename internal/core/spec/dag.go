@@ -4,6 +4,7 @@
 package spec
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,10 +19,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
-	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/spec/types"
+	"github.com/dagucloud/dagu/v2/internal/cmn/cmdutil"
+	cmnvalue "github.com/dagucloud/dagu/v2/internal/cmn/value"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/core/spec/types"
 	"github.com/go-viper/mapstructure/v2"
 )
 
@@ -739,6 +740,75 @@ func (s *dagBuildState) composeInheritedContext() {
 	s.result = merged
 }
 
+func (s *dagBuildState) resolveWorkerSelector() {
+	if s.ctx.opts.Has(BuildFlagNoEval) ||
+		s.ctx.opts.Has(BuildFlagDeferWorkerSelector) ||
+		len(s.result.WorkerSelector) == 0 {
+		return
+	}
+
+	scope := cmnvalue.NewEnvScope(nil, true)
+	if len(s.ctx.opts.BuildEnv) > 0 {
+		scope = scope.WithEntries(s.ctx.opts.BuildEnv, cmnvalue.EnvSourceDotEnv)
+	}
+	for _, p := range s.result.Params {
+		if k, v, ok := strings.Cut(p, "="); ok {
+			scope = scope.WithEntry(k, v, cmnvalue.EnvSourceParam)
+		}
+	}
+	// Merged env is ordered base-config entries first, DAG's own entries after,
+	// so the DAG's own values win.
+	for _, e := range s.result.Env {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			scope = scope.WithEntry(k, v, cmnvalue.EnvSourceDAGEnv)
+		}
+	}
+
+	consts := s.ctx.envScope.consts
+	resolver := cmnvalue.NewResolver(
+		cmnvalue.StaticScope{Consts: cmnvalue.Values(consts), Params: s.result.ParamDeclarations()},
+		cmnvalue.RuntimeScope{
+			Consts:     cmnvalue.Values(consts),
+			Params:     s.result.ParamValues(),
+			ParamsJSON: s.result.ParamsJSON,
+			Env:        scope,
+		},
+		cmnvalue.WithValueReferenceNotices(buildNoticeSink(s.ctx.valueReferenceNotices)),
+	)
+
+	evalCtx := s.ctx.ctx
+	if evalCtx == nil {
+		evalCtx = context.Background()
+	}
+	field := cmnvalue.WorkflowField("worker_selector")
+	resolved := make(map[string]string, len(s.result.WorkerSelector))
+	for k, v := range s.result.WorkerSelector {
+		resolvedKey, err := resolver.String(evalCtx, k, field)
+		if err != nil {
+			s.errs = append(s.errs, core.NewValidationError("worker_selector", k, err))
+			return
+		}
+		resolvedVal, err := resolver.String(evalCtx, v, field)
+		if err != nil {
+			s.errs = append(s.errs, core.NewValidationError("worker_selector", v, err))
+			return
+		}
+		key := strings.TrimSpace(resolvedKey)
+		if key == "" {
+			err := fmt.Errorf("key %q resolved to an empty key", k)
+			s.errs = append(s.errs, core.NewValidationError("worker_selector", k, err))
+			return
+		}
+		if _, ok := resolved[key]; ok {
+			err := fmt.Errorf("keys resolve to duplicate key %q", key)
+			s.errs = append(s.errs, core.NewValidationError("worker_selector", k, err))
+			return
+		}
+		resolved[key] = strings.TrimSpace(resolvedVal)
+	}
+	s.result.WorkerSelector = resolved
+}
+
 func (s *dagBuildState) collectWarnings() {
 	s.result.BuildWarnings = nil
 
@@ -846,6 +916,7 @@ func (d *dag) build(ctx BuildContext) (*core.DAG, error) {
 	state.prepareParamEnvStage()
 	state.runFieldStages()
 	state.composeInheritedContext()
+	state.resolveWorkerSelector()
 	state.markEnvEvaluated()
 	state.collectWarnings()
 	state.buildActionGraph()

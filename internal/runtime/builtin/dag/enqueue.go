@@ -15,15 +15,15 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core"
-	exec1 "github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/core/spec"
-	"github.com/dagucloud/dagu/internal/dagrun/intake"
-	"github.com/dagucloud/dagu/internal/runtime"
-	"github.com/dagucloud/dagu/internal/runtime/executor"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/core"
+	exec1 "github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/core/spec"
+	"github.com/dagucloud/dagu/v2/internal/dagrun/intake"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/runtime/executor"
 )
 
 const dagEnqueueQueueConfigKey = "queue"
@@ -216,7 +216,7 @@ func (e *enqueueExecutor) enqueueOne(ctx context.Context, runParams executor.Run
 		}
 	}()
 
-	if err := validateSubDAG(child.DAG, target, e.step.WorkerSelector); err != nil {
+	if err := validateSubDAG(child.DAG, target, nil); err != nil {
 		return enqueueRunOutput{}, err
 	}
 
@@ -228,8 +228,11 @@ func (e *enqueueExecutor) enqueueOne(ctx context.Context, runParams executor.Run
 	}
 	dagCopy = dagCopy.Clone()
 	dagCopy.Location = ""
-	if len(e.step.WorkerSelector) > 0 {
-		dagCopy.WorkerSelector = maps.Clone(e.step.WorkerSelector)
+	if len(runParams.WorkerSelector) > 0 {
+		dagCopy.WorkerSelector = maps.Clone(runParams.WorkerSelector)
+	}
+	if err := validateSubDAG(dagCopy, target, dagCopy.WorkerSelector); err != nil {
+		return enqueueRunOutput{}, err
 	}
 
 	queueName := dagCopy.ProcGroup()

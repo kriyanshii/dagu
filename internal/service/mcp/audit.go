@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/service/audit"
-	frontendapi "github.com/dagucloud/dagu/internal/service/frontend/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/service/audit"
+	frontendapi "github.com/dagucloud/dagu/v2/internal/service/frontend/api/v1"
 	"github.com/google/uuid"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -208,6 +208,9 @@ func readAuditMetadata(input readInput) toolAuditMetadata {
 	if input.DAGRunID != "" {
 		attrs["dag_run_id"] = input.DAGRunID
 	}
+	if input.StepName != "" {
+		attrs["step_name"] = input.StepName
+	}
 	if keys := queryKeys(input.Query); len(keys) > 0 {
 		attrs["query_keys"] = keys
 	}
@@ -362,13 +365,15 @@ func (svc *Service) readResource(ctx context.Context, req *mcpsdk.ReadResourceRe
 	successDetails["duration_ms"] = time.Since(start).Milliseconds()
 	successDetails["mime_type"] = mime
 	logMCPAudit(ctx, svc.api, "mcp.resource.read.succeeded", successDetails)
-	return &mcpsdk.ReadResourceResult{
-		Contents: []*mcpsdk.ResourceContents{{
-			URI:      req.Params.URI,
-			MIMEType: mime,
-			Text:     text,
-		}},
-	}, nil
+	content := &mcpsdk.ResourceContents{
+		URI:      req.Params.URI,
+		MIMEType: mime,
+		Text:     text,
+	}
+	if req.Params.URI == runInspectorURI {
+		content.Meta = runInspectorResourceMeta()
+	}
+	return &mcpsdk.ReadResourceResult{Contents: []*mcpsdk.ResourceContents{content}}, nil
 }
 
 func withMCPResourceSourceContext(ctx context.Context, req *mcpsdk.ReadResourceRequest) context.Context {
@@ -401,7 +406,9 @@ func withMCPUnsubscribeSourceContext(ctx context.Context, req *mcpsdk.Unsubscrib
 func resourceAuditDetails(rawURI string) map[string]any {
 	resourceType := "resource"
 	resourceID := sanitizeAuditString(rawURI, 256)
-	if parsed, err := url.Parse(rawURI); err == nil && parsed.Scheme == "dagu" {
+	if parsed, err := url.Parse(rawURI); err == nil && parsed.Scheme == "ui" {
+		resourceType = "mcp_app"
+	} else if err == nil && parsed.Scheme == "dagu" {
 		segments, _ := uriPathSegments(parsed)
 		switch parsed.Host {
 		case "reference":
@@ -413,16 +420,19 @@ func resourceAuditDetails(rawURI string) map[string]any {
 			}
 		case "runs":
 			resourceType = "dag_run"
-			if len(segments) == 3 {
+			if isStepLogResourceSegments(segments) {
+				resourceType = "dag_run_step_log"
+				resourceID = segments[0] + "/" + segments[1] + "/" + segments[3]
+			} else if len(segments) == 3 {
 				resourceType = "dag_run_logs"
 			}
-			if len(segments) >= 2 {
+			if len(segments) >= 2 && !isStepLogResourceSegments(segments) {
 				resourceID = segments[0] + "/" + segments[1]
 			}
 		}
 	}
 	return map[string]any{
 		"resource_type": resourceType,
-		"resource_id":   resourceID,
+		"resource_id":   sanitizeAuditString(resourceID, 256),
 	}
 }

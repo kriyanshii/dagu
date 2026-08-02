@@ -17,9 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/incident"
+	"github.com/dagucloud/dagu/v2/internal/cmn/crypto"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/incident"
 )
 
 const (
@@ -243,7 +243,7 @@ func (s *Store) GetState(_ context.Context, providerID, dedupKey string) (*incid
 	return state, nil
 }
 
-func (s *Store) ListOpenStatesByDAG(_ context.Context, dagName string) ([]*incident.IncidentState, error) {
+func (s *Store) ListOpenStates(_ context.Context) ([]*incident.IncidentState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	entries, err := os.ReadDir(s.stateDir())
@@ -262,7 +262,7 @@ func (s *Store) ListOpenStatesByDAG(_ context.Context, dagName string) ([]*incid
 		if err != nil {
 			return nil, err
 		}
-		if state.DAGName != dagName || state.Status != incident.IncidentStatusOpen {
+		if state.Status != incident.IncidentStatusOpen {
 			continue
 		}
 		states = append(states, state)

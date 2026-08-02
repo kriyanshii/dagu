@@ -28,6 +28,7 @@ export type LicenseStatus = {
   community: boolean;
   source: string;
   warningCode: string;
+  error?: string;
 };
 
 export type WorkspaceResponse = components['schemas']['WorkspaceResponse'];

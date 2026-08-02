@@ -155,6 +155,16 @@ Flags:
 - `--older-than/-t` — With `--history`: delete runs older than a duration (e.g. `10d`, `24h`, `1w`). Omitted = delete all history
 - `--force/-f` — Skip confirmation prompt
 
+### dagu ps
+
+List running DAG processes.
+
+```sh
+dagu ps [-d <dag-name>] [-r <run-id>]
+```
+
+`-r`/`--run-id` accepts a partial run ID and matches accordingly.
+
 ### dagu cleanup
 
 Remove old DAG run history. Active runs are never deleted.

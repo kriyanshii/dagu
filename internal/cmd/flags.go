@@ -4,7 +4,7 @@
 package cmd
 
 import (
-	"github.com/dagucloud/dagu/internal/cmn/stringutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -354,6 +354,18 @@ var (
 		shorthand: "f",
 		usage:     "Skip confirmation prompt",
 		isBool:    true,
+	}
+
+	psDAGFlag = commandLineFlag{
+		name:      "dag",
+		shorthand: "d",
+		usage:     "Filter by DAG name",
+	}
+
+	psRunIDFlag = commandLineFlag{
+		name:      "run-id",
+		shorthand: "r",
+		usage:     "Filter by run ID (partial match supported)",
 	}
 )
 

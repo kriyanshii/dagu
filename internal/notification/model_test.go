@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/service/eventstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -332,10 +332,16 @@ func TestIsRouteEventEnabledDefaultsToOperationalEvents(t *testing.T) {
 	assert.True(t, IsRouteEventEnabled(routeSet, route, eventstore.TypeDAGRunFailed))
 	assert.True(t, IsRouteEventEnabled(routeSet, route, eventstore.TypeDAGRunWaiting))
 	assert.False(t, IsRouteEventEnabled(routeSet, route, eventstore.TypeDAGRunSucceeded))
+	assert.False(t, IsRouteEventEnabled(routeSet, route, eventstore.TypeDAGRunPartiallySucceeded))
 
 	route.Events = []eventstore.EventType{eventstore.TypeDAGRunSucceeded}
 	assert.False(t, IsRouteEventEnabled(routeSet, route, eventstore.TypeDAGRunFailed))
 	assert.True(t, IsRouteEventEnabled(routeSet, route, eventstore.TypeDAGRunSucceeded))
+	assert.True(t, IsRouteEventEnabled(routeSet, route, eventstore.TypeDAGRunPartiallySucceeded))
+
+	route.Events = []eventstore.EventType{eventstore.TypeDAGRunPartiallySucceeded}
+	assert.False(t, IsRouteEventEnabled(routeSet, route, eventstore.TypeDAGRunSucceeded))
+	assert.True(t, IsRouteEventEnabled(routeSet, route, eventstore.TypeDAGRunPartiallySucceeded))
 }
 
 func TestPreserveWorkspaceSecrets(t *testing.T) {

@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -202,6 +202,11 @@ func (l *ConfigLoader) Load() (*Config, error) {
 		}
 	}
 
+	var configFilesUsed []string
+	if l.v.ConfigFileUsed() != "" {
+		configFilesUsed = append(configFilesUsed, l.v.ConfigFileUsed())
+	}
+
 	if err := checkForLegacyKeys(l.v); err != nil {
 		return nil, err
 	}
@@ -223,6 +228,7 @@ func (l *ConfigLoader) Load() (*Config, error) {
 			return nil, fmt.Errorf("failed to read admin config: %w", err)
 		}
 	} else if l.requires(SectionServer) {
+		configFilesUsed = append(configFilesUsed, l.v.ConfigFileUsed())
 		if err := l.mergeTrustedProxyMappingsFile(l.v.ConfigFileUsed()); err != nil {
 			return nil, err
 		}
@@ -251,6 +257,13 @@ func (l *ConfigLoader) Load() (*Config, error) {
 	}
 
 	cfg.Paths.ConfigFileUsed = configFileUsed
+	for _, filename := range configFilesUsed {
+		resolved, err := l.resolvePath("config file", filename)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Paths.ConfigFilesUsed = append(cfg.Paths.ConfigFilesUsed, resolved)
+	}
 	l.finalizeBaseEnv(cfg)
 	cfg.Notices = l.notices
 	cfg.Warnings = l.warnings
@@ -342,6 +355,9 @@ func (l *ConfigLoader) loadCoreConfig(cfg *Config, def Definition) error {
 		EnvPassthroughPrefixes: envPassthroughPrefixes,
 		BaseEnv:                baseEnv,
 		Peer:                   l.loadPeerConfig(def.Peer),
+	}
+	cfg.DAGDiscovery = DAGDiscoveryConfig{
+		Recursive: l.v.GetBool("dag_discovery.recursive"),
 	}
 
 	if err := setTimezone(&cfg.Core); err != nil {
@@ -442,9 +458,30 @@ func (l *ConfigLoader) loadSecretsConfig(cfg *Config, def Definition) {
 	}
 
 	if def.Secrets.Vault != nil {
+		vaultCACert := def.Secrets.Vault.CACert
+		if resolved, err := l.resolvePath("secrets.vault.ca_cert", vaultCACert); err != nil {
+			l.warnings = append(l.warnings, err.Error())
+		} else {
+			vaultCACert = resolved
+		}
+		vaultClientCert := def.Secrets.Vault.ClientCert
+		if resolved, err := l.resolvePath("secrets.vault.client_cert", vaultClientCert); err != nil {
+			l.warnings = append(l.warnings, err.Error())
+		} else {
+			vaultClientCert = resolved
+		}
+		vaultClientKey := def.Secrets.Vault.ClientKey
+		if resolved, err := l.resolvePath("secrets.vault.client_key", vaultClientKey); err != nil {
+			l.warnings = append(l.warnings, err.Error())
+		} else {
+			vaultClientKey = resolved
+		}
 		cfg.Secrets.Vault = VaultSecretsConfig{
-			Address: def.Secrets.Vault.Address,
-			Token:   def.Secrets.Vault.Token,
+			Address:    def.Secrets.Vault.Address,
+			Token:      def.Secrets.Vault.Token,
+			CACert:     vaultCACert,
+			ClientCert: vaultClientCert,
+			ClientKey:  vaultClientKey,
 		}
 	}
 
@@ -1860,6 +1897,7 @@ func (l *ConfigLoader) setupViper(xdgConfig XDGConfig, homeDir, configFile, appH
 func (l *ConfigLoader) setViperDefaultValues(paths Paths) {
 	// Paths
 	l.v.SetDefault("skip_examples", false)
+	l.v.SetDefault("dag_discovery.recursive", false)
 	l.v.SetDefault("paths.dags_dir", paths.DAGsDir)
 	l.v.SetDefault("paths.suspend_flags_dir", paths.SuspendFlagsDir)
 	l.v.SetDefault("paths.data_dir", paths.DataDir)
@@ -1981,12 +2019,16 @@ var envBindings = []envBinding{
 	// Core
 	{key: "default_shell", env: "DEFAULT_SHELL"},
 	{key: "skip_examples", env: "SKIP_EXAMPLES"},
+	{key: "dag_discovery.recursive", env: "DAG_DISCOVERY_RECURSIVE"},
 	{key: "env_passthrough", env: "ENV_PASSTHROUGH"},
 	{key: "env_passthrough_prefixes", env: "ENV_PASSTHROUGH_PREFIXES"},
 
 	// Secrets
 	{key: "secrets.vault.address", env: "SECRETS_VAULT_ADDRESS"},
 	{key: "secrets.vault.token", env: "SECRETS_VAULT_TOKEN"},
+	{key: "secrets.vault.ca_cert", env: "SECRETS_VAULT_CA_CERT", isPath: true},
+	{key: "secrets.vault.client_cert", env: "SECRETS_VAULT_CLIENT_CERT", isPath: true},
+	{key: "secrets.vault.client_key", env: "SECRETS_VAULT_CLIENT_KEY", isPath: true},
 	{key: "secrets.kubernetes.namespace", env: "SECRETS_KUBERNETES_NAMESPACE"},
 	{key: "secrets.kubernetes.kubeconfig", env: "SECRETS_KUBERNETES_KUBECONFIG", isPath: true},
 	{key: "secrets.kubernetes.context", env: "SECRETS_KUBERNETES_CONTEXT"},
