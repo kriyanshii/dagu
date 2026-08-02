@@ -26,12 +26,13 @@ func Ls() *cobra.Command {
 			Long: `List DAG definitions with optional enrichment and sorting.
 
 Optional pattern filters by DAG name or file name (substring match).
+This command only lists DAGs from the local Dagu installation.
 
 Flags:
   -n, --next         Show next scheduled run time
   -l, --last         Show last run status and time
   -H, --history      Show a compact recent-history summary
-  -t, --sort-last    Sort by last run time
+  -t, --sort-last    Sort by last run time, newest first
   -r, --reverse      Reverse sort order
 
 Examples:
@@ -81,12 +82,14 @@ func runLs(ctx *Context, args []string) error {
 		return fmt.Errorf("DAG store is not available")
 	}
 
+	now := time.Now()
 	pg := exec.NewPaginator(1, int(^uint(0)>>1))
 	listOpts := exec.ListDAGsOptions{
 		Paginator: &pg,
 		Name:      pattern,
 		Sort:      "name",
 		Order:     "asc",
+		Time:      &now,
 	}
 	if showNext && !sortLast {
 		listOpts.Sort = "nextRun"
@@ -107,7 +110,6 @@ func runLs(ctx *Context, args []string) error {
 
 	needEnrich := showLast || showHistory || sortLast
 	rows := make([]lsRow, 0, len(result.Items))
-	now := time.Now()
 	for _, dag := range result.Items {
 		row := lsRow{dag: dag}
 		if showNext {
@@ -120,31 +122,34 @@ func runLs(ctx *Context, args []string) error {
 	}
 
 	if sortLast {
-		sort.SliceStable(rows, func(i, j int) bool {
-			ti, tj := rows[i].lastTime, rows[j].lastTime
-			if ti.Equal(tj) {
-				nameI := strings.ToLower(rows[i].dag.Name)
-				nameJ := strings.ToLower(rows[j].dag.Name)
-				if reverse {
-					return nameI > nameJ
-				}
-				return nameI < nameJ
-			}
-			if reverse {
-				return ti.After(tj)
-			}
-			// Default: oldest last-run first; zero times last
-			if ti.IsZero() {
-				return false
-			}
-			if tj.IsZero() {
-				return true
-			}
-			return ti.Before(tj)
-		})
+		sortLsRowsByLastRun(rows, reverse)
 	}
 
 	return renderLsTable(ctx.Command.OutOrStdout(), rows, showNext, showLast, showHistory)
+}
+
+func sortLsRowsByLastRun(rows []lsRow, reverse bool) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		ti, tj := rows[i].lastTime, rows[j].lastTime
+		if ti.Equal(tj) {
+			nameI := strings.ToLower(rows[i].dag.Name)
+			nameJ := strings.ToLower(rows[j].dag.Name)
+			if reverse {
+				return nameI > nameJ
+			}
+			return nameI < nameJ
+		}
+		if ti.IsZero() {
+			return false
+		}
+		if tj.IsZero() {
+			return true
+		}
+		if reverse {
+			return ti.Before(tj)
+		}
+		return ti.After(tj)
+	})
 }
 
 func enrichLsRow(ctx *Context, row *lsRow, wantLast, wantHistory bool) {

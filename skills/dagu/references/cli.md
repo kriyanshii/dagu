@@ -144,6 +144,8 @@ Default: shows runs from the last 30 days, newest first.
 
 List DAG definitions.
 
+This command is local-only. If a remote CLI context is selected, use `--context local`.
+
 ```sh
 dagu ls [flags] [pattern]
 ```
@@ -153,7 +155,7 @@ Flags:
 - `--next/-n` — Show next scheduled run time
 - `--last/-l` — Show last run status and time
 - `--history/-H` — Show a compact recent-history summary
-- `--sort-last/-t` — Sort by last run time
+- `--sort-last/-t` — Sort by last run time, newest first
 - `--reverse/-r` — Reverse sort order
 
 ### dagu rm

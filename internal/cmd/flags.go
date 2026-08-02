@@ -353,7 +353,7 @@ var (
 	lsSortLastFlag = commandLineFlag{
 		name:      "sort-last",
 		shorthand: "t",
-		usage:     "Sort by last run time",
+		usage:     "Sort by last run time, newest first",
 		isBool:    true,
 	}
 
