@@ -332,7 +332,7 @@ var (
 	lsNextFlag = commandLineFlag{
 		name:      "next",
 		shorthand: "n",
-		usage:     "Show next scheduled run time for cron DAGs",
+		usage:     "Show next scheduled run time",
 		isBool:    true,
 	}
 
