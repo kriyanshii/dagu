@@ -5,8 +5,6 @@
   <p>
     <a href="https://docs.dagu.sh">Docs</a> ·
     <a href="https://docs.dagu.sh/writing-workflows/examples">Examples</a> ·
-    <a href="https://dagu-demo-f5e33d0e.dagu.sh">Live demo</a>
-    <code>(username/password: demouser)</code> ·
     <a href="https://discord.gg/gpahPUjGRk">Discord</a>
   </p>
 </div>
@@ -97,8 +95,6 @@ Click the image to watch the short product walkthrough.
 | Run details | Step logs |
 |---|---|
 | ![Run details in dark mode](./assets/images/readme-run-details-dark.png) | ![Workflow logs in dark mode](./assets/images/readme-logs-dark.png) |
-
-You can also open the [live demo](https://dagu-demo-f5e33d0e.dagu.sh) and sign in with username `demouser` and password `demouser`.
 
 ## Why Dagu
 
@@ -208,7 +204,6 @@ See the [MCP guide](https://docs.dagu.sh/mcp/quickstart).
 | Single server | One `dagu start-all` process | Development, scheduled jobs, and internal automation |
 | Self-hosted workers | Server and workers on your infrastructure | Private networks, heavier workloads, and multiple execution hosts |
 | Licensed self-hosted | Server and workers on your infrastructure, with a paid server license | Teams that need SSO, RBAC, audit logs, incident routing, additional API keys, and support; see [plans and pricing](https://dagu.sh/pricing#self-host) |
-| Managed | A dedicated managed Dagu instance, with optional private workers | Teams that want Dagu operated for them |
 
 The same YAML works across these models. See [deployment models](https://docs.dagu.sh/overview/deployment-models) for the architecture, security boundaries, and setup details.
 
