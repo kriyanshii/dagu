@@ -140,6 +140,24 @@ Flags:
 
 Default: shows runs from the last 30 days, newest first.
 
+### dagu ls
+
+List DAG definitions.
+
+This command is local-only. If a remote CLI context is selected, use `--context local`.
+
+```sh
+dagu ls [flags] [pattern]
+```
+
+Flags:
+
+- `--next/-n` — Show next scheduled run time
+- `--last/-l` — Show last run status and time
+- `--history/-H` — Show a compact recent-history summary
+- `--sort-last/-t` — Sort by last run time, newest first
+- `--reverse/-r` — Reverse sort order
+
 ### dagu rm
 
 Remove DAG run history and/or the DAG YAML definition. At least one of `--history` or `--definition` is required. Active runs are never deleted from history; definition deletion is refused while the DAG has alive processes. With `--definition`, identify the DAG by filename, stem, or configured path.
