@@ -85,7 +85,7 @@ func runRm(ctx *Context, args []string) error {
 		return fmt.Errorf("--older-than (-t) requires --history (-H)")
 	}
 
-	dagName := args[0]
+	var dagName string
 	definitionID := ""
 	if deleteDef {
 		dag, err := ctx.DAGStore.GetMetadata(ctx, args[0])
