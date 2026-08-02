@@ -197,59 +197,6 @@ steps:
 
 Complete the task from a local CLI context with `dagu human-task complete --run-id=<run-id> --step=review --input environment=production <dag-name>`. A form is optional for acknowledgement-only tasks. Human tasks cannot be used in sub-DAGs; a distributed root run is re-queued through the scheduler after completion.
 
-## Example of a Controller Workflow
-
-```yaml
-type: controller
-
-env:
-  - ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-
-llm:
-  provider: anthropic
-  model: claude-sonnet-4-20250514
-  system: |
-    Never ask for sign-off on a red build.
-
-steps:
-  - name: run_tests
-    description: Run the test suite.
-    run: |
-      test -f /tmp/dagu-flaky-cleared || { echo "FAIL: flaky_test timed out"; exit 1; }
-      echo "all green"
-
-  - name: fix_flaky
-    description: Quarantine the known flaky test.
-    run: |
-      touch /tmp/dagu-flaky-cleared
-      echo "quarantined flaky_test"
-
-  - id: sign_off
-    name: sign_off
-    action: human.task
-    with:
-      prompt: Tests are green. Ship it?
-      form:
-        type: object
-        properties:
-          approved: { type: boolean }
-        required: [approved]
-
-tasks:
-  - name: tests_green
-    description: Finished when run_tests succeeded on its most recent run.
-  - name: approved
-    description: Finished when a person answered sign_off with approved=true.
-```
-
-Use `type: controller` only when the step order cannot be written down in advance. `steps` become a catalog of actions the model may pick; `tasks` are the goals and the termination condition. `llm` and a non-empty `tasks` are required, `depends` and router steps are rejected, and `__controller__` and `ask_user` are reserved names.
-
-A `dag.run` step advertises its target's parameters as tool arguments. Write a named value in `params` for anything the model should not decide: a parameter the step supplies is not advertised and cannot be overridden. Positional child parameters are rejected in controller DAGs because tool arguments are identified by name.
-
-The model settles each task with `set_task_status`, choosing `completed`, `skipped` when nothing needed doing, `failed` when it cannot be achieved, or `open` to undo an earlier decision. The run ends once no task is open, and fails if any is failed. It can also call `ask_user` to put a question of its own to a person, which suspends the run exactly like a declared human task.
-
-Bind API keys with `env:` as shown. Dagu only propagates `DAGU_*`, `DAG_*`, `LC_*`, and `KUBERNETES_*` from the shell, so an exported key alone never reaches the provider.
-
 ## Reference Guide
 
 Load only the file you need:
@@ -904,7 +851,7 @@ Harness behavior:
 - Built-in provider adapters and custom providers pass non-reserved `with` keys as CLI flags. Built-in adapters normalize `snake_case` keys to kebab-case flags.
 - `fallback` is an ordered list of provider configs. Nested fallback is not supported.
 - Provider value references must resolve to a concrete provider string before execution. Unresolved `${...}` provider values fail at runtime.
-- Prefer `action: harness.run` for new workflows. A top-level `harness:` config still causes steps without an explicit executor type to infer the harness executor for compatibility.
+- A harness step is named with `action: harness.run`. A top-level `harness:` config supplies defaults to those steps and does not set the type of any other step, so a step written with `run:`, `exec:`, or `script:` under one stays a local command.
 
 Container support:
 
@@ -1258,9 +1205,55 @@ Flags:
 
 Default: shows runs from the last 30 days, newest first.
 
+### dagu ls
+
+List DAG definitions.
+
+This command is local-only. If a remote CLI context is selected, use `--context local`.
+
+```sh
+dagu ls [flags] [pattern]
+```
+
+Flags:
+
+- `--next/-n` — Show next scheduled run time
+- `--last/-l` — Show last run status and time
+- `--history/-H` — Show a compact recent-history summary
+- `--sort-last/-t` — Sort by last run time, newest first
+- `--reverse/-r` — Reverse sort order
+
+### dagu rm
+
+Remove DAG run history and/or the DAG YAML definition. At least one of `--history` or `--definition` is required. Active runs are never deleted from history; definition deletion is refused while the DAG has alive processes. With `--definition`, identify the DAG by filename, stem, or configured path.
+
+```sh
+dagu rm [--history|-H] [--definition|-d] [-t <duration>] [-f] [--dry-run] <dag>
+```
+
+Flags:
+
+- `--history/-H` — Delete run history
+- `--definition/-d` — Delete the DAG YAML definition
+- `--older-than/-t` — With `--history`: delete runs older than a duration (e.g. `10d`, `24h`, `1w`). Omitted = delete all history
+- `--force/-f` — Skip confirmation prompt
+- `--dry-run` — Preview deletions without removing history or the definition
+
+### dagu ps
+
+List running DAG processes.
+
+```sh
+dagu ps [-d <dag-name>] [-r <run-id>]
+```
+
+`-r`/`--run-id` accepts a partial run ID and matches accordingly.
+
 ### dagu cleanup
 
 Remove old DAG run history. Active runs are never deleted.
+
+Deprecated: prefer `dagu rm --history`.
 
 ```sh
 dagu cleanup <dag-name> [--retention-days <n>] [--dry-run] [--yes/-y]
@@ -1516,6 +1509,8 @@ Use `action: harness.run` to invoke external coding-agent CLIs from DAG steps. D
 
 Codex defaults to `skip_git_repo_check: true`, so its default invocation includes `--skip-git-repo-check`. Set `skip_git_repo_check: false` or `skip-git-repo-check: false` to omit it.
 
+Claude's `bare` flag skips keychain reads among other things, so a subscription login is invisible to the step and the run fails with `Not logged in`. Set it only when the credential comes from `ANTHROPIC_API_KEY` in the step environment.
+
 For host subprocess runs, built-in provider adapters resolve binaries through `PATH`. Host custom harnesses can use a binary name or an explicit path; relative paths with a path separator are resolved from the step working directory. For containerized runs, the binary is executed inside the selected container and must be valid there.
 
 ## Feature Reference
@@ -1587,7 +1582,6 @@ Use top-level `harness:` to define shared defaults for every harness step in the
 harness:
   provider: claude
   model: sonnet
-  bare: true
   fallback:
     - provider: codex
       full-auto: true
@@ -1625,7 +1619,8 @@ Merge rules:
 - Step-level `with.fallback` replaces DAG-level `fallback`
 - Step-level `with.fallback: []` disables inherited fallback
 - New DAGs should use `action: harness.run`. Legacy step-level `type: harness` remains loadable for backward compatibility.
-- Compatibility note: a top-level `harness:` config still causes steps without an explicit executor type to infer the harness executor. Do not mix top-level `harness:` with ordinary shell `run:` steps unless prompt inference is intended.
+- A top-level `harness:` config only supplies defaults. It does not set the type of a step that does not name one, so shell `run:` steps can sit alongside harness steps in the same DAG.
+- A step that named its prompt with a bare `command:`, relying on the removed inference, is rejected while loading. Port it to `action: harness.run` with `with.prompt`, and `with.stdin` where it used `script:`.
 
 ## Containerized Harness Steps
 
@@ -1697,7 +1692,6 @@ params:
 harness:
   provider: claude
   model: sonnet
-  bare: true
 
 steps:
   - id: run_cli
@@ -1724,7 +1718,6 @@ steps:
       prompt: "Research every approach to: ${params.topic}. List all approaches with pros, cons, and when to use each."
       provider: claude
       model: sonnet
-      bare: true
     output: RESEARCH
 
   - id: review
@@ -1754,7 +1747,6 @@ steps:
         ${env.REVIEW}
       provider: claude
       model: sonnet
-      bare: true
     depends: [review]
     output: REFINED
 ```
@@ -1796,7 +1788,6 @@ steps:
       max-budget-usd: 2.00
       permission-mode: auto
       allowed-tools: "Bash,Read,Edit"
-      bare: true
     timeout_sec: 300
     output: RESULT
 ```
