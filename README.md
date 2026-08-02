@@ -140,11 +140,44 @@ steps:
     depends: report
 ```
 
-Dagu can also run containers, Kubernetes Jobs, SSH commands, SQL, HTTP requests, sub-workflows, human tasks, and reusable actions. Browse the [workflow examples](https://docs.dagu.sh/writing-workflows/examples) or the [YAML reference](https://docs.dagu.sh/writing-workflows/yaml-specification) when you need them.
+Dagu can also run containers, Kubernetes Jobs, SSH commands, SQL, HTTP requests, human tasks, and reusable actions. Browse the [workflow examples](https://docs.dagu.sh/writing-workflows/examples) or the [YAML reference](https://docs.dagu.sh/writing-workflows/yaml-specification) when you need them.
+
+## Nested workflows
+
+A step can run another DAG. Sub-DAGs can live in the same file after `---`, and `parallel` fans one sub-DAG out over a list of items. This example works as-is:
+
+```yaml
+steps:
+  - id: check
+    action: dag.run
+    with:
+      dag: probe
+      params:
+        url: ${ITEM}
+    parallel:
+      items:
+        - https://example.com
+        - https://example.org
+        - https://example.net
+      max_concurrent: 2
+
+---
+name: probe
+params:
+  - name: url
+    type: string
+steps:
+  - id: fetch
+    run: curl -fsS -o /dev/null -w '%{http_code}\n' "${params.url}"
+```
+
+Each URL becomes its own child run with separate logs, status, and retries. The same mechanism composes larger systems: shared DAGs in their own files, called from many parents.
+
+See [Sub-DAGs](https://docs.dagu.sh/writing-workflows/sub-dags).
 
 ## LLM-directed workflows
 
-With `type: controller`, steps become a catalog and `tasks` state the goals; an LLM decides which step runs next until the goals are met:
+With `type: controller`, steps become a catalog and `tasks` state the goals; an LLM decides which step runs next until the goals are met. This example triages the machine it runs on, and works as-is with an OpenRouter API key:
 
 ```yaml
 type: controller
@@ -159,22 +192,36 @@ llm:
   model: deepseek/deepseek-v4-flash
 
 steps:
-  - name: extract
-    description: Pull the raw data.
-    run: python extract.py
-  - name: build-report
-    description: Build the nightly report from the extracted data.
-    run: ./build-report.sh
-  - name: archive
-    description: Archive the finished report.
-    run: tar -czf report.tgz report/
+  - name: disk
+    description: Show filesystem usage.
+    run: df -h
+    output: DISK
+  - name: load
+    description: Show uptime and load average.
+    run: uptime
+    output: LOAD
+  - name: processes
+    description: List processes with CPU and memory usage.
+    run: ps aux | head -20
+  - name: summarize
+    description: Write the health summary. Run last, after the checks.
+    action: chat.completion
+    with:
+      prompt: |
+        Summarize this machine's health in three sentences:
+        ${DISK}
+        ${LOAD}
 
 tasks:
-  - name: report-archived
-    description: Finished when the nightly report is built and archived.
+  - name: triage
+    description: >
+      Finished when the machine has been checked and a health summary has been
+      written. Inspect processes only if disk or load looks unhealthy.
 ```
 
-Also built in: `chat` steps run LLM calls with tool use inside any workflow.
+There is no fixed order: the controller picks probes, digs deeper only when something looks off, and ends by writing the summary. Put it on a `schedule` and it becomes a nightly check that explains itself.
+
+The `summarize` step uses `chat.completion`: a plain LLM call that works in any workflow, shares the workflow's `llm` config, and supports tool use.
 
 See [Controller Workflows](https://docs.dagu.sh/writing-workflows/controller).
 
