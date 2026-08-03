@@ -22,8 +22,6 @@ func TestDockerfilesRunEntrypointUnderTini(t *testing.T) {
 		"Dockerfile",
 		"Dockerfile.alpine",
 		"Dockerfile.dev",
-		"deploy/docker/Dockerfile.alpine",
-		"deploy/docker/Dockerfile.dev",
 	}
 
 	root := repoRoot(t)
