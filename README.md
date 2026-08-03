@@ -176,6 +176,30 @@ From the GitHub community:
 
 Browse the [workflow examples](https://docs.dagu.sh/writing-workflows/examples) or the [YAML reference](https://docs.dagu.sh/writing-workflows/yaml-specification) when you need them.
 
+## Remote machines
+
+Declare `ssh` once at the DAG level and every `run` step executes on that host. Machines that only have `sshd` get schedules, retries, approvals, and logs, with nothing installed on them:
+
+```yaml
+ssh:
+  user: deploy
+  host: web-1.internal
+  key: ~/.ssh/deploy_key
+
+steps:
+  - id: health
+    run: curl -f http://localhost:8080/health
+    retry_policy:
+      limit: 3
+      interval_sec: 10
+
+  - id: restart
+    run: systemctl restart myapp
+    depends: health
+```
+
+Combine it with `parallel` and the same pattern patches a fleet, one sub-DAG per host with separate logs and retries. See [SSH](https://docs.dagu.sh/step-types/ssh).
+
 ## LLM-directed workflows
 
 With `type: controller`, steps become a catalog and `tasks` state the goals; an LLM decides which step runs next until the goals are met. The controller selects only from the steps you declare, records every decision, and runs under the same retries, logs, and controls as any other workflow. This example triages the machine it runs on, and works as-is with an OpenRouter API key:
