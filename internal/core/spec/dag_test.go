@@ -69,11 +69,7 @@ steps:
 	require.NoError(t, err)
 	require.NotNil(t, dag.Tools)
 	assert.Equal(t, "aqua", dag.Tools.Provider)
-	require.NotNil(t, dag.Tools.Registry)
-	assert.Equal(t, "standard", dag.Tools.Registry.Name)
-	assert.Equal(t, "standard", dag.Tools.Registry.Type)
-	assert.Equal(t, core.DefaultAquaStandardRegistryRef, dag.Tools.Registry.Ref)
-	assert.Regexp(t, `^[0-9a-f]{40}$`, dag.Tools.Registry.Ref)
+	require.Nil(t, dag.Tools.Registry)
 	require.Len(t, dag.Tools.Packages, 1)
 	assert.Equal(t, "jq", dag.Tools.Packages[0].Name)
 	assert.Equal(t, "jqlang/jq", dag.Tools.Packages[0].Package)
@@ -96,8 +92,7 @@ steps:
 	require.NoError(t, err)
 	require.NotNil(t, dag.Tools)
 	assert.Equal(t, "aqua", dag.Tools.Provider)
-	require.NotNil(t, dag.Tools.Registry)
-	assert.Equal(t, core.DefaultAquaStandardRegistryRef, dag.Tools.Registry.Ref)
+	require.Nil(t, dag.Tools.Registry)
 	require.Len(t, dag.Tools.Packages, 2)
 	assert.Equal(t, "jq", dag.Tools.Packages[0].Name)
 	assert.Equal(t, "jqlang/jq", dag.Tools.Packages[0].Package)
@@ -107,6 +102,102 @@ steps:
 	assert.Equal(t, "google/pprof", dag.Tools.Packages[1].Package)
 	assert.Equal(t, "d04f2422c8a17569c14e84da0fae252d9529826b", dag.Tools.Packages[1].Version)
 	assert.Empty(t, dag.Tools.Packages[1].Commands)
+}
+
+func TestLoadDAGToolsShorthandWithDigest(t *testing.T) {
+	t.Parallel()
+
+	digest := "3fa1b2c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80"
+	dag, err := LoadYAML(context.Background(), []byte(`
+tools:
+  - anomalyco/opencode@v1.18.11#sha256:`+strings.ToUpper(digest)+`
+steps:
+  - id: check
+    run: opencode --version
+`))
+
+	require.NoError(t, err)
+	require.NotNil(t, dag.Tools)
+	require.Len(t, dag.Tools.Packages, 1)
+	assert.Equal(t, "anomalyco/opencode", dag.Tools.Packages[0].Package)
+	assert.Equal(t, "v1.18.11", dag.Tools.Packages[0].Version)
+	assert.Equal(t, "sha256:"+digest, dag.Tools.Packages[0].Digest)
+}
+
+func TestLoadDAGToolsObjectFormDigest(t *testing.T) {
+	t.Parallel()
+
+	digest := "3fa1b2c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80"
+	dag, err := LoadYAML(context.Background(), []byte(`
+tools:
+  packages:
+    - package: anomalyco/opencode
+      version: v1.18.11
+      digest: sha256:`+digest+`
+steps:
+  - id: check
+    run: opencode --version
+`))
+
+	require.NoError(t, err)
+	require.Len(t, dag.Tools.Packages, 1)
+	assert.Equal(t, "sha256:"+digest, dag.Tools.Packages[0].Digest)
+}
+
+func TestLoadDAGToolsRejectsInvalidDigest(t *testing.T) {
+	t.Parallel()
+
+	for _, digest := range []string{
+		"sha256:tooshort",
+		"sha512:" + strings.Repeat("a", 64),
+		"sha256:" + strings.Repeat("g", 64),
+		strings.Repeat("a", 64),
+	} {
+		_, err := LoadYAML(context.Background(), []byte(`
+tools:
+  - anomalyco/opencode@v1.18.11#`+digest+`
+steps:
+  - id: check
+    run: opencode --version
+`))
+		require.Error(t, err, "digest %q should be rejected", digest)
+		assert.Contains(t, err.Error(), `digest must be "sha256:<64 hex>"`)
+	}
+}
+
+func TestLoadDAGToolsRejectsEmptyDigestFragment(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadYAML(context.Background(), []byte(`
+tools:
+  - anomalyco/opencode@v1.18.11#
+steps:
+  - id: check
+    run: opencode --version
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tool package digest")
+}
+
+func TestLoadDAGToolsStandardRegistryLeavesRefUnpinned(t *testing.T) {
+	t.Parallel()
+
+	dag, err := LoadYAML(context.Background(), []byte(`
+tools:
+  registry:
+    type: standard
+  packages:
+    - jqlang/jq@jq-1.7.1
+steps:
+  - id: check
+    run: jq --version
+`))
+
+	require.NoError(t, err)
+	require.NotNil(t, dag.Tools)
+	require.NotNil(t, dag.Tools.Registry)
+	assert.Equal(t, "standard", dag.Tools.Registry.Type)
+	assert.Empty(t, dag.Tools.Registry.Ref)
 }
 
 func TestLoadDAGToolsPackagesAcceptMixedShorthandAndObject(t *testing.T) {
@@ -144,7 +235,7 @@ steps:
 `))
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `tool package shorthand must be "package@version"`)
+	assert.Contains(t, err.Error(), `tool package shorthand must be "package@version[#sha256:<hex>]"`)
 }
 
 func TestLoadDAGToolsAcceptsPackageCommitSHA(t *testing.T) {
@@ -191,6 +282,8 @@ steps:
 	require.Len(t, dag.Tools.Packages, 1)
 	assert.Equal(t, "jq", dag.Tools.Packages[0].Name)
 	assert.Empty(t, dag.Tools.Packages[0].Commands)
+	require.NotNil(t, dag.Tools.Registry)
+	assert.Equal(t, "v4.233.0", dag.Tools.Registry.Ref)
 }
 
 func TestLoadDAGToolsRejectsMissingGitHubContentRegistryRef(t *testing.T) {

@@ -4,9 +4,10 @@
 package core
 
 const (
-	// DefaultAquaStandardRegistryRef is the aqua standard registry commit Dagu
-	// uses when a DAG does not specify tools.registry.
-	DefaultAquaStandardRegistryRef = "5e2f56743d66abe9dfc7c56d35086511b7dc92d8"
+	// DefaultAquaStandardRegistryRef is the last-resort aqua standard registry
+	// commit, used only when the latest registry release cannot be resolved
+	// and no previously resolved ref is cached on disk.
+	DefaultAquaStandardRegistryRef = "080d723b75cd0ea7c2b2059bf6266d3ab39aa792"
 )
 
 // ToolConfig declares external CLI tools required by a DAG run.
@@ -33,4 +34,8 @@ type ToolPackage struct {
 	Version  string   `json:"version"`
 	Commands []string `json:"commands,omitempty"`
 	Registry string   `json:"registry,omitempty"`
+	// Digest pins the sha256 of the downloaded artifact for the platform the
+	// DAG runs on, in "sha256:<64 hex>" form. The install fails when the
+	// artifact hash recorded for this package does not match.
+	Digest string `json:"digest,omitempty"`
 }
