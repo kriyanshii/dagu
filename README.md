@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://dagu.sh">
-    <img src="./assets/images/hero-logo.png" width="720" alt="Dagu: turn scripts into reliable workflows">
+    <img src="./assets/images/hero-logo.png" width="720" alt="Dagu: built for teams whose main work is not orchestration">
   </a>
   <p>
     <a href="https://docs.dagu.sh">Docs</a> ·
@@ -13,13 +13,41 @@
 
 # Dagu
 
-Dagu turns scripts and commands into reliable YAML workflows. It adds schedules, dependencies, retries, approvals, logs, and a Web UI in one open-source binary. You do not need an external database or message broker.
+Local-first orchestration that just works. Define the workflow in declarative YAML; one open-source binary runs it with schedules, dependencies, retries, approvals, logs, and a Web UI. State lives in local files. No external database, no message broker, no framework.
 
-## Quick start
+Your business logic stays where it is: scripts, containers, and AI agents in any language. The workflow file points at them. No decorators, no SDK, no rewrite. The same engine runs AI: coding agents as steps, LLM calls as steps, and a human approval gate before anything ships.
 
-### 1. Install
+## The whole idea
 
-On macOS or Linux:
+Your repo already has the logic:
+
+```text
+scripts/extract.py
+scripts/build-report.sh
+```
+
+Add one file that holds only the structure:
+
+```yaml
+schedule: "0 2 * * *"
+
+steps:
+  - id: extract
+    run: python scripts/extract.py
+    retry_policy:
+      limit: 3
+      interval_sec: 30
+
+  - id: report
+    run: ./scripts/build-report.sh
+    depends: extract
+```
+
+That is the entire integration. No imports, no decorators, nothing rewritten. Delete the YAML and your scripts still run. Keep it, and every run gets a dependency graph, retries, per-step logs, history, and a Web UI.
+
+## Run it
+
+Install on macOS or Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/dagucloud/dagu/main/scripts/installer.sh | bash
@@ -31,58 +59,81 @@ On Windows, run this in PowerShell:
 irm https://raw.githubusercontent.com/dagucloud/dagu/main/scripts/installer.ps1 | iex
 ```
 
-The installers can add Dagu to `PATH`, set up a background service, and create the first admin account. See the [Windows installation guide](https://docs.dagu.sh/getting-started/installation/windows) for service and manual installation options.
+Prefer a pinned version or a different method? See [releases](https://github.com/dagucloud/dagu/releases) and [all installation options](https://docs.dagu.sh/getting-started/installation/) for Docker, Homebrew, npm, Kubernetes, and manual installs.
 
-Prefer Docker? Start the Web UI with the [official image](https://github.com/dagucloud/dagu/pkgs/container/dagu):
-
-```sh
-docker run --rm -p 8080:8080 -v dagu-data:/var/lib/dagu ghcr.io/dagucloud/dagu:latest dagu start-all
-```
-
-Open <http://localhost:8080>. The named volume keeps workflows, logs, history, and settings between runs. See the [Docker guide](https://docs.dagu.sh/getting-started/installation/docker) for Docker Compose, image tags, and host workflow mounts.
-
-The native-install quickstart continues below. For Homebrew, npm, Kubernetes, and manual options, see [all installation methods](https://docs.dagu.sh/getting-started/installation/).
-
-### 2. Run your first workflow
-
-Save this as `hello.yaml`:
-
-```yaml
-steps:
-  - id: hello
-    run: echo "Hello from Dagu!"
-  - id: done
-    run: echo "Workflow finished"
-    depends: hello
-```
-
-Run it:
-
-```sh
-dagu start hello.yaml
-```
-
-### 3. Open the Web UI
-
-Start the Web UI in the same directory:
+Start the scheduler and Web UI in the directory with your YAML:
 
 ```sh
 dagu start-all --dags .
 ```
 
-Open <http://localhost:8080> to see the run, step logs, and history. The [full quickstart](https://docs.dagu.sh/getting-started/quickstart) also covers validation, expected output, and next steps.
+Open <http://localhost:8080> to watch runs, read step logs, and browse history. Running Dagu as a persistent or shared service? Review [server configuration](https://docs.dagu.sh/server-admin/configuration) and [authentication](https://docs.dagu.sh/server-admin/authentication/) before exposing it beyond localhost.
 
-Running Dagu as a persistent or shared service? Review [server configuration](https://docs.dagu.sh/server-admin/configuration) and [authentication](https://docs.dagu.sh/server-admin/authentication/) before exposing it beyond localhost.
+## Why not cron, Airflow, or Temporal
+
+- cron runs commands, but there are no dependencies, retries, or history.
+- Airflow orchestrates, but you operate a platform (scheduler, metadata database, workers, a Python environment), and your jobs become framework code.
+- Temporal gives durable execution, but your business logic moves into its SDK and programming model.
+
+Dagu's position: workflow structure is configuration, not code. It belongs in a file next to your scripts, and the engine that runs it should be one process you can ignore:
+
+```text
+Traditional orchestrator              Dagu
+
+Web server                            dagu start-all
+Scheduler                             ├── Web UI
+Workers                               ├── Scheduler
+Metadata database                     ├── Executor
+Message broker                        └── Local file-backed state
+Python environment + plugins
+Upgrades with schema migrations       Upgrade: replace one binary
+```
+
+Everything on the right is one process that idles under 100 MB of RAM. If you run Airflow to schedule what is ultimately a list of shell commands and containers, this is the same orchestration without the platform underneath it.
+
+All of the orchestration. None of the platform.
+
+## Give a step to an AI agent
+
+Steps are not limited to shell commands. This workflow has a coding agent review the latest commit every night, and a human approves before the result goes anywhere:
+
+```yaml
+schedule: "0 2 * * *"
+working_dir: .
+
+secrets:
+  - name: OPENROUTER_API_KEY
+    provider: env
+    key: OPENROUTER_API_KEY
+
+steps:
+  - id: review
+    action: harness.run
+    with:
+      provider: pi
+      model: openrouter/deepseek/deepseek-v4-flash
+      tools: read,bash
+      prompt: |
+        Review the most recent commit in this repository.
+        Reply with: what changed, one risk, a verdict.
+    output: REVIEW
+
+  - id: approve
+    action: human.task
+    with:
+      prompt: Publish this review?
+    depends: review
+
+  - id: publish
+    run: echo "$REVIEW"
+    depends: approve
+```
+
+To try it, install the [Pi coding agent](https://pi.dev) (`npm install -g --ignore-scripts @earendil-works/pi-coding-agent`), export an `OPENROUTER_API_KEY`, and drop the file into your DAGs directory. When the review is ready, the run pauses; open it in the Web UI and click Approve. The approved text prints in the `publish` step's log, and the whole exchange stays in the run history.
+
+The same separation applies to AI: the agent is a CLI process, wired in by the file, not by an agent-framework SDK. The agent step calls whichever model provider you configure; this example sends the prompt to OpenRouter. Local models work through `provider: local`. Approvals and human tasks are part of the open-source engine; SSO, RBAC, and audit logs are in the [licensed tier](https://dagu.sh/pricing#self-host).
 
 If Dagu is useful, click **Star** at the top of this page. It helps other developers find the project.
-
-## What Dagu gives you
-
-- Keep your current scripts, commands, containers, and tools.
-- Store readable workflow definitions in Git.
-- Add dependencies, schedules, retries, timeouts, and approvals in YAML.
-- Inspect live status, logs, and previous runs in the built-in Web UI.
-- Start on one machine, then add queues or distributed workers if the workload grows.
 
 ## See it in action
 
@@ -100,84 +151,34 @@ Click the image to watch the short product walkthrough.
 
 You can also open the [live demo](https://dagu-demo-f5e33d0e.dagu.sh) and sign in with username `demouser` and password `demouser`.
 
-## Why Dagu
+From the GitHub community:
 
-Cron is easy to start but gives you little visibility once jobs depend on each other. Larger orchestrators solve that problem by adding services and a framework. Dagu keeps the operating model small:
+> I started out down the Temporal path. Temporal is powerful, but if all you want is to dynamically chain agents, scripts, data processing, and ops tasks together, the whole stack can feel a bit heavy. Then I came across Dagu [...] It runs as a single binary, workflows are written in YAML, everything lives in local files, it ships with a web UI, and there's no extra DB or broker to stand up. [...] A nice surprise was harness.run, which lets you plug external coding agent CLIs straight into a workflow.
 
-```text
-Traditional orchestrator              Dagu
+## What Dagu gives you
 
-Web server                            dagu start-all
-Scheduler                             ├── Web UI
-Workers                               ├── Scheduler
-Database                              ├── Executor
-Message broker                        └── Local file-backed state
-Language runtime
-```
+- Orchestration that is not a second job: one binary, local file state, upgrades by replacing the binary.
+- Declarative YAML, reviewed and diffed in Git like any other file.
+- No decorators, no annotations, no framework imports: logic stays in your languages.
+- Structure separate from logic: the file declares order, retries, and approvals; your scripts do the work.
+- Run AI where you run cron: agent CLI steps (Claude Code, Codex, Copilot, Pi, OpenCode), LLM steps, and human approval gates.
+- Inspect live status, logs, and previous runs in the built-in Web UI.
+- Start on one machine, then add queues or distributed workers if the workload grows.
 
-The workflow calls the software you already use. It does not require you to move that code into a Dagu-specific framework.
+## A step can be
 
-## A practical workflow
+| | | |
+|---|---|---|
+| A shell command | A Docker container | A Kubernetes Job |
+| An SSH command | An HTTP request | A SQL query |
+| Another DAG | A fan-out over a list | An LLM call (`chat.completion`) |
+| A coding agent (`harness.run`) | A human approval (`human.task`) | One of 50+ built-in actions |
 
-This example runs a nightly report, retries the data step, and keeps the order explicit:
-
-```yaml
-schedule: "0 2 * * *"
-
-steps:
-  - id: extract
-    run: python extract.py
-    retry_policy:
-      limit: 3
-      interval_sec: 30
-
-  - id: report
-    run: ./build-report.sh
-    depends: extract
-
-  - id: archive
-    run: tar -czf report.tgz report/
-    depends: report
-```
-
-Dagu can also run containers, Kubernetes Jobs, SSH commands, SQL, HTTP requests, human tasks, and reusable actions. Browse the [workflow examples](https://docs.dagu.sh/writing-workflows/examples) or the [YAML reference](https://docs.dagu.sh/writing-workflows/yaml-specification) when you need them.
-
-## Nested workflows
-
-A step can run another DAG. Sub-DAGs can live in the same file after `---`, and `parallel` fans one sub-DAG out over a list of items. This example works as-is:
-
-```yaml
-steps:
-  - id: check
-    action: dag.run
-    with:
-      dag: probe
-      params:
-        url: ${ITEM}
-    parallel:
-      items:
-        - https://example.com
-        - https://example.org
-        - https://example.net
-      max_concurrent: 2
-
----
-name: probe
-params:
-  - name: url
-    type: string
-steps:
-  - id: fetch
-    run: curl -fsS -o /dev/null -w '%{http_code}\n' "${params.url}"
-```
-
-Each URL becomes its own child run with separate logs, status, and retries. The same mechanism composes larger systems: shared DAGs in their own files, called from many parents.
-
-See [Sub-DAGs](https://docs.dagu.sh/writing-workflows/sub-dags).
+Browse the [workflow examples](https://docs.dagu.sh/writing-workflows/examples) or the [YAML reference](https://docs.dagu.sh/writing-workflows/yaml-specification) when you need them.
 
 ## LLM-directed workflows
 
-With `type: controller`, steps become a catalog and `tasks` state the goals; an LLM decides which step runs next until the goals are met. This example triages the machine it runs on, and works as-is with an OpenRouter API key:
+With `type: controller`, steps become a catalog and `tasks` state the goals; an LLM decides which step runs next until the goals are met. The controller selects only from the steps you declare, records every decision, and runs under the same retries, logs, and controls as any other workflow. This example triages the machine it runs on, and works as-is with an OpenRouter API key:
 
 ```yaml
 type: controller
@@ -219,11 +220,44 @@ tasks:
       written. Inspect processes only if disk or load looks unhealthy.
 ```
 
-There is no fixed order: the controller picks probes, digs deeper only when something looks off, and ends by writing the summary. Put it on a `schedule` and it becomes a nightly check that explains itself.
+There is no fixed order: the controller picks probes, digs deeper only when something looks off, and ends by writing the summary. On a `schedule`, every decision it made is there in the run's timeline the next morning.
 
 The `summarize` step uses `chat.completion`: a plain LLM call that works in any workflow, shares the workflow's `llm` config, and supports tool use.
 
 See [Controller Workflows](https://docs.dagu.sh/writing-workflows/controller).
+
+## Nested workflows
+
+A step can run another DAG. Sub-DAGs can live in the same file after `---`, and `parallel` fans one sub-DAG out over a list of items. This example works as-is:
+
+```yaml
+steps:
+  - id: check
+    action: dag.run
+    with:
+      dag: probe
+      params:
+        url: ${ITEM}
+    parallel:
+      items:
+        - https://example.com
+        - https://example.org
+        - https://example.net
+      max_concurrent: 2
+
+---
+name: probe
+params:
+  - name: url
+    type: string
+steps:
+  - id: fetch
+    run: curl -fsS -o /dev/null -w '%{http_code}\n' "${params.url}"
+```
+
+Each URL becomes its own child run with separate logs, status, and retries. The same mechanism composes larger systems: shared DAGs in their own files, called from many parents.
+
+See [Sub-DAGs](https://docs.dagu.sh/writing-workflows/sub-dags).
 
 ## Operate Dagu from your AI tools
 
@@ -242,6 +276,7 @@ See the [MCP guide](https://docs.dagu.sh/mcp/quickstart).
 ## Common uses
 
 - Replace fragile cron chains while keeping the underlying scripts.
+- Run coding agents on schedules with approval gates and full logs.
 - Run ETL, reporting, backup, media, and infrastructure jobs.
 - Coordinate Docker, Kubernetes, SSH, SQL, and HTTP work in one graph.
 - Give operators a controlled way to run approved internal tasks.
@@ -263,6 +298,7 @@ The same YAML works across these models. See [deployment models](https://docs.da
 | Topic | Documentation |
 |---|---|
 | Install and first run | [Quickstart](https://docs.dagu.sh/getting-started/quickstart) |
+| Your first AI workflow | [AI quickstart](https://docs.dagu.sh/getting-started/quickstart-ai) |
 | Install on Windows | [PowerShell, Windows service, and manual install](https://docs.dagu.sh/getting-started/installation/windows) |
 | Run with Docker | [Docker, Compose, volumes, and image tags](https://docs.dagu.sh/getting-started/installation/docker) |
 | Configure a server | [Configuration files, environment variables, and precedence](https://docs.dagu.sh/server-admin/configuration) |
