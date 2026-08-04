@@ -91,11 +91,11 @@ func (m *mockSyncService) GetStatus(ctx context.Context) (*gitsync.OverallStatus
 	return nil, nil
 }
 
-func (m *mockSyncService) GetDAGStatus(_ context.Context, _ string) (*gitsync.DAGState, error) {
+func (m *mockSyncService) GetSyncItemStatus(_ context.Context, _ string) (*gitsync.SyncItemState, error) {
 	return nil, nil
 }
 
-func (m *mockSyncService) GetDAGDiff(_ context.Context, _ string) (*gitsync.DAGDiff, error) {
+func (m *mockSyncService) GetSyncItemDiff(_ context.Context, _ string) (*gitsync.SyncItemDiff, error) {
 	return nil, nil
 }
 
@@ -152,7 +152,7 @@ func TestSyncPublishAll_Validation(t *testing.T) {
 		assert.Contains(t, apiErr.Message, "No modified or untracked")
 	})
 
-	t.Run("defaults missing dagIds to publishable DAGs from status", func(t *testing.T) {
+	t.Run("defaults missing item IDs to publishable items from status", func(t *testing.T) {
 		t.Parallel()
 
 		var gotIDs []string
@@ -160,7 +160,7 @@ func TestSyncPublishAll_Validation(t *testing.T) {
 			getStatusFn: func(_ context.Context) (*gitsync.OverallStatus, error) {
 				now := time.Now()
 				return &gitsync.OverallStatus{
-					DAGs: map[string]*gitsync.DAGState{
+					Items: map[string]*gitsync.SyncItemState{
 						"zeta":    {Status: gitsync.StatusModified, ModifiedAt: &now},
 						"alpha":   {Status: gitsync.StatusUntracked, ModifiedAt: &now},
 						"ignored": {Status: gitsync.StatusSynced, LastSyncedAt: &now},
@@ -235,7 +235,7 @@ func TestSyncPublishAll_Validation(t *testing.T) {
 		var apiErr *Error
 		require.ErrorAs(t, err, &apiErr)
 		assert.Equal(t, http.StatusBadRequest, apiErr.HTTPStatus)
-		assert.Contains(t, apiErr.Message, "invalid DAG ID")
+		assert.Contains(t, apiErr.Message, "invalid sync item ID")
 	})
 
 	t.Run("passes dag IDs to service and returns 200", func(t *testing.T) {
@@ -757,7 +757,7 @@ func TestToAPISyncItems_IncludesPath(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	states := map[string]*gitsync.DAGState{
+	states := map[string]*gitsync.SyncItemState{
 		"alpha": {
 			Status:        gitsync.StatusModified,
 			FileExtension: ".yml",
@@ -767,16 +767,26 @@ func TestToAPISyncItems_IncludesPath(t *testing.T) {
 			Status:     gitsync.StatusUntracked,
 			ModifiedAt: &now,
 		},
+		"docs/operations/deploy": {
+			Status:        gitsync.StatusSynced,
+			Kind:          gitsync.SyncItemKindDoc,
+			FileExtension: ".MD",
+			ModifiedAt:    &now,
+		},
 	}
 
 	apiItems := toAPISyncItems(states)
-	require.Len(t, apiItems, 2)
+	require.Len(t, apiItems, 3)
 
 	assert.Equal(t, "alpha", apiItems[0].ItemId)
 	assert.Equal(t, "alpha.yml", apiItems[0].FilePath)
 	assert.Equal(t, "alpha.yml", apiItems[0].DisplayName)
 
-	assert.Equal(t, "reports/monthly", apiItems[1].ItemId)
-	assert.Equal(t, "reports/monthly.yaml", apiItems[1].FilePath)
-	assert.Equal(t, "reports/monthly.yaml", apiItems[1].DisplayName)
+	assert.Equal(t, "docs/operations/deploy", apiItems[1].ItemId)
+	assert.Equal(t, "docs/operations/deploy.MD", apiItems[1].FilePath)
+	assert.Equal(t, apigen.SyncItemKindDoc, apiItems[1].Kind)
+
+	assert.Equal(t, "reports/monthly", apiItems[2].ItemId)
+	assert.Equal(t, "reports/monthly.yaml", apiItems[2].FilePath)
+	assert.Equal(t, apigen.SyncItemKindDag, apiItems[2].Kind)
 }

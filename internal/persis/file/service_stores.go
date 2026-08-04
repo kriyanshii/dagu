@@ -16,12 +16,14 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/v2/internal/core/baseconfig"
+	"github.com/dagucloud/dagu/v2/internal/core/docs"
 	"github.com/dagucloud/dagu/v2/internal/dagsettings"
 	"github.com/dagucloud/dagu/v2/internal/incident"
 	"github.com/dagucloud/dagu/v2/internal/license"
 	"github.com/dagucloud/dagu/v2/internal/notification"
 	fileaudit "github.com/dagucloud/dagu/v2/internal/persis/file/audit"
 	filebaseconfig "github.com/dagucloud/dagu/v2/internal/persis/file/baseconfig"
+	filedoc "github.com/dagucloud/dagu/v2/internal/persis/file/doc"
 	fileeventstore "github.com/dagucloud/dagu/v2/internal/persis/file/eventstore"
 	fileincident "github.com/dagucloud/dagu/v2/internal/persis/file/incident"
 	filenotification "github.com/dagucloud/dagu/v2/internal/persis/file/notification"
@@ -150,6 +152,17 @@ func NewDAGSettingsStore(cfg *config.Config) (dagsettings.Store, error) {
 		return nil, fmt.Errorf("DAG settings store: create directory %s: %w", dir, err)
 	}
 	return store.NewDAGSettingsStore(NewCollection(dir, WithIndentedJSON()))
+}
+
+func NewDocStore(cfg *config.Config) (docs.DocStore, error) {
+	if cfg == nil || cfg.Paths.DocsDir == "" {
+		return nil, nil
+	}
+	docStore, err := filedoc.New(cfg.Paths.DocsDir)
+	if err != nil {
+		return nil, fmt.Errorf("document store: %w", err)
+	}
+	return docStore, nil
 }
 
 func NewIncidentStore(cfg *config.Config, enc *crypto.Encryptor) (incident.Store, error) {

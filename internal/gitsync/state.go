@@ -17,17 +17,17 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/workspace"
 )
 
-// SyncStatus represents the synchronization status of a DAG.
+// SyncStatus represents the synchronization status of a tracked item.
 type SyncStatus string
 
 const (
-	// StatusSynced indicates the DAG is in sync with remote.
+	// StatusSynced indicates the item is in sync with remote.
 	StatusSynced SyncStatus = "synced"
 
-	// StatusModified indicates the DAG has local modifications.
+	// StatusModified indicates the item has local modifications.
 	StatusModified SyncStatus = "modified"
 
-	// StatusUntracked indicates the DAG exists only locally.
+	// StatusUntracked indicates the item exists only locally.
 	StatusUntracked SyncStatus = "untracked"
 
 	// StatusConflict indicates a conflict between local and remote versions.
@@ -38,8 +38,30 @@ const (
 )
 
 const (
+	docsDir      = "docs"
 	baseConfigID = "base"
 )
+
+// SyncItemKind identifies a supported Git Sync item type.
+type SyncItemKind string
+
+const (
+	SyncItemKindDAG SyncItemKind = "dag"
+	SyncItemKindDoc SyncItemKind = "doc"
+)
+
+// SyncItemKindForID derives the item type from its normalized ID.
+func SyncItemKindForID(id string) SyncItemKind {
+	id = normalizeDAGIDSeparators(id)
+	if strings.HasPrefix(id, docsDir+"/") {
+		return SyncItemKindDoc
+	}
+	return SyncItemKindDAG
+}
+
+func isDocFile(id string) bool {
+	return SyncItemKindForID(id) == SyncItemKindDoc
+}
 
 func isBaseConfigID(id string) bool {
 	id = normalizeDAGIDSeparators(id)
@@ -91,28 +113,31 @@ type State struct {
 	// LastError is the error message from the last failed sync.
 	LastError *string `json:"lastError,omitempty"`
 
-	// DAGs contains the sync state for each DAG.
-	DAGs map[string]*DAGState `json:"dags"`
+	// Items contains sync state keyed by normalized item ID.
+	Items map[string]*SyncItemState `json:"dags"`
 }
 
-// DAGState represents the sync state for a single DAG.
-type DAGState struct {
+// SyncItemState represents the sync state for a single item.
+type SyncItemState struct {
 	// Status is the current sync status.
 	Status SyncStatus `json:"status"`
 
-	// FileExtension is the YAML extension used by the DAG file.
+	// Kind identifies the tracked item type.
+	Kind SyncItemKind `json:"kind,omitempty"`
+
+	// FileExtension is the extension used by the tracked file.
 	FileExtension string `json:"fileExtension,omitempty"`
 
-	// BaseCommit is the commit hash when the DAG was last synced.
+	// BaseCommit is the commit hash when the item was last synced.
 	BaseCommit string `json:"baseCommit,omitempty"`
 
-	// LastSyncedHash is the content hash when the DAG was last synced.
+	// LastSyncedHash is the content hash when the item was last synced.
 	LastSyncedHash string `json:"lastSyncedHash,omitempty"`
 
-	// LastSyncedAt is when the DAG was last synced.
+	// LastSyncedAt is when the item was last synced.
 	LastSyncedAt *time.Time `json:"lastSyncedAt,omitempty"`
 
-	// ModifiedAt is when the DAG was last modified locally.
+	// ModifiedAt is when the item was last modified locally.
 	ModifiedAt *time.Time `json:"modifiedAt,omitempty"`
 
 	// LocalHash is the current local content hash.
@@ -168,7 +193,7 @@ func (m *StateManager) Load() (*State, error) {
 			// Return empty state
 			m.state = &State{
 				Version: 1,
-				DAGs:    make(map[string]*DAGState),
+				Items:   make(map[string]*SyncItemState),
 			}
 			return m.state, nil
 		}
@@ -180,28 +205,26 @@ func (m *StateManager) Load() (*State, error) {
 		return nil, fmt.Errorf("failed to parse state file: %w", err)
 	}
 
-	if state.DAGs == nil {
-		state.DAGs = make(map[string]*DAGState)
+	if state.Items == nil {
+		state.Items = make(map[string]*SyncItemState)
 	}
-	pruneLegacyNonDAGState(data, &state)
+	normalizeTrackedItems(&state)
 
 	m.state = &state
 	return m.state, nil
 }
 
-func pruneLegacyNonDAGState(data []byte, state *State) {
-	var legacy struct {
-		DAGs map[string]struct {
-			Kind string `json:"kind"`
-		} `json:"dags"`
-	}
-	if err := json.Unmarshal(data, &legacy); err != nil {
-		return
-	}
-	for dagID, dagState := range legacy.DAGs {
-		if dagState.Kind != "" && dagState.Kind != "dag" {
-			delete(state.DAGs, dagID)
+func normalizeTrackedItems(state *State) {
+	for itemID, itemState := range state.Items {
+		if itemState == nil {
+			delete(state.Items, itemID)
+			continue
 		}
+		if itemState.Kind != "" && itemState.Kind != SyncItemKindDAG && itemState.Kind != SyncItemKindDoc {
+			delete(state.Items, itemID)
+			continue
+		}
+		itemState.Kind = SyncItemKindForID(itemID)
 	}
 }
 
