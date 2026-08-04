@@ -45,6 +45,16 @@ For a quick look at how workflows are defined, see the examples.
 
 ## Why Dagu?
 
+Orchestration is not your main work. You have scripts and containers that already work. You want a schedule, retries, dependencies, and a place to see logs. The usual options each have a cost:
+
+- **cron** runs commands, but gives you no dependencies, no retries, no history.
+- **Airflow** orchestrates, but you operate a platform for it (scheduler, metadata database, workers, a Python environment), and your jobs get rewritten as `@dag`/`@task` framework code.
+- **Temporal** gives durable execution, but your business logic moves into its SDK and programming model.
+
+You wanted to schedule some jobs. Now you operate a second system, and the orchestrator lives inside the code it was supposed to serve.
+
+Dagu treats workflow structure as configuration, not code. Order, dependencies, retries, schedules, and approvals go in one YAML file next to your scripts; the engine that runs them is a single process:
+
 ```sh
   Traditional Orchestrator          Dagu
   ┌────────────────────────┐        ┌──────────────────┐
@@ -57,6 +67,8 @@ For a quick look at how workflows are defined, see the examples.
   └────────────────────────┘         Adds scheduling, retries, and approvals around existing automation.
     6+ services to manage
 ```
+
+Your scripts never import the orchestrator. Delete the YAML and they run exactly as before. Keep it, and every run gets a dependency graph, retries, per-step logs, history, and a Web UI.
 
 ## Performance
 
