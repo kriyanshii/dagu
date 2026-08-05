@@ -39,7 +39,9 @@ function loadPreferences(): UserPreferences {
     if (!saved) {
       return defaultPreferences;
     }
-    return { ...defaultPreferences, ...JSON.parse(saved) };
+    const preferences = JSON.parse(saved);
+    delete preferences.workflowFilterViews;
+    return { ...defaultPreferences, ...preferences };
   } catch {
     return defaultPreferences;
   }
@@ -50,7 +52,8 @@ export function UserPreferencesProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const [preferences, setPreferences] = useState<UserPreferences>(loadPreferences);
+  const [preferences, setPreferences] =
+    useState<UserPreferences>(loadPreferences);
 
   const updatePreference = useCallback(
     <K extends keyof UserPreferences>(key: K, value: UserPreferences[K]) => {

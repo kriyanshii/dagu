@@ -2,20 +2,32 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import React from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   components,
   PathsDagsGetParametersQueryOrder,
   PathsDagsGetParametersQuerySort,
+  ViewSortField,
+  ViewSortOrder,
+  ViewSpecType,
 } from '../../api/v1/schema';
 import { Button } from '@/components/ui/button';
 import { AppBarContext } from '../../contexts/AppBarContext';
+import { useCanWriteForWorkspace } from '../../contexts/AuthContext';
 import { useSearchState } from '../../contexts/SearchStateContext';
 import { useUserPreferences } from '../../contexts/UserPreference';
 import { DAGDetailsModal } from '../../features/dags/components/dag-details';
 import { DAGErrors } from '../../features/dags/components/dag-editor';
 import { DAGTable } from '../../features/dags/components/dag-list';
 import DAGListHeader from '../../features/dags/components/dag-list/DAGListHeader';
+import type {
+  WorkflowFilterSet,
+  WorkflowFilterView,
+} from '../../features/dags/components/dag-list/workflowViews';
+import {
+  workflowViewMatchesScope,
+  workflowViewScopeForSelection,
+} from '../../features/dags/components/dag-list/workflowViews';
 import { useClient, useQuery } from '../../hooks/api';
 import { useDAGsListSSE } from '../../hooks/useDAGsListSSE';
 import {
@@ -29,13 +41,9 @@ import {
 } from '../../lib/workspace';
 import LoadingIndicator from '@/components/ui/loading-indicator';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
+import { useViews, type View, type ViewSpec } from '@/hooks/useViews';
 
-type DAGDefinitionsFilters = {
-  searchText: string;
-  searchLabels: string[];
-  sortField: string;
-  sortOrder: string;
-};
+type DAGDefinitionsFilters = WorkflowFilterSet;
 
 type DAGsPageResponse = {
   dags: components['schemas']['DAGFile'][];
@@ -58,6 +66,88 @@ const areDAGDefinitionsFiltersEqual = (
   areLabelsEqual(a.searchLabels, b.searchLabels) &&
   a.sortField === b.sortField &&
   a.sortOrder === b.sortOrder;
+
+const ALL_WORKFLOWS_VIEW_PARAM = 'all';
+
+function normalizeWorkflowSortField(value?: string | null): ViewSortField {
+  return value === ViewSortField.nextRun
+    ? ViewSortField.nextRun
+    : ViewSortField.name;
+}
+
+function normalizeWorkflowSortOrder(value?: string | null): ViewSortOrder {
+  return value === ViewSortOrder.desc ? ViewSortOrder.desc : ViewSortOrder.asc;
+}
+
+function workflowSortFieldQuery(
+  value: ViewSortField
+): PathsDagsGetParametersQuerySort {
+  return value === ViewSortField.nextRun
+    ? PathsDagsGetParametersQuerySort.nextRun
+    : PathsDagsGetParametersQuerySort.name;
+}
+
+function workflowSortOrderQuery(
+  value: ViewSortOrder
+): PathsDagsGetParametersQueryOrder {
+  return value === ViewSortOrder.desc
+    ? PathsDagsGetParametersQueryOrder.desc
+    : PathsDagsGetParametersQueryOrder.asc;
+}
+
+function workflowFilterViewFromView(view: View): WorkflowFilterView {
+  return {
+    id: view.id,
+    name: view.name,
+    pinned: view.pinned ?? false,
+    filters: {
+      searchText: view.dagName ?? '',
+      searchLabels: view.labels ?? [],
+      sortField: normalizeWorkflowSortField(view.sortField),
+      sortOrder: normalizeWorkflowSortOrder(view.sortOrder),
+    },
+  };
+}
+
+const cloneFilters = (
+  filters: DAGDefinitionsFilters
+): DAGDefinitionsFilters => ({
+  ...filters,
+  searchLabels: [...filters.searchLabels],
+});
+
+function buildWorkflowFilterSearch(
+  currentSearch: string,
+  filters: DAGDefinitionsFilters,
+  viewId: string | null
+): string {
+  const params = new URLSearchParams(currentSearch);
+  params.delete('view');
+  params.delete('search');
+  params.delete('labels');
+  params.delete('tags');
+  params.delete('sort');
+  params.delete('order');
+
+  if (viewId === ALL_WORKFLOWS_VIEW_PARAM) {
+    params.set('view', ALL_WORKFLOWS_VIEW_PARAM);
+  } else {
+    if (viewId) {
+      params.set('view', viewId);
+    }
+    if (filters.searchText) {
+      params.set('search', filters.searchText);
+    }
+    if (filters.searchLabels.length > 0) {
+      params.set('labels', filters.searchLabels.join(','));
+    }
+    params.set('sort', filters.sortField);
+    params.set('order', filters.sortOrder);
+  }
+
+  const search = params.toString();
+  return search ? `?${search}` : '';
+}
 
 function mergeUniqueDAGFiles(
   head: components['schemas']['DAGFile'][],
@@ -136,6 +226,7 @@ function supportsIntersectionObserver(): boolean {
 
 function DAGsContent() {
   const location = useLocation();
+  const navigate = useNavigate();
   const query = React.useMemo(
     () => new URLSearchParams(location.search),
     [location.search]
@@ -156,6 +247,34 @@ function DAGsContent() {
     workspace: workspaceKey,
   });
   const { preferences } = useUserPreferences();
+  const workflowViewScope = React.useMemo(
+    () => workflowViewScopeForSelection(workspaceSelection),
+    [workspaceSelection]
+  );
+  const canManageWorkflowViews = useCanWriteForWorkspace(
+    workflowViewScope.workspace
+  );
+  const {
+    views: sharedWorkflowViews,
+    isLoading: workflowViewsLoading,
+    createView,
+    updateView,
+    deleteView,
+  } = useViews(ViewSpecType.workflow);
+  const scopedWorkflowViews = React.useMemo(
+    () =>
+      sharedWorkflowViews.filter((view) =>
+        workflowViewMatchesScope(view, workflowViewScope)
+      ),
+    [sharedWorkflowViews, workflowViewScope]
+  );
+  const workflowViews = React.useMemo(
+    () => scopedWorkflowViews.map(workflowFilterViewFromView),
+    [scopedWorkflowViews]
+  );
+  const defaultWorkflowViewId = scopedWorkflowViews.find(
+    (view) => view.isDefault
+  )?.id;
   const previousWorkspaceKeyRef = React.useRef(workspaceKey);
   const [selectedDAG, setSelectedDAG] = React.useState<string | null>(null);
   const [olderDAGFiles, setOlderDAGFiles] = React.useState<
@@ -165,6 +284,12 @@ function DAGsContent() {
     React.useState<number | null | undefined>(undefined);
   const [isLoadingMore, setIsLoadingMore] = React.useState(false);
   const [loadMoreError, setLoadMoreError] = React.useState<string | null>(null);
+  const [activeWorkflowViewId, setActiveWorkflowViewId] = React.useState<
+    string | null
+  >(null);
+  const [workflowViewError, setWorkflowViewError] = React.useState<
+    string | null
+  >(null);
   const loadMoreSentinelRef = React.useRef<HTMLDivElement>(null);
   const autoLoadPendingRef = React.useRef(false);
   const loadMoreControllerRef = React.useRef<AbortController | null>(null);
@@ -174,12 +299,11 @@ function DAGsContent() {
     () => ({
       searchText: '',
       searchLabels: [],
-      sortField: 'name',
-      sortOrder: 'asc',
+      sortField: ViewSortField.name,
+      sortOrder: ViewSortOrder.asc,
     }),
     []
   );
-
   const [searchText, setSearchText] = React.useState(defaultFilters.searchText);
   const [searchLabels, setSearchLabels] = React.useState<string[]>(
     defaultFilters.searchLabels
@@ -225,18 +349,17 @@ function DAGsContent() {
   const lastPersistedFiltersRef = React.useRef<DAGDefinitionsFilters | null>(
     null
   );
+  const previousFilterScopeRef = React.useRef(searchStateScope);
 
   React.useEffect(() => {
+    if (workflowViewsLoading) {
+      return;
+    }
     const params = new URLSearchParams(location.search);
     const stored = searchState.readState<DAGDefinitionsFilters>(
       'dagDefinitions',
       searchStateScope
     );
-    const base: DAGDefinitionsFilters = {
-      ...defaultFilters,
-      ...(stored ?? {}),
-    };
-
     const urlFilters: Partial<DAGDefinitionsFilters> = {};
     let hasUrlFilters = false;
 
@@ -258,23 +381,83 @@ function DAGsContent() {
     }
 
     if (params.has('sort')) {
-      urlFilters.sortField = params.get('sort') || defaultFilters.sortField;
+      urlFilters.sortField = normalizeWorkflowSortField(params.get('sort'));
       hasUrlFilters = true;
     }
 
     if (params.has('order')) {
-      urlFilters.sortOrder = params.get('order') || defaultFilters.sortOrder;
+      urlFilters.sortOrder = normalizeWorkflowSortOrder(params.get('order'));
       hasUrlFilters = true;
     }
 
-    const next = hasUrlFilters ? { ...base, ...urlFilters } : base;
+    const scopeChanged = previousFilterScopeRef.current !== searchStateScope;
+    previousFilterScopeRef.current = searchStateScope;
+    const requestedViewId = scopeChanged ? null : params.get('view');
+    const requestedView = workflowViews.find(
+      (view) => view.id === requestedViewId
+    );
+    const defaultView = workflowViews.find(
+      (view) => view.id === defaultWorkflowViewId
+    );
+
+    let base = defaultFilters;
+    let nextActiveViewId: string | null = null;
+
+    if (scopeChanged) {
+      hasUrlFilters = false;
+    }
+
+    if (requestedView && hasUrlFilters) {
+      if (!params.has('search')) {
+        urlFilters.searchText = '';
+      }
+      if (!params.has('labels') && !params.has('tags')) {
+        urlFilters.searchLabels = [];
+      }
+    }
+
+    if (requestedViewId === ALL_WORKFLOWS_VIEW_PARAM) {
+      hasUrlFilters = false;
+    } else if (requestedView) {
+      base = requestedView.filters;
+      nextActiveViewId = requestedView.id;
+    } else if (!hasUrlFilters && defaultView) {
+      base = defaultView.filters;
+      nextActiveViewId = defaultView.id;
+    } else if (!hasUrlFilters && stored) {
+      base = { ...defaultFilters, ...stored };
+    }
+
+    const nextFilters = hasUrlFilters
+      ? { ...cloneFilters(base), ...urlFilters }
+      : cloneFilters(base);
+    const next = {
+      ...nextFilters,
+      sortField: normalizeWorkflowSortField(nextFilters.sortField),
+      sortOrder: normalizeWorkflowSortOrder(nextFilters.sortOrder),
+    };
+
+    if (scopeChanged) {
+      const nextSearch = buildWorkflowFilterSearch(
+        location.search,
+        next,
+        nextActiveViewId ?? ALL_WORKFLOWS_VIEW_PARAM
+      );
+      if (nextSearch !== location.search) {
+        navigate(
+          { pathname: location.pathname, search: nextSearch },
+          { replace: true }
+        );
+      }
+    }
+
     const current = currentFiltersRef.current;
 
+    setActiveWorkflowViewId(nextActiveViewId);
+
     if (current && areDAGDefinitionsFiltersEqual(current, next)) {
-      if (hasUrlFilters) {
-        lastPersistedFiltersRef.current = next;
-        searchState.writeState('dagDefinitions', searchStateScope, next);
-      }
+      lastPersistedFiltersRef.current = next;
+      searchState.writeState('dagDefinitions', searchStateScope, next);
       return;
     }
 
@@ -285,7 +468,17 @@ function DAGsContent() {
 
     lastPersistedFiltersRef.current = next;
     searchState.writeState('dagDefinitions', searchStateScope, next);
-  }, [defaultFilters, location.search, searchState, searchStateScope]);
+  }, [
+    defaultFilters,
+    location.pathname,
+    location.search,
+    navigate,
+    searchState,
+    searchStateScope,
+    workflowViews,
+    workflowViewsLoading,
+    defaultWorkflowViewId,
+  ]);
 
   React.useEffect(() => {
     const persisted = lastPersistedFiltersRef.current;
@@ -333,8 +526,8 @@ function DAGsContent() {
       params: {
         query: {
           ...queryParams,
-          sort: sortField as PathsDagsGetParametersQuerySort,
-          order: sortOrder as PathsDagsGetParametersQueryOrder,
+          sort: workflowSortFieldQuery(sortField),
+          order: workflowSortOrderQuery(sortOrder),
         },
       },
     },
@@ -352,30 +545,59 @@ function DAGsContent() {
     resetLoadedPages();
   }, [queryKey, resetLoadedPages]);
 
-  const addSearchParam = (key: string, value: string | string[]) => {
-    const locationQuery = new URLSearchParams(window.location.search);
-    if (key === 'labels') {
-      locationQuery.delete('tags');
-    }
-    if (Array.isArray(value)) {
-      if (value.length > 0) {
-        locationQuery.set(key, value.join(','));
-      } else {
-        // Explicitly set to empty string to indicate empty list was processed
-        // This is needed so that the URL sync logic knows to clear the state
-        locationQuery.delete(key);
-      }
-    } else if (value && value.length > 0) {
-      locationQuery.set(key, value);
-    } else {
-      locationQuery.delete(key);
-    }
-    window.history.pushState(
-      {},
-      '',
-      `${window.location.pathname}?${locationQuery.toString()}`
-    );
-  };
+  const updateFilterLocation = React.useCallback(
+    (filters: DAGDefinitionsFilters, viewId: string | null, replace = true) => {
+      const search = buildWorkflowFilterSearch(
+        location.search,
+        filters,
+        viewId
+      );
+      navigate({ pathname: location.pathname, search }, { replace });
+    },
+    [location.pathname, location.search, navigate]
+  );
+
+  const applyFilters = React.useCallback(
+    (
+      filters: DAGDefinitionsFilters,
+      viewId: string | null,
+      replace = false
+    ) => {
+      const next = cloneFilters(filters);
+      currentFiltersRef.current = next;
+      updateFilterLocation(next, viewId, replace);
+      setSearchText(next.searchText);
+      setSearchLabels(next.searchLabels);
+      setSortField(next.sortField);
+      setSortOrder(next.sortOrder);
+      setActiveWorkflowViewId(
+        viewId === ALL_WORKFLOWS_VIEW_PARAM ? null : viewId
+      );
+    },
+    [updateFilterLocation]
+  );
+
+  const buildWorkflowViewSpec = React.useCallback(
+    (
+      name: string,
+      filters: DAGDefinitionsFilters,
+      isDefault: boolean,
+      pinned: boolean
+    ): ViewSpec => ({
+      name,
+      type: ViewSpecType.workflow,
+      workspace: workflowViewScope.workspace,
+      workspaceScope: workflowViewScope.workspaceScope,
+      labels: [...filters.searchLabels],
+      dagName: filters.searchText,
+      intervalDays: 1,
+      pinned,
+      sortField: normalizeWorkflowSortField(filters.sortField),
+      sortOrder: normalizeWorkflowSortOrder(filters.sortOrder),
+      isDefault,
+    }),
+    [workflowViewScope]
+  );
 
   const refreshFn = React.useCallback(() => {
     resetLoadedPages();
@@ -390,22 +612,195 @@ function DAGsContent() {
     appBarContext.setTitle('Workflows');
   }, [appBarContext]);
 
-  const searchTextChange = (searchText: string) => {
-    addSearchParam('search', searchText);
-    setSearchText(searchText);
+  const patchFilters = React.useCallback(
+    (patch: Partial<DAGDefinitionsFilters>) => {
+      const next = cloneFilters({ ...currentFiltersRef.current, ...patch });
+      currentFiltersRef.current = next;
+      setSearchText(next.searchText);
+      setSearchLabels(next.searchLabels);
+      setSortField(next.sortField);
+      setSortOrder(next.sortOrder);
+      updateFilterLocation(next, activeWorkflowViewId);
+    },
+    [activeWorkflowViewId, updateFilterLocation]
+  );
+
+  const searchTextChange = (nextSearchText: string) => {
+    patchFilters({ searchText: nextSearchText });
   };
 
   const searchLabelsChange = (labels: string[]) => {
-    addSearchParam('labels', labels);
-    setSearchLabels(labels);
+    patchFilters({ searchLabels: labels });
   };
 
   const handleSortChange = (field: string, order: string) => {
-    addSearchParam('sort', field);
-    addSearchParam('order', order);
-    setSortField(field);
-    setSortOrder(order);
+    patchFilters({
+      sortField: normalizeWorkflowSortField(field),
+      sortOrder: normalizeWorkflowSortOrder(order),
+    });
   };
+
+  const handleSelectWorkflowView = (viewId: string) => {
+    const view = workflowViews.find((item) => item.id === viewId);
+    if (view) {
+      setWorkflowViewError(null);
+      applyFilters(view.filters, view.id);
+    }
+  };
+
+  const handleShowAllWorkflows = () => {
+    setWorkflowViewError(null);
+    applyFilters(defaultFilters, ALL_WORKFLOWS_VIEW_PARAM);
+  };
+
+  const handleResetWorkflowView = () => {
+    const view = workflowViews.find((item) => item.id === activeWorkflowViewId);
+    if (view) {
+      setWorkflowViewError(null);
+      applyFilters(view.filters, view.id, true);
+    }
+  };
+
+  const handleSaveWorkflowView = async (
+    name: string,
+    makeDefault: boolean,
+    pinned: boolean
+  ): Promise<void> => {
+    const filters = cloneFilters(currentFiltersRef.current);
+    setWorkflowViewError(null);
+    try {
+      const view = await createView(
+        buildWorkflowViewSpec(name, filters, makeDefault, pinned)
+      );
+      applyFilters(workflowFilterViewFromView(view).filters, view.id, true);
+    } catch (error) {
+      setWorkflowViewError(
+        error instanceof Error ? error.message : 'Failed to save workflow view'
+      );
+      throw error;
+    }
+  };
+
+  const handleUpdateWorkflowView = async (): Promise<void> => {
+    const view = scopedWorkflowViews.find(
+      (item) => item.id === activeWorkflowViewId
+    );
+    if (!view) {
+      return;
+    }
+    const filters = cloneFilters(currentFiltersRef.current);
+    setWorkflowViewError(null);
+    try {
+      const updated = await updateView(
+        view.id,
+        buildWorkflowViewSpec(
+          view.name,
+          filters,
+          view.isDefault ?? false,
+          view.pinned ?? false
+        )
+      );
+      applyFilters(
+        workflowFilterViewFromView(updated).filters,
+        updated.id,
+        true
+      );
+    } catch (error) {
+      setWorkflowViewError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to update workflow view'
+      );
+      throw error;
+    }
+  };
+
+  const handleSetDefaultWorkflowView = async (
+    viewId: string | undefined
+  ): Promise<void> => {
+    const target = scopedWorkflowViews.find(
+      (view) => view.id === (viewId ?? defaultWorkflowViewId)
+    );
+    if (!target) {
+      return;
+    }
+    setWorkflowViewError(null);
+    try {
+      await updateView(
+        target.id,
+        buildWorkflowViewSpec(
+          target.name,
+          workflowFilterViewFromView(target).filters,
+          viewId !== undefined,
+          target.pinned ?? false
+        )
+      );
+    } catch (error) {
+      setWorkflowViewError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to update the default workflow view'
+      );
+      throw error;
+    }
+  };
+
+  const handleSetPinnedWorkflowView = async (
+    viewId: string,
+    pinned: boolean
+  ): Promise<void> => {
+    const target = scopedWorkflowViews.find((view) => view.id === viewId);
+    if (!target) {
+      return;
+    }
+    setWorkflowViewError(null);
+    try {
+      await updateView(
+        target.id,
+        buildWorkflowViewSpec(
+          target.name,
+          workflowFilterViewFromView(target).filters,
+          target.isDefault ?? false,
+          pinned
+        )
+      );
+    } catch (error) {
+      setWorkflowViewError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to update the starred workflow view'
+      );
+      throw error;
+    }
+  };
+
+  const handleDeleteWorkflowView = async (viewId: string): Promise<void> => {
+    const deletingActiveView = viewId === activeWorkflowViewId;
+    setWorkflowViewError(null);
+    try {
+      await deleteView(viewId);
+      if (deletingActiveView) {
+        applyFilters(defaultFilters, ALL_WORKFLOWS_VIEW_PARAM, true);
+      }
+    } catch (error) {
+      setWorkflowViewError(
+        error instanceof Error
+          ? error.message
+          : 'Failed to delete workflow view'
+      );
+      throw error;
+    }
+  };
+
+  const activeWorkflowView = workflowViews.find(
+    (view) => view.id === activeWorkflowViewId
+  );
+  const isWorkflowViewEdited = activeWorkflowView
+    ? !areDAGDefinitionsFiltersEqual(activeWorkflowView.filters, currentFilters)
+    : false;
+  const isAllWorkflowsView =
+    activeWorkflowViewId === null &&
+    areDAGDefinitionsFiltersEqual(currentFilters, defaultFilters);
 
   const nextPage =
     continuationPageOverride === undefined
@@ -439,8 +834,8 @@ function DAGsContent() {
           query: {
             ...queryParams,
             page: nextPage,
-            sort: sortField as PathsDagsGetParametersQuerySort,
-            order: sortOrder as PathsDagsGetParametersQueryOrder,
+            sort: workflowSortFieldQuery(sortField),
+            order: workflowSortOrderQuery(sortOrder),
           },
         },
         signal: controller.signal,
@@ -539,6 +934,22 @@ function DAGsContent() {
             sortField={sortField}
             sortOrder={sortOrder}
             onSortChange={handleSortChange}
+            workflowViews={workflowViews}
+            activeWorkflowViewId={activeWorkflowViewId}
+            defaultWorkflowViewId={defaultWorkflowViewId}
+            isAllWorkflowsView={isAllWorkflowsView}
+            isWorkflowViewEdited={isWorkflowViewEdited}
+            canManageWorkflowViews={canManageWorkflowViews}
+            workflowViewError={workflowViewError}
+            onSelectWorkflowView={handleSelectWorkflowView}
+            onShowAllWorkflows={handleShowAllWorkflows}
+            onResetWorkflowView={handleResetWorkflowView}
+            onSaveWorkflowView={handleSaveWorkflowView}
+            onUpdateWorkflowView={handleUpdateWorkflowView}
+            onSetDefaultWorkflowView={handleSetDefaultWorkflowView}
+            onSetPinnedWorkflowView={handleSetPinnedWorkflowView}
+            onDeleteWorkflowView={handleDeleteWorkflowView}
+            resultCount={data.pagination.totalRecords}
             selectedDAG={selectedDAG}
             onSelectDAG={handleSelectDAG}
           />

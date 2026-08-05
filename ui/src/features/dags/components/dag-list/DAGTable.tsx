@@ -92,12 +92,14 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { AppBarContext } from '../../../../contexts/AppBarContext';
+import type { WorkflowFilterView } from './workflowViews';
 import { useQuery } from '../../../../hooks/api';
 import { parseLabelParts } from '../../../../lib/utils';
 import {
   isWorkspaceLabel,
   withoutWorkspaceLabels,
 } from '../../../../lib/workspace';
+import { WorkflowViewSelector } from './WorkflowViewSelector';
 
 // Threshold in pixels below which we switch to card view
 // Set higher than table's comfortable minimum width (~700px for all columns)
@@ -288,6 +290,34 @@ type Props = {
   sortOrder?: string;
   /** Handler for sort changes */
   onSortChange?: (field: string, order: string) => void;
+  /** Saved filter views available in the current context */
+  workflowViews: WorkflowFilterView[];
+  /** Selected saved view, if any */
+  activeWorkflowViewId: string | null;
+  /** Saved view that opens by default */
+  defaultWorkflowViewId?: string;
+  /** Whether the built-in unfiltered view is selected */
+  isAllWorkflowsView: boolean;
+  /** Whether the selected saved view differs from its stored filters */
+  isWorkflowViewEdited: boolean;
+  /** Whether the current user can mutate shared views in this scope */
+  canManageWorkflowViews: boolean;
+  /** Latest shared-view mutation error */
+  workflowViewError?: string | null;
+  onSelectWorkflowView: (viewId: string) => void;
+  onShowAllWorkflows: () => void;
+  onResetWorkflowView: () => void;
+  onSaveWorkflowView: (
+    name: string,
+    makeDefault: boolean,
+    pinned: boolean
+  ) => Promise<void>;
+  onUpdateWorkflowView: () => Promise<void>;
+  onSetDefaultWorkflowView: (viewId: string | undefined) => Promise<void>;
+  onSetPinnedWorkflowView: (viewId: string, pinned: boolean) => Promise<void>;
+  onDeleteWorkflowView: (viewId: string) => Promise<void>;
+  /** Total workflows matching the server-side filters */
+  resultCount?: number;
   /** Currently selected DAG file name */
   selectedDAG?: string | null;
   /** Handler for DAG selection changes */
@@ -910,6 +940,22 @@ function DAGTable({
   sortField = 'name',
   sortOrder = 'asc',
   onSortChange,
+  workflowViews,
+  activeWorkflowViewId,
+  defaultWorkflowViewId,
+  isAllWorkflowsView,
+  isWorkflowViewEdited,
+  canManageWorkflowViews,
+  workflowViewError,
+  onSelectWorkflowView,
+  onShowAllWorkflows,
+  onResetWorkflowView,
+  onSaveWorkflowView,
+  onUpdateWorkflowView,
+  onSetDefaultWorkflowView,
+  onSetPinnedWorkflowView,
+  onDeleteWorkflowView,
+  resultCount,
   selectedDAG = null,
   onSelectDAG,
 }: Props) {
@@ -1180,6 +1226,12 @@ function DAGTable({
     },
   });
   const availableLabels = withoutWorkspaceLabels(uniqueLabels?.labels ?? []);
+  const activeWorkflowViewName = workflowViews.find(
+    (view) => view.id === activeWorkflowViewId
+  )?.name;
+  const emptyStateDescription = activeWorkflowViewName
+    ? `No workflows match the “${activeWorkflowViewName}” view. Try adjusting its filters or show all workflows.`
+    : 'There are no workflows matching your current filters. Try adjusting your search criteria or labels.';
 
   return (
     <div className="space-y-2">
@@ -1191,6 +1243,24 @@ function DAGTable({
         }`}
       >
         <div className="flex flex-wrap items-center gap-2">
+          <WorkflowViewSelector
+            views={workflowViews}
+            activeViewId={activeWorkflowViewId}
+            defaultViewId={defaultWorkflowViewId}
+            isAllView={isAllWorkflowsView}
+            isActiveViewEdited={isWorkflowViewEdited}
+            canManageViews={canManageWorkflowViews}
+            error={workflowViewError}
+            onSelectView={onSelectWorkflowView}
+            onShowAll={onShowAllWorkflows}
+            onResetView={onResetWorkflowView}
+            onSaveView={onSaveWorkflowView}
+            onUpdateView={onUpdateWorkflowView}
+            onSetDefault={onSetDefaultWorkflowView}
+            onSetPinned={onSetPinnedWorkflowView}
+            onDeleteView={onDeleteWorkflowView}
+          />
+
           {/* Search input */}
           <Input
             type="text"
@@ -1228,6 +1298,19 @@ function DAGTable({
             </div>
           )}
         </div>
+
+        {workflowViewError && (
+          <p role="alert" className="text-xs text-destructive">
+            {workflowViewError}
+          </p>
+        )}
+
+        {resultCount !== undefined && (
+          <div className="text-xs text-muted-foreground">
+            {resultCount.toLocaleString()} workflow
+            {resultCount === 1 ? '' : 's'}
+          </div>
+        )}
 
         {useCardView && onSortChange && (
           <div className="flex flex-wrap items-center gap-2 pt-1 pl-1">
@@ -1415,13 +1498,23 @@ function DAGTable({
                   <div className="flex flex-col items-center justify-center py-8">
                     <div className="text-6xl mb-4">🔍</div>
                     <h3 className="text-lg font-medium text-foreground mb-2">
-                      No DAGs found
+                      No workflows found
                     </h3>
-                    <p className="text-sm text-muted-foreground text-center max-w-md mb-4">
-                      There are no DAGs matching your current filters. Try
-                      adjusting your search criteria or labels.
+                    <p className="text-sm text-muted-foreground text-center max-w-md mb-4 whitespace-normal break-words">
+                      {emptyStateDescription}
                     </p>
-                    <CreateDAGModal />
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      {!isAllWorkflowsView && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={onShowAllWorkflows}
+                        >
+                          Show all workflows
+                        </Button>
+                      )}
+                      <CreateDAGModal />
+                    </div>
                   </div>
                 </TableCell>
               </TableRow>
@@ -1431,7 +1524,10 @@ function DAGTable({
       </div>
 
       {/* Card View - Visible on mobile or when panel is narrow */}
-      <div className={`space-y-2 ${useCardView ? 'block' : 'md:hidden'}`}>
+      <div
+        data-testid="workflow-card-view"
+        className={`space-y-2 ${useCardView ? 'block' : 'md:hidden'}`}
+      >
         {instance.getRowModel().rows.length ? (
           instance.getRowModel().rows.map((row) => {
             // Render group rows with collapsible header
@@ -1520,12 +1616,22 @@ function DAGTable({
         ) : (
           <div className="flex flex-col items-center justify-center py-12 px-4 border rounded-md bg-card">
             <div className="text-6xl mb-4">🔍</div>
-            <h3 className="text-lg font-medium mb-2">No DAGs found</h3>
-            <p className="text-sm text-muted-foreground text-center max-w-md mb-4">
-              There are no DAGs matching your current filters. Try adjusting
-              your search criteria or labels.
+            <h3 className="text-lg font-medium mb-2">No workflows found</h3>
+            <p className="text-sm text-muted-foreground text-center max-w-md mb-4 whitespace-normal break-words">
+              {emptyStateDescription}
             </p>
-            <CreateDAGModal />
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {!isAllWorkflowsView && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={onShowAllWorkflows}
+                >
+                  Show all workflows
+                </Button>
+              )}
+              <CreateDAGModal />
+            </div>
           </div>
         )}
       </div>
