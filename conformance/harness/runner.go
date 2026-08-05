@@ -70,6 +70,14 @@ func defaultCommandTimeoutForPlatform() time.Duration {
 	return defaultCommandTimeout
 }
 
+// WaitTimeout returns the budget for polling until an expected state is
+// observed. It matches the budget a single command gets: the platform default,
+// or DAGU_CONFORMANCE_COMMAND_TIMEOUT when set.
+func WaitTimeout(t *testing.T) time.Duration {
+	t.Helper()
+	return commandTimeout(t)
+}
+
 // NewRunner creates an isolated project seeded with package-local testdata.
 func NewRunner(t *testing.T) *Runner {
 	t.Helper()
