@@ -6,6 +6,7 @@ import React, { useCallback, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { components, Status } from '../../../../api/v1/schema';
 import dayjs from '../../../../lib/dayjs';
+import { copyText } from '@/lib/clipboard';
 import StatusChip from '@/components/ui/status-chip';
 import AutoRetryBadge from '../../../dag-runs/components/common/AutoRetryBadge';
 import { RootDAGRunContext } from '../../contexts/RootDAGRunContext';
@@ -15,7 +16,6 @@ interface DAGHeaderProps {
   dag: components['schemas']['DAG'] | components['schemas']['DAGDetails'];
   currentDAGRun?: components['schemas']['DAGRunDetails'];
   fileName: string;
-  filePath?: string;
   refreshFn: () => void;
   formatDuration: (startDate: string, endDate: string) => string;
   navigateToStatusTab?: () => void;
@@ -26,7 +26,6 @@ const DAGHeader: React.FC<DAGHeaderProps> = ({
   dag,
   currentDAGRun,
   fileName,
-  filePath,
   refreshFn,
   formatDuration,
   navigateToStatusTab,
@@ -37,33 +36,38 @@ const DAGHeader: React.FC<DAGHeaderProps> = ({
   const rootDAGRunContext = React.useContext(RootDAGRunContext);
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const [currentDuration, setCurrentDuration] = React.useState<string>('--');
-  const [copiedPath, setCopiedPath] = React.useState(false);
+  const [copiedName, setCopiedName] = React.useState<string | null>(null);
+  const copiedNameResetRef = React.useRef<ReturnType<typeof setTimeout>>(null);
 
   const scopedUrl = useCallback(
     (path: string) => (buildScopedUrl ? buildScopedUrl(path) : path),
     [buildScopedUrl]
   );
 
-  const copyFilePath = useCallback(async () => {
-    if (!filePath) return;
-    try {
-      await navigator.clipboard.writeText(filePath);
-      setCopiedPath(true);
-      setTimeout(() => setCopiedPath(false), 2000);
-    } catch {
-      const textArea = document.createElement('textarea');
-      textArea.value = filePath;
-      document.body.appendChild(textArea);
-      textArea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textArea);
-      setCopiedPath(true);
-      setTimeout(() => setCopiedPath(false), 2000);
-    }
-  }, [filePath]);
-
   // Use the DAG-run from context if available, otherwise use the prop
   const dagRunToDisplay = rootDAGRunContext.data || currentDAGRun;
+
+  const displayName = dagRunToDisplay?.name || dag.name;
+  const nameCopied = copiedName !== null && copiedName === displayName;
+
+  const copyName = useCallback(async () => {
+    if (!displayName) return;
+    if (!(await copyText(displayName))) return;
+    setCopiedName(displayName);
+    if (copiedNameResetRef.current) {
+      clearTimeout(copiedNameResetRef.current);
+    }
+    copiedNameResetRef.current = setTimeout(() => setCopiedName(null), 2000);
+  }, [displayName]);
+
+  useEffect(
+    () => () => {
+      if (copiedNameResetRef.current) {
+        clearTimeout(copiedNameResetRef.current);
+      }
+    },
+    []
+  );
 
   // Calculate duration between start and end times
   const calculateDuration = React.useCallback(() => {
@@ -230,21 +234,25 @@ const DAGHeader: React.FC<DAGHeaderProps> = ({
 
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="min-w-0 break-words text-2xl font-bold text-foreground sm:truncate">
-              {dagRunToDisplay?.name || dag.name}
+              {displayName}
             </h1>
-            {filePath && (
+            {displayName && (
               <button
-                onClick={copyFilePath}
+                onClick={copyName}
                 className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 text-xs rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-all"
-                title={`Copy file path: ${filePath}`}
+                title={nameCopied ? 'Name copied' : `Copy name: ${displayName}`}
+                aria-label={nameCopied ? 'Name copied' : 'Copy name'}
               >
-                {copiedPath ? (
+                {nameCopied ? (
                   <Check className="h-3.5 w-3.5 text-green-500" />
                 ) : (
                   <Copy className="h-3.5 w-3.5" />
                 )}
               </button>
             )}
+            <span className="sr-only" aria-live="polite">
+              {nameCopied ? `Copied name ${displayName}` : ''}
+            </span>
           </div>
         </div>
 
