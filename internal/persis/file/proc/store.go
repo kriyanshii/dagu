@@ -108,11 +108,6 @@ func WithHeartbeatInterval(d time.Duration) StoreOption {
 	}
 }
 
-// WithHeartbeatSyncInterval preserves the file proc store configuration surface.
-func WithHeartbeatSyncInterval(_ time.Duration) StoreOption {
-	return func(_ *Store) {}
-}
-
 // New creates a Store rooted at dir.
 func New(root string, opts ...StoreOption) *Store {
 	s := &Store{
@@ -322,15 +317,14 @@ func (s *Store) LatestFreshEntryByDAGName(ctx context.Context, groupName, dagNam
 	}
 	var freshest *exec.ProcEntry
 	for i := range entries {
-		entry := entries[i]
+		entry := &entries[i]
 		if !entry.Fresh || entry.Meta.Name != dagName {
 			continue
 		}
 		if freshest == nil ||
 			entry.Meta.StartedAt > freshest.Meta.StartedAt ||
 			(entry.Meta.StartedAt == freshest.Meta.StartedAt && entry.LastHeartbeatAt > freshest.LastHeartbeatAt) {
-			copy := entry
-			freshest = &copy
+			freshest = entry
 		}
 	}
 	return freshest, nil
@@ -370,10 +364,10 @@ func (s *Store) ListAllAlive(ctx context.Context) (map[string][]exec.DAGRunRef, 
 	return result, nil
 }
 
-// Validate fails if any proc entry cannot be decoded.
-func (s *Store) Validate(ctx context.Context) error {
-	_, err := s.ListAllEntries(ctx)
-	if err != nil {
+// Validate fails if the proc directory cannot be read. Individual proc files
+// are not decoded here, so a damaged one does not make the store unusable.
+func (s *Store) Validate(_ context.Context) error {
+	if _, err := os.ReadDir(s.root); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("validate proc store: %w", err)
 	}
 	return nil
@@ -585,13 +579,19 @@ func (s *Store) LatestHeartbeat(_ context.Context, groupName string, dagRun exec
 	now := time.Now().UTC()
 	var latest *exec.ProcHeartbeat
 	for _, file := range files {
-		observed, err := readProcEntryObservedWithRetry(file, groupName, s.staleTime, now)
+		if !procFileMayBelongTo(file, dagRun) {
+			continue
+		}
+		observed, err := readProcEntryWithRetry(file, groupName, s.staleTime, now)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) || errors.Is(err, errInvalidProcFile) {
-				// Heartbeat observation should not fail because an unrelated
-				// proc file is concurrently removed or corrupt.
+			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
+			if errors.Is(err, errInvalidProcFile) && s.abandoned(file, now) {
+				continue
+			}
+			// The file may be this run's and is still being written, so report
+			// that rather than an absence the caller reads as an exit.
 			return nil, err
 		}
 		entry := observed.entry
@@ -641,16 +641,42 @@ func (s *Store) entriesFromFiles(groupName string, files []string) ([]exec.ProcE
 	now := time.Now().UTC()
 	entries := make([]exec.ProcEntry, 0, len(files))
 	for _, file := range files {
-		entry, err := readProcEntryWithRetry(file, groupName, s.staleTime, now)
+		observed, err := readProcEntryWithRetry(file, groupName, s.staleTime, now)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
+			if errors.Is(err, errInvalidProcFile) && s.abandoned(file, now) {
+				continue
+			}
 			return nil, err
 		}
-		entries = append(entries, entry)
+		entries = append(entries, observed.entry)
 	}
 	return entries, nil
+}
+
+// procFileMayBelongTo reports whether path can hold an entry for dagRun,
+// judging by the DAG directory and the identifiers carried in the file name.
+// A name that cannot be parsed is a possible match, because attributing such a
+// file needs its contents.
+func procFileMayBelongTo(path string, dagRun exec.DAGRunRef) bool {
+	if filepath.Base(filepath.Dir(path)) != dagRun.Name {
+		return false
+	}
+	parsed, err := parseProcFileName(filepath.Base(path))
+	if err != nil {
+		return true
+	}
+	return parsed.dagRunID == dagRun.ID
+}
+
+// abandoned reports whether path has gone untouched for at least the stale
+// threshold. A damaged file that is still being written may belong to a run
+// that is alive, and reporting the group without it would undercount.
+func (s *Store) abandoned(path string, now time.Time) bool {
+	info, err := os.Stat(path)
+	return err == nil && now.Sub(info.ModTime()) >= s.staleTime
 }
 
 // RemoveIfStale deletes entry when the on-disk proc file is still stale.
@@ -659,14 +685,14 @@ func (s *Store) RemoveIfStale(ctx context.Context, entry exec.ProcEntry) error {
 	if !ok {
 		return nil
 	}
-	current, err := readProcEntryWithRetry(path, entry.GroupName, s.staleTime, time.Now().UTC())
+	observed, err := readProcEntryWithRetry(path, entry.GroupName, s.staleTime, time.Now().UTC())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if current.Fresh || !sameProcEntry(current, entry) {
+	if observed.entry.Fresh || !sameProcEntry(observed.entry, entry) {
 		return nil
 	}
 	if err := removeProcFile(path); err != nil {
@@ -676,31 +702,7 @@ func (s *Store) RemoveIfStale(ctx context.Context, entry exec.ProcEntry) error {
 	return nil
 }
 
-func readProcEntry(path, groupName string, staleTime time.Duration, now time.Time) (exec.ProcEntry, error) {
-	observed, err := readProcEntryObserved(path, groupName, staleTime, now)
-	if err != nil {
-		return exec.ProcEntry{}, err
-	}
-	return observed.entry, nil
-}
-
-func readProcEntryWithRetry(path, groupName string, staleTime time.Duration, now time.Time) (exec.ProcEntry, error) {
-	var lastErr error
-	for attempt := range procFileRetries {
-		entry, err := readProcEntry(path, groupName, staleTime, now)
-		if err == nil || errors.Is(err, os.ErrNotExist) {
-			return entry, err
-		}
-		if !fileutil.IsTransientFileError(err) {
-			return exec.ProcEntry{}, err
-		}
-		lastErr = err
-		time.Sleep(time.Duration(attempt+1) * 25 * time.Millisecond)
-	}
-	return exec.ProcEntry{}, lastErr
-}
-
-func readProcEntryObservedWithRetry(path, groupName string, staleTime time.Duration, now time.Time) (observedProcEntry, error) {
+func readProcEntryWithRetry(path, groupName string, staleTime time.Duration, now time.Time) (observedProcEntry, error) {
 	var lastErr error
 	for attempt := range procFileRetries {
 		observed, err := readProcEntryObserved(path, groupName, staleTime, now)
@@ -711,7 +713,9 @@ func readProcEntryObservedWithRetry(path, groupName string, staleTime time.Durat
 			return observedProcEntry{}, err
 		}
 		lastErr = err
-		time.Sleep(time.Duration(attempt+1) * 25 * time.Millisecond)
+		if attempt < procFileRetries-1 {
+			time.Sleep(time.Duration(attempt+1) * 25 * time.Millisecond)
+		}
 	}
 	return observedProcEntry{}, lastErr
 }
@@ -738,18 +742,19 @@ func readProcEntryObserved(path, groupName string, staleTime time.Duration, now 
 
 	lastHeartbeatAt := int64(binary.BigEndian.Uint64(data[:procHeartbeatSize])) //nolint:gosec // heartbeat unix time.
 	heartbeatTime := time.Unix(lastHeartbeatAt, 0).UTC()
-	if heartbeatTime.After(now.Add(5 * time.Minute)) {
-		return observedProcEntry{}, fmt.Errorf("%w: proc heartbeat timestamp is in the future for %s", errInvalidProcFile, path)
-	}
 
-	meta, err := procMetaFromLegacyData(path, parsedName, data[procHeartbeatSize:], heartbeatTime, info)
+	meta, err := procMetaFromData(path, parsedName, data[procHeartbeatSize:], heartbeatTime, info)
 	if err != nil {
 		return observedProcEntry{}, err
 	}
 
+	// The heartbeat carries the writing process's clock, so it is only trusted
+	// when it is not ahead of the reader. A skewed or garbled timestamp leaves
+	// the entry stale rather than alive forever.
 	fresh := now.Sub(info.ModTime()) < staleTime
 	if !fresh {
-		fresh = now.Sub(heartbeatTime) < staleTime
+		age := now.Sub(heartbeatTime)
+		fresh = age >= 0 && age < staleTime
 	}
 	entry := exec.ProcEntry{
 		GroupName:       groupName,
@@ -761,7 +766,7 @@ func readProcEntryObserved(path, groupName string, staleTime time.Duration, now 
 	return observedProcEntry{entry: entry, observedAt: info.ModTime()}, nil
 }
 
-func procMetaFromLegacyData(path string, parsedName procFileName, payload []byte, heartbeatTime time.Time, info os.FileInfo) (exec.ProcMeta, error) {
+func procMetaFromData(path string, parsedName procFileName, payload []byte, heartbeatTime time.Time, info os.FileInfo) (exec.ProcMeta, error) {
 	switch parsedName.format {
 	case procFileFormatCurrent:
 		if len(payload) == 0 {
