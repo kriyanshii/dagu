@@ -53,6 +53,7 @@ import {
 } from './customActionSchema';
 import DAGAttributes from './DAGAttributes';
 import DAGEditorWithDocs from './DAGEditorWithDocs';
+import { ControllerSpecOverview } from './ControllerSpecOverview';
 import ExternalChangeDialog from './ExternalChangeDialog';
 
 /**
@@ -430,6 +431,11 @@ function DAGSpec({ fileName, localDags, editorHints }: Props) {
       ? dag.steps?.find((step) => step.name === selectedSpecStepName)
       : undefined;
 
+    const handleStepSelect = (step: components['schemas']['Step']) => {
+      setSelectedSpecStepName(step.name);
+      setIsSpecStepDetailsOpen(true);
+    };
+
     const handleGraphNodeSelect = (nodeId: string) => {
       const step = dag.steps?.find(
         (item) => toMermaidNodeId(item.name) === nodeId
@@ -437,8 +443,7 @@ function DAGSpec({ fileName, localDags, editorHints }: Props) {
       if (!step) {
         return;
       }
-      setSelectedSpecStepName(step.name);
-      setIsSpecStepDetailsOpen(true);
+      handleStepSelect(step);
     };
 
     return (
@@ -457,55 +462,61 @@ function DAGSpec({ fileName, localDags, editorHints }: Props) {
           </div>
         ) : null}
 
-        {errors?.length || !dag.steps || dag.steps.length === 0 ? (
-          <div className="py-8 px-4 text-center">
-            <AlertTriangle className="h-12 w-12 text-warning mx-auto mb-4" />
-            <p className="text-muted-foreground mb-2">
-              Cannot render graph due to configuration errors
-            </p>
-            <p className="text-sm text-muted-foreground">
-              Please fix the errors above and save the configuration to view the
-              graph
-            </p>
-          </div>
+        {dag.type === 'controller' ? (
+          <ControllerSpecOverview dag={dag} />
         ) : (
-          <div>
-            <BorderedBox className="py-4 px-4 flex flex-col overflow-x-auto">
-              <Graph
-                steps={dag.steps}
-                type="config"
-                flowchart={flowchart}
-                onChangeFlowchart={onChangeFlowchart}
-                onClickNode={handleGraphNodeSelect}
-                selectOnClick
-                showIcons={false}
-              />
-            </BorderedBox>
-            <div className="mt-2 flex justify-end">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div
-                    className="flex h-7 w-7 items-center justify-center rounded bg-muted text-muted-foreground cursor-help"
-                    aria-label="Graph interactions"
-                  >
-                    <MousePointerClick className="h-3.5 w-3.5" />
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>Click: Inspect step details</p>
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
+          <>
+            {errors?.length || !dag.steps || dag.steps.length === 0 ? (
+              <div className="py-8 px-4 text-center">
+                <AlertTriangle className="h-12 w-12 text-warning mx-auto mb-4" />
+                <p className="text-muted-foreground mb-2">
+                  Cannot render graph due to configuration errors
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Please fix the errors above and save the configuration to view
+                  the graph
+                </p>
+              </div>
+            ) : (
+              <div>
+                <BorderedBox className="py-4 px-4 flex flex-col overflow-x-auto">
+                  <Graph
+                    steps={dag.steps}
+                    type="config"
+                    flowchart={flowchart}
+                    onChangeFlowchart={onChangeFlowchart}
+                    onClickNode={handleGraphNodeSelect}
+                    selectOnClick
+                    showIcons={false}
+                  />
+                </BorderedBox>
+                <div className="mt-2 flex justify-end">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div
+                        className="flex h-7 w-7 items-center justify-center rounded bg-muted text-muted-foreground cursor-help"
+                        aria-label="Graph interactions"
+                      >
+                        <MousePointerClick className="h-3.5 w-3.5" />
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Click: Inspect step details</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+              </div>
+            )}
+
+            <DAGAttributes dag={dag} />
+
+            {dag.steps ? (
+              <div className="overflow-hidden">
+                <DAGStepTable steps={dag.steps} />
+              </div>
+            ) : null}
+          </>
         )}
-
-        <DAGAttributes dag={dag} />
-
-        {dag.steps ? (
-          <div className="overflow-hidden">
-            <DAGStepTable steps={dag.steps} />
-          </div>
-        ) : null}
 
         {getHandlers(dag)?.length ? (
           <div className="overflow-hidden">
@@ -577,7 +588,7 @@ function DAGSpec({ fileName, localDags, editorHints }: Props) {
               />
 
               <div
-                className="flex flex-col flex-1 min-h-0 space-y-6 mb-6"
+                className="flex min-h-0 flex-1 flex-col space-y-6 pb-8"
                 ref={containerRef}
               >
                 {hasLocalDags && (
@@ -636,25 +647,30 @@ function DAGSpec({ fileName, localDags, editorHints }: Props) {
                   );
                 })()}
 
-                <DAGEditorWithDocs
-                  value={
-                    editable
-                      ? (currentValue ?? serverSpec ?? '')
-                      : (serverSpec ?? '')
-                  }
-                  readOnly={!editable}
-                  onChange={
-                    editable
-                      ? (newValue) => {
-                          setCurrentValue(newValue ?? '');
-                        }
-                      : undefined
-                  }
-                  className="min-h-[400px]"
-                  modelUri={editorModelUri}
-                  schema={editorSchema}
-                  headerActions={editorHeaderActions}
-                />
+                <section className="flex-shrink-0 space-y-3">
+                  <h2 className="text-lg font-semibold text-foreground">
+                    YAML
+                  </h2>
+                  <DAGEditorWithDocs
+                    value={
+                      editable
+                        ? (currentValue ?? serverSpec ?? '')
+                        : (serverSpec ?? '')
+                    }
+                    readOnly={!editable}
+                    onChange={
+                      editable
+                        ? (newValue) => {
+                            setCurrentValue(newValue ?? '');
+                          }
+                        : undefined
+                    }
+                    className="min-h-[640px]"
+                    modelUri={editorModelUri}
+                    schema={editorSchema}
+                    headerActions={editorHeaderActions}
+                  />
+                </section>
               </div>
             </React.Fragment>
           )
