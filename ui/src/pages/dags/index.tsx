@@ -40,10 +40,14 @@ import {
   workspaceSelectionQuery,
 } from '../../lib/workspace';
 import LoadingIndicator from '@/components/ui/loading-indicator';
-import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { useViews, type View, type ViewSpec } from '@/hooks/useViews';
 
 type DAGDefinitionsFilters = WorkflowFilterSet;
+
+type AppliedDAGDefinitionsFilters = {
+  scope: string;
+  filters: DAGDefinitionsFilters;
+};
 
 type DAGsPageResponse = {
   dags: components['schemas']['DAGFile'][];
@@ -310,8 +314,11 @@ function DAGsContent() {
   );
   const [sortField, setSortField] = React.useState(defaultFilters.sortField);
   const [sortOrder, setSortOrder] = React.useState(defaultFilters.sortOrder);
-  const debouncedSearchText = useDebouncedValue(searchText, 500);
-  const debouncedSearchLabels = useDebouncedValue(searchLabels, 500);
+  const [appliedFilters, setAppliedFilters] =
+    React.useState<AppliedDAGDefinitionsFilters | null>(null);
+  const appliedFiltersRef = React.useRef<AppliedDAGDefinitionsFilters | null>(
+    null
+  );
 
   React.useEffect(() => {
     if (previousWorkspaceKeyRef.current === workspaceKey) {
@@ -345,6 +352,18 @@ function DAGsContent() {
   React.useEffect(() => {
     currentFiltersRef.current = currentFilters;
   }, [currentFilters]);
+
+  const applyQueryFilters = React.useCallback(
+    (filters: DAGDefinitionsFilters) => {
+      const next = {
+        scope: searchStateScope,
+        filters: cloneFilters(filters),
+      };
+      appliedFiltersRef.current = next;
+      setAppliedFilters(next);
+    },
+    [searchStateScope]
+  );
 
   const lastPersistedFiltersRef = React.useRef<DAGDefinitionsFilters | null>(
     null
@@ -455,12 +474,20 @@ function DAGsContent() {
 
     setActiveWorkflowViewId(nextActiveViewId);
 
+    if (
+      appliedFiltersRef.current?.scope !== searchStateScope ||
+      !areDAGDefinitionsFiltersEqual(current, next)
+    ) {
+      applyQueryFilters(next);
+    }
+
     if (current && areDAGDefinitionsFiltersEqual(current, next)) {
       lastPersistedFiltersRef.current = next;
       searchState.writeState('dagDefinitions', searchStateScope, next);
       return;
     }
 
+    currentFiltersRef.current = next;
     setSearchText(next.searchText);
     setSearchLabels(next.searchLabels);
     setSortField(next.sortField);
@@ -470,6 +497,7 @@ function DAGsContent() {
     searchState.writeState('dagDefinitions', searchStateScope, next);
   }, [
     defaultFilters,
+    applyQueryFilters,
     location.pathname,
     location.search,
     navigate,
@@ -478,6 +506,28 @@ function DAGsContent() {
     workflowViews,
     workflowViewsLoading,
     defaultWorkflowViewId,
+  ]);
+
+  React.useEffect(() => {
+    const applied = appliedFiltersRef.current;
+    if (
+      workflowViewsLoading ||
+      applied?.scope !== searchStateScope ||
+      areDAGDefinitionsFiltersEqual(applied.filters, currentFilters)
+    ) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      applyQueryFilters(currentFilters);
+    }, 500);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    applyQueryFilters,
+    currentFilters,
+    searchStateScope,
+    workflowViewsLoading,
   ]);
 
   React.useEffect(() => {
@@ -490,47 +540,41 @@ function DAGsContent() {
     searchState.writeState('dagDefinitions', searchStateScope, currentFilters);
   }, [currentFilters, searchState, searchStateScope]);
 
+  const requestFilters = appliedFilters?.filters ?? defaultFilters;
+  const filtersReady =
+    !workflowViewsLoading && appliedFilters?.scope === searchStateScope;
+
   const queryParams = React.useMemo(
     () => ({
       remoteNode,
       page: 1,
       perPage: preferences.pageLimit || 200,
-      name: debouncedSearchText || undefined,
+      name: requestFilters.searchText || undefined,
       labels:
-        debouncedSearchLabels.length > 0
-          ? debouncedSearchLabels.join(',')
+        requestFilters.searchLabels.length > 0
+          ? requestFilters.searchLabels.join(',')
           : undefined,
-      sort: sortField,
-      order: sortOrder,
+      sort: workflowSortFieldQuery(requestFilters.sortField),
+      order: workflowSortOrderQuery(requestFilters.sortOrder),
       ...workspaceQuery,
     }),
-    [
-      remoteNode,
-      preferences.pageLimit,
-      debouncedSearchText,
-      debouncedSearchLabels,
-      sortField,
-      sortOrder,
-      workspaceQuery,
-    ]
+    [remoteNode, preferences.pageLimit, requestFilters, workspaceQuery]
   );
   const queryKey = React.useMemo(
     () => getDAGListQueryKey(queryParams),
     [queryParams]
   );
 
-  const dagsListSSE = useDAGsListSSE(queryParams);
+  const dagsListSSE = useDAGsListSSE(queryParams, filtersReady);
   const { data, mutate, isLoading } = useQuery(
     '/dags',
-    {
-      params: {
-        query: {
-          ...queryParams,
-          sort: workflowSortFieldQuery(sortField),
-          order: workflowSortOrderQuery(sortOrder),
-        },
-      },
-    },
+    filtersReady
+      ? {
+          params: {
+            query: queryParams,
+          },
+        }
+      : null,
     {
       ...sseFallbackOptions(dagsListSSE),
       keepPreviousData: true,
@@ -565,6 +609,7 @@ function DAGsContent() {
     ) => {
       const next = cloneFilters(filters);
       currentFiltersRef.current = next;
+      applyQueryFilters(next);
       updateFilterLocation(next, viewId, replace);
       setSearchText(next.searchText);
       setSearchLabels(next.searchLabels);
@@ -574,7 +619,7 @@ function DAGsContent() {
         viewId === ALL_WORKFLOWS_VIEW_PARAM ? null : viewId
       );
     },
-    [updateFilterLocation]
+    [applyQueryFilters, updateFilterLocation]
   );
 
   const buildWorkflowViewSpec = React.useCallback(
@@ -613,16 +658,19 @@ function DAGsContent() {
   }, [appBarContext]);
 
   const patchFilters = React.useCallback(
-    (patch: Partial<DAGDefinitionsFilters>) => {
+    (patch: Partial<DAGDefinitionsFilters>, applyImmediately = false) => {
       const next = cloneFilters({ ...currentFiltersRef.current, ...patch });
       currentFiltersRef.current = next;
+      if (applyImmediately) {
+        applyQueryFilters(next);
+      }
       setSearchText(next.searchText);
       setSearchLabels(next.searchLabels);
       setSortField(next.sortField);
       setSortOrder(next.sortOrder);
       updateFilterLocation(next, activeWorkflowViewId);
     },
-    [activeWorkflowViewId, updateFilterLocation]
+    [activeWorkflowViewId, applyQueryFilters, updateFilterLocation]
   );
 
   const searchTextChange = (nextSearchText: string) => {
@@ -634,10 +682,13 @@ function DAGsContent() {
   };
 
   const handleSortChange = (field: string, order: string) => {
-    patchFilters({
-      sortField: normalizeWorkflowSortField(field),
-      sortOrder: normalizeWorkflowSortOrder(order),
-    });
+    patchFilters(
+      {
+        sortField: normalizeWorkflowSortField(field),
+        sortOrder: normalizeWorkflowSortOrder(order),
+      },
+      true
+    );
   };
 
   const handleSelectWorkflowView = (viewId: string) => {
@@ -834,8 +885,6 @@ function DAGsContent() {
           query: {
             ...queryParams,
             page: nextPage,
-            sort: workflowSortFieldQuery(sortField),
-            order: workflowSortOrderQuery(sortOrder),
           },
         },
         signal: controller.signal,
@@ -891,7 +940,7 @@ function DAGsContent() {
         setIsLoadingMore(false);
       }
     }
-  }, [client, isLoadingMore, nextPage, queryParams, sortField, sortOrder]);
+  }, [client, isLoadingMore, nextPage, queryParams]);
 
   React.useEffect(() => {
     if (!isLoadingMore) {
@@ -902,7 +951,11 @@ function DAGsContent() {
   const canAutoLoadMore = supportsIntersectionObserver();
   useAutoLoadMore(
     loadMoreSentinelRef,
-    canAutoLoadMore && hasMore && !isLoadingMore && !loadMoreError,
+    filtersReady &&
+      canAutoLoadMore &&
+      hasMore &&
+      !isLoadingMore &&
+      !loadMoreError,
     () => {
       if (autoLoadPendingRef.current) {
         return;
@@ -915,7 +968,7 @@ function DAGsContent() {
   return (
     <div className="max-w-7xl">
       <DAGListHeader onRefresh={refreshFn} />
-      {data ? (
+      {filtersReady && data ? (
         <>
           <DAGErrors
             dags={dagFiles}

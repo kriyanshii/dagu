@@ -524,6 +524,43 @@ describe('DagsPage', () => {
     expect(screen.getByTestId('active-workflow-view')).toHaveTextContent(
       'production'
     );
+
+    const firstWorkflowRequest = calls.find(
+      (call) => call.path === '/dags' && call.init !== null
+    );
+    expect(firstWorkflowRequest?.init).toEqual(
+      expect.objectContaining({
+        params: {
+          query: expect.objectContaining({
+            name: 'deploy',
+            labels: 'env=prod',
+          }),
+        },
+      })
+    );
+  });
+
+  it('uses bookmarked workflow filters for the first workflow request', () => {
+    sharedWorkflowViewState.views.push(makeWorkflowView());
+
+    renderPage(vi.fn(), '/dags?view=production');
+
+    const firstWorkflowRequest = calls.find(
+      (call) => call.path === '/dags' && call.init !== null
+    );
+    expect(firstWorkflowRequest?.init).toEqual(
+      expect.objectContaining({
+        params: {
+          query: expect.objectContaining({
+            name: 'deploy',
+            labels: 'env=prod',
+          }),
+        },
+      })
+    );
+    expect(screen.getByTestId('active-workflow-view')).toHaveTextContent(
+      'production'
+    );
   });
 
   it('gives explicit URL filters precedence over the default view', () => {
