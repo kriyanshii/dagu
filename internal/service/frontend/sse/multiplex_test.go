@@ -10,15 +10,18 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/core/exec"
 	"github.com/dagucloud/dagu/v2/internal/remotenode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/singleflight"
 )
 
 func TestParseTopicCanonicalizesQuery(t *testing.T) {
@@ -100,6 +103,172 @@ func TestMultiplexerCreateSessionFiltersUnauthorizedTopics(t *testing.T) {
 	assert.Equal(t, []string{"dag:test.yaml"}, result.control.Subscribed)
 	require.Len(t, result.control.Errors, 1)
 	assert.Equal(t, "queueitems:default", result.control.Errors[0].Topic)
+}
+
+func TestStreamSessionKeepsWakeNewerThanConcurrentDAGRunBootstrap(t *testing.T) {
+	const timeout = 5 * time.Second
+
+	mux := NewMultiplexer(StreamConfig{}, nil)
+	t.Cleanup(mux.Shutdown)
+
+	started := make(chan struct{})
+	releaseBootstrap := make(chan struct{})
+	var dayLoads atomic.Int32
+	var dayLoadGroup singleflight.Group
+	mux.RegisterFetcher(TopicTypeDAGRuns, func(ctx context.Context, identifier string) (any, error) {
+		batchID, ok := exec.DAGRunListReadBatchID(ctx)
+		if !ok {
+			return nil, errors.New("missing DAG-run list read batch")
+		}
+		value, err, _ := dayLoadGroup.Do(strconv.FormatUint(batchID, 10), func() (any, error) {
+			revision := dayLoads.Add(1)
+			if revision == 1 {
+				close(started)
+				select {
+				case <-releaseBootstrap:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return revision, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"id": identifier, "revision": value}, nil
+	})
+	mux.SetRefreshMode(TopicTypeDAGRuns, TopicRefreshModeOnDemand)
+
+	result, err := mux.createSession(
+		context.Background(),
+		httptest.NewRecorder(),
+		[]string{"dagruns:status=1", "dagruns:status=4"},
+		0,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result.session)
+	defer mux.removeSession(result.session)
+
+	done := make(chan struct{})
+	go func() {
+		result.session.bootstrapTopics(t.Context(), 0, result.topics)
+		close(done)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(timeout):
+		require.FailNow(t, "DAG-run snapshot bootstrap did not start")
+	}
+
+	mux.WakeTopic(TopicTypeDAGRuns, "status=4")
+	require.Eventually(t, func() bool {
+		result.session.mu.Lock()
+		defer result.session.mu.Unlock()
+		return len(result.session.queue) == 1 && result.session.queue[0].topic == "dagruns:status=4"
+	}, timeout, 10*time.Millisecond)
+
+	close(releaseBootstrap)
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		require.FailNow(t, "DAG-run snapshot bootstrap did not finish")
+	}
+
+	first := result.session.popNext()
+	second := result.session.popNext()
+	require.NotNil(t, first)
+	require.NotNil(t, second)
+	assert.Less(t, first.eventID, second.eventID)
+
+	messages := map[string]*queuedMessage{
+		first.topic:  first,
+		second.topic: second,
+	}
+	require.Contains(t, messages, "dagruns:status=1")
+	require.Contains(t, messages, "dagruns:status=4")
+	status4Message := messages["dagruns:status=4"]
+	var envelope struct {
+		Payload struct {
+			Revision int `json:"revision"`
+		} `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(status4Message.data, &envelope))
+	assert.Equal(t, 2, envelope.Payload.Revision)
+	assert.EqualValues(t, 2, dayLoads.Load())
+}
+
+func TestStreamSessionIgnoresBootstrapFromPreviousTopicAttachment(t *testing.T) {
+	const timeout = 5 * time.Second
+	const topicKey = "dagruns:status=4"
+
+	mux := NewMultiplexer(StreamConfig{}, nil)
+	t.Cleanup(mux.Shutdown)
+
+	started := make(chan struct{})
+	releaseBootstrap := make(chan struct{})
+	var calls atomic.Int32
+	mux.RegisterFetcher(TopicTypeDAGRuns, func(ctx context.Context, _ string) (any, error) {
+		revision := calls.Add(1)
+		if revision == 1 {
+			close(started)
+			select {
+			case <-releaseBootstrap:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return map[string]any{"revision": revision}, nil
+	})
+	mux.SetRefreshMode(TopicTypeDAGRuns, TopicRefreshModeOnDemand)
+
+	result, err := mux.createSession(context.Background(), httptest.NewRecorder(), []string{topicKey}, 0)
+	require.NoError(t, err)
+	defer mux.removeSession(result.session)
+
+	holder, err := mux.createSession(context.Background(), httptest.NewRecorder(), []string{topicKey}, 0)
+	require.NoError(t, err)
+	defer mux.removeSession(holder.session)
+
+	done := make(chan struct{})
+	go func() {
+		result.session.bootstrapTopics(t.Context(), 0, result.topics)
+		close(done)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(timeout):
+		require.FailNow(t, "initial snapshot did not start")
+	}
+
+	_, err = mux.mutateSession(t.Context(), result.session.id, nil, []string{topicKey})
+	require.NoError(t, err)
+	mutation, err := mux.mutateSession(t.Context(), result.session.id, []string{topicKey}, nil)
+	require.NoError(t, err)
+	require.Len(t, mutation.added, 1)
+	result.session.bootstrapTopics(t.Context(), 0, mutation.added)
+
+	close(releaseBootstrap)
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		require.FailNow(t, "initial snapshot did not finish")
+	}
+
+	message := result.session.popNext()
+	require.NotNil(t, message)
+	assert.Equal(t, topicKey, message.topic)
+	assert.Nil(t, result.session.popNext())
+
+	var envelope struct {
+		Payload struct {
+			Revision int `json:"revision"`
+		} `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(message.data, &envelope))
+	assert.Equal(t, 2, envelope.Payload.Revision)
 }
 
 func TestMultiplexerCreateSessionFiltersUnsupportedTopics(t *testing.T) {
@@ -300,7 +469,7 @@ func TestMultiplexTopicSendSnapshotDropsRemovedTopics(t *testing.T) {
 	require.True(t, session.addTopic(topic))
 
 	require.NotNil(t, session.removeTopic(parsed.Key))
-	require.NoError(t, topic.sendSnapshot(context.Background(), session, 1))
+	require.NoError(t, topic.sendSnapshot(context.Background(), session))
 	assert.Nil(t, session.popNext())
 }
 
@@ -455,7 +624,7 @@ func TestMultiplexerOnDemandTopicOnlyRefetchesOnWake(t *testing.T) {
 
 	topic := mux.topics["dagrun:test/run-1"]
 	require.NotNil(t, topic)
-	require.NoError(t, topic.sendSnapshot(context.Background(), result.session, 1))
+	require.NoError(t, topic.sendSnapshot(context.Background(), result.session))
 	assert.EqualValues(t, 1, fetches.Load())
 
 	require.Never(t, func() bool {
@@ -552,7 +721,7 @@ func TestMultiplexerPublishOnWakeEmitsMessageEvenWhenPayloadHashIsUnchanged(t *t
 	topic := mux.topics["dagruns:fromDate=1&toDate=2"]
 	require.NotNil(t, topic)
 
-	require.NoError(t, topic.sendSnapshot(context.Background(), result.session, 1))
+	require.NoError(t, topic.sendSnapshot(context.Background(), result.session))
 	first := result.session.popNext()
 	require.NotNil(t, first)
 
