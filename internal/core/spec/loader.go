@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 
 	"dario.cat/mergo"
@@ -265,8 +266,78 @@ func loadYAMLWithOptsAndNotices(
 
 	mainDAG.YamlData = data
 	markConfiguredWorkingDirsExplicit(mainDAG)
+	if err := validateIncrementalPathBase(mainDAG); err != nil {
+		return loadYAMLFailure(opts, err)
+	}
 
 	return mainDAG, nil
+}
+
+func validateIncrementalPathBase(dag *core.DAG) error {
+	return validateIncrementalPathBaseFrom(dag, "")
+}
+
+func validateIncrementalPathBaseFrom(dag *core.DAG, inheritedWorkingDir string) error {
+	if dag == nil {
+		return nil
+	}
+	effectiveWorkingDir := dag.WorkingDir
+	if effectiveWorkingDir == "" {
+		effectiveWorkingDir = inheritedWorkingDir
+	}
+	if dag.Type == core.TypeIncremental && hasRelativeIncrementalPath(dag) {
+		if effectiveWorkingDir == "" {
+			return core.NewValidationError("working_dir", dag.WorkingDir,
+				fmt.Errorf("relative incremental paths require an authored or caller-supplied working_dir"))
+		}
+		if dag.WorkingDir == "" {
+			dag.WorkingDir = effectiveWorkingDir
+		}
+	}
+	for _, localDAG := range dag.LocalDAGs {
+		if err := validateIncrementalPathBaseFrom(localDAG, effectiveWorkingDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hasRelativeIncrementalPath(dag *core.DAG) bool {
+	var visit func(core.Step) bool
+	visit = func(step core.Step) bool {
+		for _, input := range step.Inputs {
+			if !filepath.IsAbs(input.Path) {
+				return true
+			}
+		}
+		for _, output := range step.Outputs {
+			if output.Path != "" && !filepath.IsAbs(output.Path) {
+				return true
+			}
+		}
+		if step.Foreach != nil {
+			if slices.ContainsFunc(step.Foreach.Steps, visit) {
+				return true
+			}
+		}
+		return false
+	}
+	if slices.ContainsFunc(dag.Steps, visit) {
+		return true
+	}
+	for _, handler := range []*core.Step{
+		dag.HandlerOn.Init,
+		dag.HandlerOn.Failure,
+		dag.HandlerOn.Success,
+		dag.HandlerOn.Abort,
+		dag.HandlerOn.Exit,
+		dag.HandlerOn.Wait,
+	} {
+		if handler != nil && visit(*handler) {
+			return true
+		}
+	}
+	return false
 }
 
 // loadYAMLFailure returns a placeholder DAG when YAML loading is allowed to fail.

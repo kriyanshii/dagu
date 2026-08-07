@@ -25,6 +25,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/core/exec"
 	"github.com/dagucloud/dagu/v2/internal/core/spec"
 	"github.com/dagucloud/dagu/v2/internal/dagstate"
+	"github.com/dagucloud/dagu/v2/internal/dispatch"
 	"github.com/dagucloud/dagu/v2/internal/profile"
 	"github.com/dagucloud/dagu/v2/internal/proto/convert"
 	"github.com/dagucloud/dagu/v2/internal/runtime"
@@ -577,6 +578,9 @@ func (h *remoteTaskHandler) executeDAGRun(
 	dag *core.DAG,
 	run remoteRun,
 ) error {
+	if dag != nil && dag.Type == core.TypeIncremental {
+		return newTaskInitError(dispatch.ErrIncrementalRequiresLocal)
+	}
 	task := run.task
 	dagRunID := task.DagRunId
 	attemptID := task.AttemptId

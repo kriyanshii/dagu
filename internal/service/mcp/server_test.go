@@ -34,6 +34,25 @@ func TestServerExposesCompactToolSurface(t *testing.T) {
 	require.Equal(t, []string{toolChange, toolExecute, toolRead}, names)
 }
 
+func TestExecuteToolSupportsNoReuse(t *testing.T) {
+	ctx := context.Background()
+	session := connectTestClient(t, ctx, NewServer(nil))
+
+	result, err := session.ListTools(ctx, nil)
+	require.NoError(t, err)
+	schema, err := json.Marshal(findTool(t, result.Tools, toolExecute).InputSchema)
+	require.NoError(t, err)
+	require.Contains(t, string(schema), `"noReuse"`)
+
+	startBody := executeBody(executeInput{NoReuse: true})
+	require.NotNil(t, startBody.NoReuse)
+	require.True(t, *startBody.NoReuse)
+
+	enqueueBody := enqueueBody(executeInput{NoReuse: true})
+	require.NotNil(t, enqueueBody.NoReuse)
+	require.True(t, *enqueueBody.NoReuse)
+}
+
 func TestServerAdvertisesSupportedCapabilities(t *testing.T) {
 	ctx := context.Background()
 	session := connectTestClient(t, ctx, NewServer(nil))
@@ -179,11 +198,19 @@ func TestServerExposesReferenceResourcesAndPrompts(t *testing.T) {
 	require.Contains(t, got.Contents[0].Text, "retry")
 	require.Contains(t, got.Contents[0].Text, "stop")
 
+	execute, err := session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: "dagu://reference/execute-tool"})
+	require.NoError(t, err)
+	require.Len(t, execute.Contents, 1)
+	require.Contains(t, execute.Contents[0].Text, "noReuse")
+
 	authoring, err := session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: "dagu://reference/authoring"})
 	require.NoError(t, err)
 	require.Len(t, authoring.Contents, 1)
 	require.Contains(t, authoring.Contents[0].Text, "human.task")
 	require.Contains(t, authoring.Contents[0].Text, "Human task form properties")
+	require.Contains(t, authoring.Contents[0].Text, "type: incremental")
+	require.Contains(t, authoring.Contents[0].Text, "${outputs.name}")
+	require.Contains(t, authoring.Contents[0].Text, "Incremental workflows are local-only")
 
 	prompts, err := session.ListPrompts(ctx, nil)
 	require.NoError(t, err)

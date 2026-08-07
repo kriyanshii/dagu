@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -20,19 +21,20 @@ var (
 	ErrMissingNode = errors.New("missing node in execution plan")
 )
 
-// Plan represents a plan of execution for a set of steps.
-// It encapsulates the graph structure and ensures thread-safe access.
+// Plan represents a plan of execution for a set of steps. Graph mutation is
+// confined to planning before execution starts.
 type Plan struct {
 	startedAt       time.Time
 	finishedAt      time.Time
 	cancelRequested bool
 
-	// Graph structure (immutable after construction)
-	nodes      []*Node
-	nodeByID   map[int]*Node
-	nodeByName map[string]*Node
+	// Graph structure (immutable after planning)
+	nodes         []*Node
+	nodeByID      map[int]*Node
+	nodeByName    map[string]*Node
+	inferredEdges map[[2]int]struct{}
 
-	// Immutable adjacency lists (exposing for unit tests)
+	// Adjacency lists (immutable after planning; exposed for unit tests)
 	DependencyMap map[int][]int // node ID -> list of dependency node IDs (upstream)
 	DependantMap  map[int][]int // node ID -> list of dependent node IDs (downstream)
 
@@ -45,6 +47,7 @@ func NewPlan(steps ...core.Step) (*Plan, error) {
 	p := &Plan{
 		nodeByID:      make(map[int]*Node),
 		nodeByName:    make(map[string]*Node),
+		inferredEdges: make(map[[2]int]struct{}),
 		DependencyMap: make(map[int][]int),
 		DependantMap:  make(map[int][]int),
 		nodes:         make([]*Node, 0, len(steps)),
@@ -71,6 +74,7 @@ func CreateRetryPlan(ctx context.Context, dag *core.DAG, nodes ...*Node) (*Plan,
 	p := &Plan{
 		nodeByID:      make(map[int]*Node),
 		nodeByName:    make(map[string]*Node),
+		inferredEdges: make(map[[2]int]struct{}),
 		DependencyMap: make(map[int][]int),
 		DependantMap:  make(map[int][]int),
 		nodes:         make([]*Node, 0, len(nodes)),
@@ -107,6 +111,7 @@ func NewPlanFromNodes(nodes ...*Node) (*Plan, error) {
 	p := &Plan{
 		nodeByID:      make(map[int]*Node),
 		nodeByName:    make(map[string]*Node),
+		inferredEdges: make(map[[2]int]struct{}),
 		DependencyMap: make(map[int][]int),
 		DependantMap:  make(map[int][]int),
 		nodes:         make([]*Node, 0, len(nodes)),
@@ -130,6 +135,7 @@ func CreateStepRetryPlan(dag *core.DAG, nodes []*Node, stepName string) (*Plan, 
 	p := &Plan{
 		nodeByID:      make(map[int]*Node),
 		nodeByName:    make(map[string]*Node),
+		inferredEdges: make(map[[2]int]struct{}),
 		DependencyMap: make(map[int][]int),
 		DependantMap:  make(map[int][]int),
 		nodes:         make([]*Node, 0, len(nodes)),
@@ -231,9 +237,53 @@ func retryStepForNode(node *Node, steps map[string]core.Step) (core.Step, error)
 }
 
 // addEdge adds a directed edge from 'from' to 'to'.
-func (p *Plan) addEdge(from, to *Node) {
+func (p *Plan) addEdge(from, to *Node) bool {
+	if slices.Contains(p.DependencyMap[to.id], from.id) {
+		return false
+	}
 	p.DependantMap[from.id] = append(p.DependantMap[from.id], to.id)
 	p.DependencyMap[to.id] = append(p.DependencyMap[to.id], from.id)
+	return true
+}
+
+// AddInferredDependency adds one file-derived dependency before execution starts.
+func (p *Plan) AddInferredDependency(producerName, consumerName string) error {
+	producer := p.GetNodeByName(producerName)
+	consumer := p.GetNodeByName(consumerName)
+	if producer == nil {
+		return fmt.Errorf("%w: %s", ErrMissingNode, producerName)
+	}
+	if consumer == nil {
+		return fmt.Errorf("%w: %s", ErrMissingNode, consumerName)
+	}
+	edge := [2]int{producer.id, consumer.id}
+	if !p.addEdge(producer, consumer) {
+		return nil
+	}
+	p.inferredEdges[edge] = struct{}{}
+	if p.isCyclic() {
+		delete(p.inferredEdges, edge)
+		p.DependantMap[producer.id] = removeNodeID(p.DependantMap[producer.id], consumer.id)
+		p.DependencyMap[consumer.id] = removeNodeID(p.DependencyMap[consumer.id], producer.id)
+		return ErrCyclicPlan
+	}
+	return nil
+}
+
+func removeNodeID(ids []int, target int) []int {
+	for idx, id := range ids {
+		if id == target {
+			return append(ids[:idx], ids[idx+1:]...)
+		}
+	}
+	return ids
+}
+
+// IsInferredDependency reports whether an edge was derived from matching paths.
+// It may be called concurrently after planning is complete.
+func (p *Plan) IsInferredDependency(producerID, consumerID int) bool {
+	_, ok := p.inferredEdges[[2]int{producerID, consumerID}]
+	return ok
 }
 
 // isCyclic checks for cycles in the graph using Kahn's algorithm.

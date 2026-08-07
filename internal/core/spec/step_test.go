@@ -3620,3 +3620,416 @@ func TestBuildStepMessages(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadIncrementalStepPaths(t *testing.T) {
+	t.Parallel()
+
+	dag, err := LoadYAML(context.Background(), []byte(`
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    inputs:
+      - name: source
+        path: source.txt
+    outputs:
+      - name: artifact
+        path: artifact.txt
+`), WithoutEval())
+	require.NoError(t, err)
+	require.Len(t, dag.Steps, 1)
+	assert.Equal(t, core.TypeIncremental, dag.Type)
+	assert.Equal(t, []core.StepInputDeclaration{{Name: "source", Path: "source.txt"}}, dag.Steps[0].Inputs)
+	assert.Equal(t, []core.StepOutputDeclaration{{Name: "artifact", Path: "artifact.txt"}}, dag.Steps[0].Outputs)
+}
+
+func TestLoadIncrementalStepPathValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		yaml       string
+		wantDetail string
+	}{
+		{
+			name: "path declarations require incremental workflow",
+			yaml: `
+steps:
+  - id: build
+    name: build
+    run: echo build
+    outputs:
+      - name: artifact
+        path: artifact.txt
+`,
+			wantDetail: "declares incremental paths",
+		},
+		{
+			name: "path and value type are mutually exclusive",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    outputs:
+      - name: artifact
+        type: string
+        path: artifact.txt
+`,
+			wantDetail: "type and path",
+		},
+		{
+			name: "relative paths require stable base",
+			yaml: `
+type: incremental
+steps:
+  - id: build
+    name: build
+    run: echo build
+    inputs:
+      - name: source
+        path: source.txt
+`,
+			wantDetail: "relative incremental paths",
+		},
+		{
+			name: "handler paths are unsupported",
+			yaml: `
+type: incremental
+working_dir: .
+handler_on:
+  success:
+    id: cleanup
+    run: echo cleanup
+    inputs:
+      - name: source
+        path: source.txt
+steps:
+  - name: build
+    run: echo build
+`,
+			wantDetail: "not supported in lifecycle handlers",
+		},
+		{
+			name: "foreach body paths are unsupported",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - name: batches
+    foreach:
+      items: [one]
+      steps:
+        - id: build
+          run: echo build
+          outputs:
+            - name: first
+              path: first.txt
+            - name: second
+              path: second.txt
+`,
+			wantDetail: "not supported in foreach steps",
+		},
+		{
+			name: "missing input name reports required field",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    run: echo build
+    inputs:
+      - path: source.txt
+`,
+			wantDetail: "name is required",
+		},
+		{
+			name: "missing input path reports required field",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    run: echo build
+    inputs:
+      - name: source
+`,
+			wantDetail: "path is required",
+		},
+		{
+			name: "step output references are too late for paths",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    inputs:
+      - name: source
+        path: ${steps.fetch.outputs.path}
+`,
+			wantDetail: "must resolve before step execution",
+		},
+		{
+			name: "command substitution is unavailable to paths",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    inputs:
+      - name: source
+        path: $(find-source)
+`,
+			wantDetail: "cannot use command substitution",
+		},
+		{
+			name: "input references are unavailable to paths",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    inputs:
+      - name: source
+        path: ${inputs.source}
+`,
+			wantDetail: "must resolve before step execution",
+		},
+		{
+			name: "input references are unavailable to setup fields",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    working_dir: ${inputs.source}
+    inputs:
+      - name: source
+        path: source.txt
+`,
+			wantDetail: "unavailable before step execution",
+		},
+		{
+			name: "input references are unavailable to output redirection",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    stdout: ${inputs.source}
+    inputs:
+      - name: source
+        path: source.txt
+`,
+			wantDetail: "unavailable before step execution",
+		},
+		{
+			name: "input references are unavailable to shell configuration",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    command: echo build
+    shell: [sh, "${inputs.source}"]
+    inputs:
+      - name: source
+        path: source.txt
+`,
+			wantDetail: "unavailable before step execution",
+		},
+		{
+			name: "path output cannot mark failed attempt successful",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    continue_on:
+      failure: true
+      mark_success: true
+    outputs:
+      - name: artifact
+        path: artifact.txt
+`,
+			wantDetail: "continue_on.mark_success",
+		},
+		{
+			name: "attempt output references are unavailable to preconditions",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    outputs:
+      - name: artifact
+        path: artifact.txt
+    preconditions:
+      - condition: test -f ${outputs.artifact}
+`,
+			wantDetail: "available only during executor attempts",
+		},
+		{
+			name: "attempt output references are unavailable to retry policy",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    outputs:
+      - name: artifact
+        path: artifact.txt
+    retry_policy:
+      limit: ${outputs.artifact}
+      interval_sec: 1
+`,
+			wantDetail: "available only during executor attempts",
+		},
+		{
+			name: "attempt output references are unavailable to repeat policy",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    outputs:
+      - name: artifact
+        path: artifact.txt
+    repeat_policy:
+      repeat: while
+      condition: test -f ${outputs.artifact}
+`,
+			wantDetail: "available only during executor attempts",
+		},
+		{
+			name: "attempt output references are unavailable to output redirection",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    run: echo build
+    stdout: ${outputs.artifact}
+    outputs:
+      - name: artifact
+        path: artifact.txt
+`,
+			wantDetail: "available only during executor attempts",
+		},
+		{
+			name: "attempt output references are unavailable to shell configuration",
+			yaml: `
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    name: build
+    command: echo build
+    shell: [sh, "${outputs.artifact}"]
+    outputs:
+      - name: artifact
+        path: artifact.txt
+`,
+			wantDetail: "available only during executor attempts",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := LoadYAML(context.Background(), []byte(tt.yaml), WithoutEval())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantDetail)
+		})
+	}
+}
+
+func TestLoadIncrementalStepRuntimeOutputReferences(t *testing.T) {
+	t.Parallel()
+
+	for _, reference := range []string{
+		"${build.stdout}",
+		"${build.stderr}",
+		"${build.exit_code}",
+		"${build.output}",
+		"${build.outputs.result}",
+	} {
+		t.Run(reference, func(t *testing.T) {
+			t.Parallel()
+			_, err := LoadYAML(context.Background(), []byte(`
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    run: echo build
+    outputs:
+      - name: artifact
+        path: artifact.txt
+  - id: consume
+    depends: [build]
+    run: echo "`+reference+`"
+`), WithoutEval())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "runtime outputs from reusable incremental step build are unavailable on reuse")
+		})
+	}
+}
+
+func TestLoadIncrementalStepAllowsStableOutputReferences(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadYAML(context.Background(), []byte(`
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    run: echo build
+    outputs:
+      - name: artifact
+        path: artifact.txt
+  - id: consume
+    depends: [build]
+    run: cat ${steps.build.outputs.artifact}
+`), WithoutEval())
+	require.NoError(t, err)
+
+	_, err = LoadYAML(context.Background(), []byte(`
+type: incremental
+working_dir: .
+steps:
+  - id: build
+    run: echo build
+    output: RESULT
+    outputs:
+      - name: artifact
+        path: artifact.txt
+  - id: consume
+    depends: [build]
+    run: cat ${build.stdout}
+`), WithoutEval())
+	require.NoError(t, err)
+}

@@ -16,6 +16,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/v2/internal/core"
 	"github.com/dagucloud/dagu/v2/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/dispatch"
 	"github.com/dagucloud/dagu/v2/internal/humantask"
 	"github.com/dagucloud/dagu/v2/internal/runtime/agent"
 	"github.com/spf13/cobra"
@@ -191,6 +192,9 @@ func runRetry(ctx *Context, args []string) error {
 	if err := applyRetryDefaultWorkingDir(ctx, dag, status); err != nil {
 		return err
 	}
+	if dag.Type == core.TypeIncremental && workerID != "local" {
+		return dispatch.ErrIncrementalRequiresLocal
+	}
 
 	if err := prepareQueuedCatchupRetry(ctx, attempt, dag, status); err != nil {
 		return err
@@ -233,6 +237,7 @@ func runRetry(ctx *Context, args []string) error {
 		triggerActor: triggerActor,
 		scheduleTime: status.ScheduleTime,
 		profileName:  profileName,
+		noReuse:      status.NoReuse,
 		step:         stepName,
 		retryPath:    retryPath,
 	}
@@ -651,6 +656,8 @@ func executeRetry(ctx *Context, dag *core.DAG, status *exec.DAGRunStatus, opts r
 			DAGRunStore:              ctx.DAGRunStore,
 			QueueStore:               ctx.QueueStore,
 			StateStore:               ctx.StateStore,
+			MaterializationStore:     localMaterializationStore(ctx),
+			NoReuse:                  opts.noReuse,
 			SecretStore:              as.SecretStore,
 			ProfileStore:             as.ProfileStore,
 			ProfileName:              opts.profileName,

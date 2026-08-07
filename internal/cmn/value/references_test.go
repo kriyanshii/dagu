@@ -89,6 +89,53 @@ func TestIsExactRef(t *testing.T) {
 	}
 }
 
+func TestHasStepRuntimeOutputReference(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{
+		"${build.stdout}",
+		"${build.stderr:1:2}",
+		"${build.exitCode}",
+		"${build.exit_code}",
+		"${build.output}",
+		"${build.output.result}",
+		"${build.outputs}",
+		"$build.outputs.result",
+	} {
+		assert.True(t, value.HasStepRuntimeOutputReference(input, "build"), input)
+	}
+
+	for _, input := range []string{
+		"${steps.build.outputs.artifact}",
+		"${other.stdout}",
+		"${build.status}",
+		"${build.stdout:-1}",
+	} {
+		assert.False(t, value.HasStepRuntimeOutputReference(input, "build"), input)
+	}
+}
+
+func TestHasReferenceToNamespace(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{
+		"${inputs.source}",
+		"$inputs.source",
+		"prefix ${outputs.artifact}",
+		"prefix $outputs.artifact",
+	} {
+		assert.True(t, value.HasReferenceToNamespace(input, "inputs", "outputs"), input)
+	}
+
+	for _, input := range []string{
+		"${params.source}",
+		"$build.output",
+		`\${inputs.source}`,
+	} {
+		assert.False(t, value.HasReferenceToNamespace(input, "inputs", "outputs"), input)
+	}
+}
+
 func TestResolverStringResolvesParamsAndPreservesOtherNamespaces(t *testing.T) {
 	t.Parallel()
 

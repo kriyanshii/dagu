@@ -4,6 +4,7 @@
 package value
 
 import (
+	"slices"
 	"sort"
 	"strings"
 )
@@ -89,6 +90,19 @@ func HasValueReference(raw string) bool {
 	return false
 }
 
+// HasReferenceToNamespace reports whether raw references one of the named scopes.
+func HasReferenceToNamespace(raw string, namespaces ...string) bool {
+	for _, ref := range scanReferences(raw) {
+		if ref.Kind != referenceStrict && ref.Kind != referenceEval {
+			continue
+		}
+		if slices.Contains(namespaces, ref.Namespace) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsExactRef reports whether token is an exact canonical scoped reference.
 func IsExactRef(token string) bool {
 	_, ok := parseExactRef(token)
@@ -109,7 +123,7 @@ func parseExactRef(token string) (reference, bool) {
 	}
 
 	switch ref.Namespace {
-	case "consts", "env", "steps", "foreach", "context":
+	case "consts", "env", "steps", "foreach", "inputs", "outputs", "context":
 		return ref, true
 	case "params":
 		// The aggregate ${params} form is JSON data, not a named value reference.
@@ -171,6 +185,38 @@ func parseStepOutputReference(ref reference) (StepOutputReference, bool) {
 func IsStepOutputReferenceToken(token string) bool {
 	_, ok := ParseStepOutputReferenceToken(token)
 	return ok
+}
+
+// HasStepRuntimeOutputReference reports whether raw reads an attempt result from stepID.
+func HasStepRuntimeOutputReference(raw, stepID string) bool {
+	for _, ref := range scanReferences(raw) {
+		if ref.Kind != referenceEval {
+			continue
+		}
+		name, path, ok := referenceParts(ref.Raw)
+		if !ok || name != stepID || !isStepRuntimeOutputPath(path) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isStepRuntimeOutputPath(path string) bool {
+	if strings.HasPrefix(path, ".output.") || strings.HasPrefix(path, ".output[") ||
+		strings.HasPrefix(path, ".outputs.") || strings.HasPrefix(path, ".outputs[") {
+		return true
+	}
+	property, _, err := parseStepReference(path)
+	if err != nil {
+		return false
+	}
+	switch property {
+	case ".stdout", ".stderr", ".exitCode", ".exit_code", ".output", ".outputs":
+		return true
+	default:
+		return false
+	}
 }
 
 // ParseStepOutputReferenceToken parses an exact Spec 007 reference token.

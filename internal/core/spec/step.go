@@ -67,8 +67,10 @@ type step struct {
 	Output any `yaml:"output,omitempty"`
 	// OutputSchema validates stdout JSON against an inline JSON Schema object.
 	OutputSchema any `yaml:"output_schema,omitempty"`
-	// Outputs declares file-based outputs published through DAGU_OUTPUT_FILE.
+	// Outputs declares named step outputs.
 	Outputs any `yaml:"outputs,omitempty"`
+	// Inputs declares named regular-file inputs for incremental execution.
+	Inputs any `yaml:"inputs,omitempty"`
 	// Depends is the list of steps to depend on.
 	Depends types.StringOrArray `yaml:"depends,omitempty"`
 	// ContinueOn is the condition to continue on.
@@ -141,6 +143,7 @@ type step struct {
 	parsedOutputErr    error
 	parsedOutputCached bool
 	outputsSet         bool
+	inputsSet          bool
 }
 
 type execSpec struct {
@@ -447,6 +450,7 @@ var stepStructuredOutputStage = stepTransformStage{
 	stepField("structured_output", buildStepStructuredOutput, func(out *core.Step, v map[string]core.StepOutputEntry) { out.StructuredOutput = v }),
 	stepField("output_schema", buildStepOutputSchema, func(out *core.Step, v map[string]any) { out.OutputSchema = v }),
 	stepField("outputs", buildStepDeclaredOutputs, func(out *core.Step, v []core.StepOutputDeclaration) { out.Outputs = v }),
+	stepField("inputs", buildStepDeclaredInputs, func(out *core.Step, v []core.StepInputDeclaration) { out.Inputs = v }),
 }
 
 var stepEnvConditionStage = stepTransformStage{
@@ -1106,6 +1110,7 @@ var declaredOutputNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 var declaredOutputFields = map[string]struct{}{
 	"name": {},
 	"type": {},
+	"path": {},
 }
 
 func parseDeclaredOutputs(raw any) ([]core.StepOutputDeclaration, error) {
@@ -1151,8 +1156,23 @@ func parseDeclaredOutputs(raw any) ([]core.StepOutputDeclaration, error) {
 		}
 		seen[name] = struct{}{}
 
+		outputPath := ""
+		if rawPath, ok := obj["path"]; ok {
+			str, ok := rawPath.(string)
+			if !ok {
+				return nil, fmt.Errorf("outputs[%d]: path must be a string", idx)
+			}
+			outputPath = strings.TrimSpace(str)
+			if outputPath == "" {
+				return nil, fmt.Errorf("outputs[%d]: path must not be empty", idx)
+			}
+		}
+
 		outputType := core.StepDeclaredOutputTypeString
 		if rawType, ok := obj["type"]; ok {
+			if outputPath != "" {
+				return nil, fmt.Errorf("outputs[%d]: type and path cannot be used together", idx)
+			}
 			str, ok := rawType.(string)
 			if !ok {
 				return nil, fmt.Errorf("outputs[%d]: type must be a string", idx)
@@ -1165,11 +1185,71 @@ func parseDeclaredOutputs(raw any) ([]core.StepOutputDeclaration, error) {
 					idx, core.StepDeclaredOutputTypeString, core.StepDeclaredOutputTypeJSON)
 			}
 		}
+		if outputPath != "" {
+			outputType = ""
+		}
 
 		result = append(result, core.StepOutputDeclaration{
 			Name: name,
 			Type: outputType,
+			Path: outputPath,
 		})
+	}
+	return result, nil
+}
+
+func buildStepDeclaredInputs(_ stepBuildContext, s *step) ([]core.StepInputDeclaration, error) {
+	if !s.inputsSet {
+		return nil, nil
+	}
+	if strings.TrimSpace(s.ID) == "" {
+		return nil, fmt.Errorf("a step with inputs must define id")
+	}
+	items, ok := s.Inputs.([]any)
+	if !ok || len(items) == 0 {
+		return nil, fmt.Errorf("inputs must be a non-empty sequence")
+	}
+	result := make([]core.StepInputDeclaration, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for idx, item := range items {
+		obj, err := declaredOutputItemMap(item)
+		if err != nil {
+			return nil, fmt.Errorf("inputs[%d]: %w", idx, err)
+		}
+		for key := range obj {
+			if key != "name" && key != "path" {
+				return nil, fmt.Errorf("inputs[%d]: unknown field %q", idx, key)
+			}
+		}
+		nameRaw, ok := obj["name"]
+		if !ok {
+			return nil, fmt.Errorf("inputs[%d]: name is required", idx)
+		}
+		name, nameOK := nameRaw.(string)
+		if !nameOK {
+			return nil, fmt.Errorf("inputs[%d]: name must be a string", idx)
+		}
+		name = strings.TrimSpace(name)
+		if !declaredOutputNamePattern.MatchString(name) {
+			return nil, fmt.Errorf("inputs[%d]: name must match %q", idx, declaredOutputNamePattern.String())
+		}
+		if _, exists := seen[name]; exists {
+			return nil, fmt.Errorf("inputs[%d]: duplicate input name %q", idx, name)
+		}
+		pathRaw, ok := obj["path"]
+		if !ok {
+			return nil, fmt.Errorf("inputs[%d]: path is required", idx)
+		}
+		pathValue, pathOK := pathRaw.(string)
+		if !pathOK {
+			return nil, fmt.Errorf("inputs[%d]: path must be a string", idx)
+		}
+		pathValue = strings.TrimSpace(pathValue)
+		if pathValue == "" {
+			return nil, fmt.Errorf("inputs[%d]: path must not be empty", idx)
+		}
+		seen[name] = struct{}{}
+		result = append(result, core.StepInputDeclaration{Name: name, Path: pathValue})
 	}
 	return result, nil
 }
