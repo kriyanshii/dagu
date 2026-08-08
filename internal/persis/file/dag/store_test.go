@@ -361,7 +361,7 @@ steps:
 	err := os.WriteFile(filepath.Join(tmpDir, "detailed-dag.yaml"), []byte(dagContent), 0600)
 	require.NoError(t, err)
 
-	dag, err := store.GetDetails(ctx, "detailed-dag")
+	dag, err := store.GetDetails(ctx, "detailed-dag", exec.DAGLoadOptions{})
 	require.NoError(t, err)
 	require.NotNil(t, dag)
 	assert.Equal(t, "detailed-dag", dag.Name)
@@ -369,9 +369,28 @@ steps:
 	assert.Equal(t, "0 1 * * *", dag.Schedule[0].Expression)
 
 	// Test DAG not found
-	_, err = store.GetDetails(ctx, "non-existent")
+	_, err = store.GetDetails(ctx, "non-existent", exec.DAGLoadOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to locate DAG non-existent")
+
+	// A DAG that builds with errors fails unless the caller tolerates them, in
+	// which case the partially built DAG is returned carrying the errors.
+	buildErrContent := `name: build-error-dag
+steps:
+  - name: step1
+    run: echo "build error"
+    depends: [missing-step]`
+	err = os.WriteFile(filepath.Join(tmpDir, "build-error-dag.yaml"), []byte(buildErrContent), 0600)
+	require.NoError(t, err)
+
+	_, err = store.GetDetails(ctx, "build-error-dag", exec.DAGLoadOptions{})
+	require.Error(t, err)
+
+	dag, err = store.GetDetails(ctx, "build-error-dag", exec.DAGLoadOptions{AllowBuildErrors: true})
+	require.NoError(t, err)
+	require.NotNil(t, dag)
+	assert.Equal(t, "build-error-dag", dag.Name)
+	assert.NotEmpty(t, dag.BuildErrors)
 
 	// Dots remain part of the DAG's lookup identity.
 	dottedDAGContent := `name: dagu.update-cloud-image
@@ -384,7 +403,7 @@ steps:
 	require.NoError(t, err)
 
 	recursiveStore := New(tmpDir, WithSkipExamples(true), WithRecursiveDiscovery(true))
-	dag, err = recursiveStore.GetDetails(ctx, "dagu.update-cloud-image")
+	dag, err = recursiveStore.GetDetails(ctx, "dagu.update-cloud-image", exec.DAGLoadOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, "dagu.update-cloud-image", dag.Name)
 
@@ -1043,15 +1062,35 @@ func TestLoadSpec(t *testing.T) {
 steps:
   - name: step1
     run: echo "load spec"`
-	dag, err := store.LoadSpec(ctx, []byte(validSpec))
+	dag, err := store.LoadSpec(ctx, []byte(validSpec), "", exec.DAGLoadOptions{})
 	require.NoError(t, err)
 	require.NotNil(t, dag)
 	assert.Equal(t, "load-spec-dag", dag.Name)
 
 	// Test invalid spec
 	invalidSpec := `invalid: yaml: content: [unclosed`
-	_, err = store.LoadSpec(ctx, []byte(invalidSpec))
+	_, err = store.LoadSpec(ctx, []byte(invalidSpec), "", exec.DAGLoadOptions{})
 	require.Error(t, err)
+
+	// An explicit name takes precedence over the one the spec declares.
+	dag, err = store.LoadSpec(ctx, []byte(validSpec), "explicit-name", exec.DAGLoadOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "explicit-name", dag.Name)
+
+	// A spec that builds with errors fails unless the caller tolerates them, in
+	// which case the partially built DAG is returned carrying the errors.
+	buildErrSpec := `steps:
+  - name: step1
+    run: echo "load spec"
+    depends: [missing-step]`
+	_, err = store.LoadSpec(ctx, []byte(buildErrSpec), "build-error-dag", exec.DAGLoadOptions{})
+	require.Error(t, err)
+
+	dag, err = store.LoadSpec(ctx, []byte(buildErrSpec), "build-error-dag", exec.DAGLoadOptions{AllowBuildErrors: true})
+	require.NoError(t, err)
+	require.NotNil(t, dag)
+	assert.Equal(t, "build-error-dag", dag.Name)
+	assert.NotEmpty(t, dag.BuildErrors)
 }
 
 func TestLoadSpecWithBaseGraphType(t *testing.T) {
@@ -1073,7 +1112,7 @@ steps:
   - name: test
     run: echo test
     depends: [build]
-`))
+`), "", exec.DAGLoadOptions{})
 	require.NoError(t, err)
 	require.Equal(t, core.TypeGraph, dag.Type)
 	require.Len(t, dag.Steps, 2)
@@ -1114,7 +1153,7 @@ labels:
 steps:
   - name: step1
     run: echo "hello"
-`))
+`), "", exec.DAGLoadOptions{})
 	require.NoError(t, err)
 	assert.Contains(t, dag.Env, "GLOBAL_ONLY=1")
 	assert.Contains(t, dag.Env, "WORKSPACE_ONLY=1")
