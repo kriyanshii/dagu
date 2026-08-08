@@ -26,12 +26,44 @@ param(
     [switch]$VerboseMode
 )
 
+# Installer state requires a script-file scope.
+if ([string]::IsNullOrWhiteSpace($MyInvocation.MyCommand.Path)) {
+    $stagedInstaller = Join-Path ([IO.Path]::GetTempPath()) ("dagu-installer-" + [guid]::NewGuid().ToString("N") + ".ps1")
+    $forwardArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $stagedInstaller)
+    foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+        if ($entry.Value -is [System.Management.Automation.SwitchParameter]) {
+            if ($entry.Value.IsPresent) {
+                $forwardArgs += "-$($entry.Key)"
+            }
+            continue
+        }
+        foreach ($value in @($entry.Value)) {
+            $forwardArgs += @("-$($entry.Key)", [string]$value)
+        }
+    }
+
+    $exitCode = 0
+    try {
+        [IO.File]::WriteAllText($stagedInstaller, $MyInvocation.MyCommand.Definition, [Text.Encoding]::UTF8)
+        & powershell.exe @forwardArgs
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        Remove-Item -LiteralPath $stagedInstaller -Force -ErrorAction SilentlyContinue
+    }
+    if ($exitCode -ne 0) {
+        throw "The Dagu installer exited with code $exitCode."
+    }
+    return
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$Script:InstallerSource = $MyInvocation.MyCommand.Definition
+$Script:InstallerSource = [IO.File]::ReadAllText($MyInvocation.MyCommand.Path, [Text.Encoding]::UTF8)
+$Script:InstallerBoundParameterNames = @($PSBoundParameters.Keys)
 $Script:ReleaseBase = "https://github.com/dagucloud/dagu/releases"
 $Script:ReleaseApi = "https://api.github.com/repos/dagucloud/dagu/releases/latest"
 $Script:WinSWVersion = "v2.12.0"
@@ -265,19 +297,19 @@ function Validate-UninstallArgs {
     if (-not $Uninstall) {
         return
     }
-    if ($PSBoundParameters.ContainsKey("Version")) {
+    if ($Script:InstallerBoundParameterNames -contains "Version") {
         throw "-Version is only supported during install."
     }
-    if ($PSBoundParameters.ContainsKey("HostAddress") -or $PSBoundParameters.ContainsKey("Port")) {
+    if (($Script:InstallerBoundParameterNames -contains "HostAddress") -or ($Script:InstallerBoundParameterNames -contains "Port")) {
         throw "-HostAddress and -Port are only supported during install."
     }
-    if ($PSBoundParameters.ContainsKey("AdminUsername") -or $PSBoundParameters.ContainsKey("AdminPassword")) {
+    if (($Script:InstallerBoundParameterNames -contains "AdminUsername") -or ($Script:InstallerBoundParameterNames -contains "AdminPassword")) {
         throw "Admin bootstrap flags are only supported during install."
     }
-    if ($PSBoundParameters.ContainsKey("OpenBrowser")) {
+    if ($Script:InstallerBoundParameterNames -contains "OpenBrowser") {
         throw "-OpenBrowser is only supported during install."
     }
-    if ($PSBoundParameters.ContainsKey("Service")) {
+    if ($Script:InstallerBoundParameterNames -contains "Service") {
         throw "-Service is only supported during install. Use -ServiceScope to narrow service uninstall discovery."
     }
     if ($ServiceScope -and $ServiceScope -ne "system") {
