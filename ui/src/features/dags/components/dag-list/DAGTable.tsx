@@ -158,8 +158,9 @@ function DeleteDAGButton({
   return (
     <Button
       type="button"
-      variant="destructive"
+      variant="secondary"
       size="icon-sm"
+      className="text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive focus-visible:text-destructive"
       aria-label={`Delete workflow ${dag.dag.name}`}
       title="Delete workflow"
       onClick={() => onDelete(dag)}
