@@ -23,14 +23,15 @@ const (
 	// IndexFileName is the name of the DAG definition index file.
 	IndexFileName = ".dag.index"
 	// IndexVersion is the current index format version.
-	IndexVersion = 2
+	IndexVersion = 3
 )
 
 // YAMLFileMeta holds stat metadata for a single YAML file.
 type YAMLFileMeta struct {
-	Name    string // Slash-normalized path relative to the DAG directory.
-	Size    int64
-	ModTime int64 // UnixNano
+	Name     string // Slash-normalized path relative to the DAG directory.
+	LoadPath string // Canonical path used to read the current file.
+	Size     int64
+	ModTime  int64 // UnixNano
 }
 
 // SuspendFlags is the set of suspend flag filenames present in flagsBaseDir.
@@ -68,7 +69,7 @@ func Load(indexPath string, yamlFiles []YAMLFileMeta, flags SuspendFlags) []*ind
 		if !ok {
 			return nil
 		}
-		if e.FileSize != f.Size || e.ModTime != f.ModTime {
+		if e.FileSize != f.Size || e.ModTime != f.ModTime || e.LoadPath != f.LoadPath {
 			return nil
 		}
 	}
@@ -107,8 +108,9 @@ func Build(
 			FilePath: f.Name,
 			FileSize: f.Size,
 			ModTime:  f.ModTime,
+			LoadPath: f.LoadPath,
 		}
-		buildEntry(ctx, dagDir, entry, flags, loadOpts...)
+		buildEntry(ctx, yamlFilePath(dagDir, f), entry, flags, loadOpts...)
 		idx.Entries = append(idx.Entries, entry)
 	}
 
@@ -119,7 +121,7 @@ func Build(
 // recording why the file could not be read when that happens.
 func buildEntry(
 	ctx context.Context,
-	dagDir string,
+	filePath string,
 	entry *indexv1.DAGIndexEntry,
 	flags SuspendFlags,
 	loadOpts ...spec.LoadOption,
@@ -133,7 +135,7 @@ func buildEntry(
 		spec.WithAllowBuildErrors(),
 	)
 
-	dag, err := spec.Load(ctx, filepath.Join(dagDir, filepath.FromSlash(entry.FilePath)), opts...)
+	dag, err := spec.Load(ctx, filePath, opts...)
 	if err != nil {
 		base := filepath.Base(filepath.FromSlash(entry.FilePath))
 		entry.Name = strings.TrimSuffix(base, filepath.Ext(base))
@@ -165,10 +167,16 @@ func buildEntry(
 func RefreshFailures(
 	ctx context.Context,
 	dagDir string,
+	yamlFiles []YAMLFileMeta,
 	entries []*indexv1.DAGIndexEntry,
 	flags SuspendFlags,
 	loadOpts ...spec.LoadOption,
 ) bool {
+	filesByName := make(map[string]YAMLFileMeta, len(yamlFiles))
+	for _, file := range yamlFiles {
+		filesByName[file.Name] = file
+	}
+
 	var changed bool
 	for i, entry := range entries {
 		if entry.LoadError == "" {
@@ -177,12 +185,17 @@ func RefreshFailures(
 		if ctx.Err() != nil {
 			break
 		}
+		file := filesByName[entry.FilePath]
+		if file.Name == "" {
+			file.Name = entry.FilePath
+		}
 		refreshed := &indexv1.DAGIndexEntry{
 			FilePath: entry.FilePath,
 			FileSize: entry.FileSize,
 			ModTime:  entry.ModTime,
+			LoadPath: file.LoadPath,
 		}
-		buildEntry(ctx, dagDir, refreshed, flags, loadOpts...)
+		buildEntry(ctx, yamlFilePath(dagDir, file), refreshed, flags, loadOpts...)
 		if proto.Equal(entry, refreshed) {
 			continue
 		}
@@ -190,6 +203,13 @@ func RefreshFailures(
 		changed = true
 	}
 	return changed
+}
+
+func yamlFilePath(dagDir string, file YAMLFileMeta) string {
+	if file.LoadPath != "" {
+		return file.LoadPath
+	}
+	return filepath.Join(dagDir, filepath.FromSlash(file.Name))
 }
 
 // NewIndex wraps entries in an index ready to be written.

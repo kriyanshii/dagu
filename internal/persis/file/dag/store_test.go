@@ -489,6 +489,89 @@ func TestGetSpecRejectsSymlinkOutsideConfiguredDirectories(t *testing.T) {
 	assert.ErrorIs(t, err, dagstore.ErrDAGNotFound)
 }
 
+func TestExternalDAGFileSymlink(t *testing.T) {
+	baseDir := t.TempDir()
+	targetDir := t.TempDir()
+	const dagContent = "name: external\nsteps:\n  - run: echo external\n"
+	targetPath := filepath.Join(targetDir, "source.yaml")
+	require.NoError(t, os.WriteFile(targetPath, []byte(dagContent), 0600))
+	linkPath := filepath.Join(baseDir, "external.yaml")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+
+	t.Run("Disabled", func(t *testing.T) {
+		store := New(baseDir, WithSkipExamples(true))
+		result, issues, err := store.List(context.Background(), dagstore.ListDAGsOptions{})
+		require.NoError(t, err)
+		require.Empty(t, result.Items)
+		require.Len(t, issues, 1)
+		assert.Contains(t, issues[0], "dag_discovery.symlinks")
+
+		_, err = store.GetSpec(context.Background(), "external")
+		assert.ErrorIs(t, err, dagstore.ErrDAGNotFound)
+	})
+
+	t.Run("Enabled", func(t *testing.T) {
+		store := New(baseDir, WithSkipExamples(true), WithSymlinks(true))
+		result, issues, err := store.List(context.Background(), dagstore.ListDAGsOptions{})
+		require.NoError(t, err)
+		require.Empty(t, issues)
+		require.Len(t, result.Items, 1)
+		assert.Equal(t, "external", result.Items[0].Name)
+
+		spec, err := store.GetSpec(context.Background(), "external")
+		require.NoError(t, err)
+		assert.Equal(t, dagContent, spec)
+		_, err = store.GetDetails(context.Background(), "external", dagstore.DAGLoadOptions{})
+		require.NoError(t, err)
+
+		assert.ErrorIs(t, store.UpdateSpec(context.Background(), "external", []byte(dagContent)), dagstore.ErrDAGReadOnly)
+		assert.ErrorIs(t, store.Delete(context.Background(), "external"), dagstore.ErrDAGReadOnly)
+		assert.ErrorIs(t, store.Rename(context.Background(), "external", "renamed"), dagstore.ErrDAGReadOnly)
+
+		_, err = os.Lstat(linkPath)
+		require.NoError(t, err)
+		content, err := os.ReadFile(targetPath)
+		require.NoError(t, err)
+		assert.Equal(t, dagContent, string(content))
+	})
+}
+
+func TestListRebuildsIndexAfterSymlinkRepoint(t *testing.T) {
+	baseDir := t.TempDir()
+	targetDir := t.TempDir()
+	firstPath := filepath.Join(targetDir, "first.yaml")
+	secondPath := filepath.Join(targetDir, "second.yaml")
+	firstSpec := []byte("name: first\nsteps:\n  - run: echo one\n")
+	secondSpec := []byte("name: other\nsteps:\n  - run: echo two\n")
+	require.Len(t, secondSpec, len(firstSpec))
+	require.NoError(t, os.WriteFile(firstPath, firstSpec, 0600))
+	require.NoError(t, os.WriteFile(secondPath, secondSpec, 0600))
+	modTime := time.Now().Add(-time.Hour).Truncate(time.Second)
+	require.NoError(t, os.Chtimes(firstPath, modTime, modTime))
+	require.NoError(t, os.Chtimes(secondPath, modTime, modTime))
+
+	linkPath := filepath.Join(baseDir, "linked.yaml")
+	if err := os.Symlink(firstPath, linkPath); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+	store := New(baseDir, WithSkipExamples(true), WithSymlinks(true))
+	result, issues, err := store.List(context.Background(), dagstore.ListDAGsOptions{})
+	require.NoError(t, err)
+	require.Empty(t, issues)
+	require.Len(t, result.Items, 1)
+	assert.Equal(t, "first", result.Items[0].Name)
+
+	require.NoError(t, os.Remove(linkPath))
+	require.NoError(t, os.Symlink(secondPath, linkPath))
+	result, issues, err = store.List(context.Background(), dagstore.ListDAGsOptions{})
+	require.NoError(t, err)
+	require.Empty(t, issues)
+	require.Len(t, result.Items, 1)
+	assert.Equal(t, "other", result.Items[0].Name)
+}
+
 func TestGetSpecAllowsExplicitSearchPaths(t *testing.T) {
 	baseDir := t.TempDir()
 	searchDir := t.TempDir()
@@ -890,6 +973,19 @@ steps:
 	// Test deleting non-existent DAG (should not error)
 	err = store.Delete(ctx, "non-existent")
 	require.NoError(t, err)
+
+	targetDir := filepath.Join(tmpDir, "targets")
+	require.NoError(t, os.MkdirAll(targetDir, 0750))
+	targetPath := filepath.Join(targetDir, "linked-delete.yaml")
+	require.NoError(t, os.WriteFile(targetPath, []byte(dagContent), 0600))
+	linkPath := filepath.Join(tmpDir, "linked-delete.yaml")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+	require.NoError(t, store.Delete(ctx, "linked-delete"))
+	_, err = os.Lstat(linkPath)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	assert.FileExists(t, targetPath)
 }
 
 func TestRename(t *testing.T) {
@@ -937,6 +1033,23 @@ steps:
 	err = store.Rename(ctx, "new-name", "another-dag")
 	require.Error(t, err)
 	assert.Equal(t, dagstore.ErrDAGAlreadyExists, err)
+
+	targetDir := filepath.Join(tmpDir, "targets")
+	require.NoError(t, os.MkdirAll(targetDir, 0750))
+	targetPath := filepath.Join(targetDir, "linked-target.yaml")
+	require.NoError(t, os.WriteFile(targetPath, []byte(dagContent), 0600))
+	linkPath := filepath.Join(tmpDir, "linked-old.yaml")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+	require.NoError(t, store.Rename(ctx, "linked-old", "linked-new"))
+	_, err = os.Lstat(linkPath)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	renamedPath := filepath.Join(tmpDir, "linked-new.yaml")
+	info, err := os.Lstat(renamedPath)
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink)
+	assert.FileExists(t, targetPath)
 }
 
 func TestGrep(t *testing.T) {
