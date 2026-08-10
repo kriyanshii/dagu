@@ -5,7 +5,7 @@ info:
   title: "Dagu"
   contact:
     name: "Yota Hamada"
-    url: "https://github.com/yottahmd"
+    url: "https://dagu.sh"
   description: API for controlling and monitoring Dagu server.
   license:
     name: "GPL-3.0"
