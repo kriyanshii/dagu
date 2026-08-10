@@ -7,21 +7,41 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
+	"sync"
 	"time"
 
 	"github.com/dagucloud/dagu/v2/internal/persis"
 )
 
+type lockableCollection interface {
+	WithLock(ctx context.Context, key string, fn func() error) error
+}
+
+func withCollectionRecordLock(
+	ctx context.Context,
+	col persis.Collection,
+	mu *sync.Mutex,
+	key string,
+	fn func() error,
+) error {
+	if locked, ok := col.(lockableCollection); ok {
+		return locked.WithLock(ctx, key, fn)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return fn()
+}
+
 const (
-	casRetryInitialBackoff = 5 * time.Millisecond
-	casRetryMaxBackoff     = 5 * time.Second
+	conflictRetryInitialBackoff = 5 * time.Millisecond
+	conflictRetryMaxBackoff     = 5 * time.Second
 )
 
-// retryCAS runs op with exponential full-jitter backoff while op returns
+// retryConflict runs op with exponential full-jitter backoff while op returns
 // [persis.ErrConflict]. Any other error (including ErrNotFound) propagates.
 // Total time is bounded by ctx.
-func retryCAS(ctx context.Context, op func(ctx context.Context) error) error {
-	backoff := casRetryInitialBackoff
+func retryConflict(ctx context.Context, op func(ctx context.Context) error) error {
+	backoff := conflictRetryInitialBackoff
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -43,6 +63,6 @@ func retryCAS(ctx context.Context, op func(ctx context.Context) error) error {
 		case <-timer.C:
 		}
 
-		backoff = min(backoff*2, casRetryMaxBackoff)
+		backoff = min(backoff*2, conflictRetryMaxBackoff)
 	}
 }

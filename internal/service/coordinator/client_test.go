@@ -384,7 +384,7 @@ func TestClientGetWorkers_DeduplicatesAndSorts(t *testing.T) {
 	assert.Equal(t, "new-run", workers[1].RunningTasks[0].DagRunId)
 }
 
-func TestClientGetWorkers_TieBreaksByStableCoordinatorOrder(t *testing.T) {
+func TestClientGetWorkers_TieBreakIsIndependentOfDiscoveryOrder(t *testing.T) {
 	t.Parallel()
 
 	config := coordinator.DefaultConfig()
@@ -428,24 +428,30 @@ func TestClientGetWorkers_TieBreaksByStableCoordinatorOrder(t *testing.T) {
 
 	hostA, portA := parseHostPort(addrA)
 	hostB, portB := parseHostPort(addrB)
-	monitor := &mockServiceMonitor{
-		members: []serviceregistry.HostInfo{
-			{ID: "coord-b", Host: hostB, Port: portB, Status: serviceregistry.ServiceStatusActive},
-			{ID: "coord-a", Host: hostA, Port: portA, Status: serviceregistry.ServiceStatusActive},
-		},
+	memberA := serviceregistry.HostInfo{ID: "coord-a", Host: hostA, Port: portA, Status: serviceregistry.ServiceStatusActive}
+	memberB := serviceregistry.HostInfo{ID: "coord-b", Host: hostB, Port: portB, Status: serviceregistry.ServiceStatusActive}
+
+	getWorker := func(members ...serviceregistry.HostInfo) *coordinatorv1.WorkerInfo {
+		client := coordinator.New(&mockServiceMonitor{members: members}, config)
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+
+		workers, err := client.GetWorkers(ctx)
+		require.NoError(t, err)
+		require.Len(t, workers, 1)
+		return workers[0]
 	}
 
-	client := coordinator.New(monitor, config)
+	forward := getWorker(memberA, memberB)
+	reverse := getWorker(memberB, memberA)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-
-	workers, err := client.GetWorkers(ctx)
-	require.NoError(t, err)
-	require.Len(t, workers, 1)
-
-	assert.Equal(t, map[string]string{"source": "coord-a"}, workers[0].Labels)
-	assert.Equal(t, int32(1), workers[0].BusyPollers)
+	assert.Equal(t, forward.Labels, reverse.Labels)
+	assert.Equal(t, forward.BusyPollers, reverse.BusyPollers)
+	require.True(t,
+		(forward.Labels["source"] == "coord-a" && forward.BusyPollers == 1) ||
+			(forward.Labels["source"] == "coord-b" && forward.BusyPollers == 2),
+		"selected worker fields must come from one coordinator report",
+	)
 }
 
 func TestClientGetWorkers_PartialFailureStillReturnsWorkers(t *testing.T) {
@@ -1067,7 +1073,7 @@ func TestClientHeartbeatWithSkipTLSVerify(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestClientDiscoveredAddressRemainsAuthoritative(t *testing.T) {
+func TestClientTreatsDiscoveredEndpointsAsDistinctOwners(t *testing.T) {
 	t.Parallel()
 
 	config := coordinator.DefaultConfig()
@@ -1152,21 +1158,21 @@ func TestClientDiscoveredAddressRemainsAuthoritative(t *testing.T) {
 		Ref: &coordinatorv1.StateRef{Scope: "dag", Namespace: "test", Key: "state"},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), oldPuts.Load())
-	assert.Equal(t, int32(2), newPuts.Load())
+	assert.Equal(t, int32(2), oldPuts.Load())
+	assert.Equal(t, int32(1), newPuts.Load())
 
 	monitor.members = []serviceregistry.HostInfo{oldMember}
 	_, err = client.Heartbeat(context.Background(), request)
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), oldHeartbeats.Load())
-	assert.Equal(t, int32(2), newHeartbeats.Load())
+	assert.Equal(t, int32(2), oldHeartbeats.Load())
+	assert.Equal(t, int32(1), newHeartbeats.Load())
 
 	ctx, cancel = context.WithTimeout(context.Background(), 500*time.Millisecond)
 	_, err = client.ReportStatusTo(ctx, oldMember, &coordinatorv1.ReportStatusRequest{})
 	cancel()
 	require.NoError(t, err)
-	assert.Zero(t, oldReports.Load())
-	assert.Equal(t, int32(1), newReports.Load())
+	assert.Equal(t, int32(1), oldReports.Load())
+	assert.Zero(t, newReports.Load())
 }
 
 func TestClientHeartbeatFailsOverWithinConfiguredTimeout(t *testing.T) {
@@ -1208,6 +1214,239 @@ func TestClientHeartbeatFailsOverWithinConfiguredTimeout(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.Equal(t, int32(2), heartbeatCalls.Load())
+}
+
+func TestClientOwnerCallFailsOverAndCachesSuccessfulRoute(t *testing.T) {
+	t.Parallel()
+
+	config := coordinator.DefaultConfig()
+	config.RequestTimeout = time.Second
+
+	var ownerCalls atomic.Int32
+	ownerServer, ownerAddr := startMockServer(t, &mockCoordinatorService{
+		reportStatusFunc: func(context.Context, *coordinatorv1.ReportStatusRequest) (*coordinatorv1.ReportStatusResponse, error) {
+			ownerCalls.Add(1)
+			return nil, status.Error(codes.Unavailable, "owner unavailable")
+		},
+	})
+	defer ownerServer.Stop()
+
+	var replacementCalls atomic.Int32
+	replacementServer, replacementAddr := startMockServer(t, &mockCoordinatorService{
+		reportStatusFunc: func(context.Context, *coordinatorv1.ReportStatusRequest) (*coordinatorv1.ReportStatusResponse, error) {
+			replacementCalls.Add(1)
+			return &coordinatorv1.ReportStatusResponse{Accepted: true}, nil
+		},
+	})
+	defer replacementServer.Stop()
+
+	ownerHost, ownerPort := parseHostPort(ownerAddr)
+	replacementHost, replacementPort := parseHostPort(replacementAddr)
+	owner := serviceregistry.HostInfo{ID: "coord-a", Host: ownerHost, Port: ownerPort, Status: serviceregistry.ServiceStatusActive}
+	replacement := serviceregistry.HostInfo{ID: "coord-b", Host: replacementHost, Port: replacementPort, Status: serviceregistry.ServiceStatusActive}
+	client := coordinator.New(&mockServiceMonitor{members: []serviceregistry.HostInfo{owner, replacement}}, config)
+
+	for range 2 {
+		resp, err := client.ReportStatusTo(t.Context(), owner, &coordinatorv1.ReportStatusRequest{})
+		require.NoError(t, err)
+		require.True(t, resp.Accepted)
+	}
+
+	assert.Equal(t, int32(1), ownerCalls.Load())
+	assert.Equal(t, int32(2), replacementCalls.Load())
+}
+
+func TestClientOwnerCallDoesNotMaskApplicationRejection(t *testing.T) {
+	t.Parallel()
+
+	var replacementCalls atomic.Int32
+	ownerServer, ownerAddr := startMockServer(t, &mockCoordinatorService{
+		reportStatusFunc: func(context.Context, *coordinatorv1.ReportStatusRequest) (*coordinatorv1.ReportStatusResponse, error) {
+			return nil, status.Error(codes.FailedPrecondition, "stale attempt")
+		},
+	})
+	defer ownerServer.Stop()
+	replacementServer, replacementAddr := startMockServer(t, &mockCoordinatorService{
+		reportStatusFunc: func(context.Context, *coordinatorv1.ReportStatusRequest) (*coordinatorv1.ReportStatusResponse, error) {
+			replacementCalls.Add(1)
+			return &coordinatorv1.ReportStatusResponse{Accepted: true}, nil
+		},
+	})
+	defer replacementServer.Stop()
+
+	ownerHost, ownerPort := parseHostPort(ownerAddr)
+	replacementHost, replacementPort := parseHostPort(replacementAddr)
+	owner := serviceregistry.HostInfo{ID: "coord-a", Host: ownerHost, Port: ownerPort, Status: serviceregistry.ServiceStatusActive}
+	client := coordinator.New(&mockServiceMonitor{members: []serviceregistry.HostInfo{
+		owner,
+		{ID: "coord-b", Host: replacementHost, Port: replacementPort, Status: serviceregistry.ServiceStatusActive},
+	}}, coordinator.DefaultConfig())
+
+	_, err := client.ReportStatusTo(t.Context(), owner, &coordinatorv1.ReportStatusRequest{})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	assert.Zero(t, replacementCalls.Load())
+}
+
+func TestClientOwnerCallRetriesLegacyNonOwnerRejection(t *testing.T) {
+	t.Parallel()
+
+	ownerServer, ownerAddr := startMockServer(t, &mockCoordinatorService{
+		reportStatusFunc: func(context.Context, *coordinatorv1.ReportStatusRequest) (*coordinatorv1.ReportStatusResponse, error) {
+			return nil, status.Error(codes.FailedPrecondition, "status update sent to non-owner coordinator")
+		},
+	})
+	defer ownerServer.Stop()
+	replacementServer, replacementAddr := startMockServer(t, &mockCoordinatorService{
+		reportStatusFunc: func(context.Context, *coordinatorv1.ReportStatusRequest) (*coordinatorv1.ReportStatusResponse, error) {
+			return &coordinatorv1.ReportStatusResponse{Accepted: true}, nil
+		},
+	})
+	defer replacementServer.Stop()
+
+	ownerHost, ownerPort := parseHostPort(ownerAddr)
+	replacementHost, replacementPort := parseHostPort(replacementAddr)
+	owner := serviceregistry.HostInfo{ID: "coord-a", Host: ownerHost, Port: ownerPort, Status: serviceregistry.ServiceStatusActive}
+	client := coordinator.New(&mockServiceMonitor{members: []serviceregistry.HostInfo{
+		owner,
+		{ID: "coord-b", Host: replacementHost, Port: replacementPort, Status: serviceregistry.ServiceStatusActive},
+	}}, coordinator.DefaultConfig())
+
+	resp, err := client.ReportStatusTo(t.Context(), owner, &coordinatorv1.ReportStatusRequest{})
+	require.NoError(t, err)
+	require.True(t, resp.Accepted)
+}
+
+func TestClientOwnerCallRetriesLegacyClaimEndpointRejection(t *testing.T) {
+	t.Parallel()
+
+	ownerServer, ownerAddr := startMockServer(t, &mockCoordinatorService{
+		ackTaskClaimFunc: func(context.Context, *coordinatorv1.AckTaskClaimRequest) (*coordinatorv1.AckTaskClaimResponse, error) {
+			return &coordinatorv1.AckTaskClaimResponse{
+				Error: "claim belongs to a different coordinator endpoint",
+			}, nil
+		},
+	})
+	defer ownerServer.Stop()
+	replacementServer, replacementAddr := startMockServer(t, &mockCoordinatorService{
+		ackTaskClaimFunc: func(context.Context, *coordinatorv1.AckTaskClaimRequest) (*coordinatorv1.AckTaskClaimResponse, error) {
+			return &coordinatorv1.AckTaskClaimResponse{Accepted: true}, nil
+		},
+	})
+	defer replacementServer.Stop()
+
+	ownerHost, ownerPort := parseHostPort(ownerAddr)
+	replacementHost, replacementPort := parseHostPort(replacementAddr)
+	owner := serviceregistry.HostInfo{ID: "coord-a", Host: ownerHost, Port: ownerPort, Status: serviceregistry.ServiceStatusActive}
+	client := coordinator.New(&mockServiceMonitor{members: []serviceregistry.HostInfo{
+		owner,
+		{ID: "coord-b", Host: replacementHost, Port: replacementPort, Status: serviceregistry.ServiceStatusActive},
+	}}, coordinator.DefaultConfig())
+
+	resp, err := client.AckTaskClaimTo(t.Context(), owner, &coordinatorv1.AckTaskClaimRequest{})
+	require.NoError(t, err)
+	require.True(t, resp.Accepted)
+}
+
+func TestClientOwnerStreamMovesAfterLegacyNonOwnerRejection(t *testing.T) {
+	t.Parallel()
+
+	ownerServer, ownerAddr := startMockServer(t, &mockCoordinatorService{
+		streamLogsFunc: func(stream coordinatorv1.CoordinatorService_StreamLogsServer) error {
+			_, err := stream.Recv()
+			if err != nil {
+				return err
+			}
+			return status.Error(codes.FailedPrecondition, "log chunk sent to non-owner coordinator")
+		},
+	})
+	defer ownerServer.Stop()
+
+	received := make(chan string, 1)
+	replacementServer, replacementAddr := startMockServer(t, &mockCoordinatorService{
+		streamLogsFunc: func(stream coordinatorv1.CoordinatorService_StreamLogsServer) error {
+			chunk, err := stream.Recv()
+			if err != nil {
+				return err
+			}
+			received <- string(chunk.Data)
+			for {
+				_, err = stream.Recv()
+				if err == io.EOF {
+					return stream.SendAndClose(&coordinatorv1.StreamLogsResponse{})
+				}
+				if err != nil {
+					return err
+				}
+			}
+		},
+	})
+	defer replacementServer.Stop()
+
+	ownerHost, ownerPort := parseHostPort(ownerAddr)
+	replacementHost, replacementPort := parseHostPort(replacementAddr)
+	owner := serviceregistry.HostInfo{ID: "coord-a", Host: ownerHost, Port: ownerPort, Status: serviceregistry.ServiceStatusActive}
+	client := coordinator.New(&mockServiceMonitor{members: []serviceregistry.HostInfo{
+		owner,
+		{ID: "coord-b", Host: replacementHost, Port: replacementPort, Status: serviceregistry.ServiceStatusActive},
+	}}, coordinator.DefaultConfig())
+
+	stream, err := client.StreamLogsTo(t.Context(), owner)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&coordinatorv1.LogChunk{Data: []byte("old")}))
+	_, err = stream.CloseAndRecv()
+	require.Equal(t, codes.Unavailable, status.Code(err))
+
+	stream, err = client.StreamLogsTo(t.Context(), owner)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&coordinatorv1.LogChunk{Data: []byte("replacement")}))
+	_, err = stream.CloseAndRecv()
+	require.NoError(t, err)
+	assert.Equal(t, "replacement", <-received)
+}
+
+func TestClientOwnerStreamSkipsUnhealthyOwner(t *testing.T) {
+	t.Parallel()
+
+	unhealthy := health.NewServer()
+	unhealthy.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
+	ownerServer, ownerAddr := startMockServerWithHealth(t, &mockCoordinatorService{}, unhealthy)
+	defer ownerServer.Stop()
+
+	received := make(chan string, 1)
+	replacementServer, replacementAddr := startMockServer(t, &mockCoordinatorService{
+		streamLogsFunc: func(stream coordinatorv1.CoordinatorService_StreamLogsServer) error {
+			chunk, err := stream.Recv()
+			if err != nil {
+				return err
+			}
+			received <- string(chunk.Data)
+			for {
+				_, err = stream.Recv()
+				if err == io.EOF {
+					return stream.SendAndClose(&coordinatorv1.StreamLogsResponse{})
+				}
+				if err != nil {
+					return err
+				}
+			}
+		},
+	})
+	defer replacementServer.Stop()
+
+	ownerHost, ownerPort := parseHostPort(ownerAddr)
+	replacementHost, replacementPort := parseHostPort(replacementAddr)
+	owner := serviceregistry.HostInfo{ID: "coord-a", Host: ownerHost, Port: ownerPort, Status: serviceregistry.ServiceStatusActive}
+	client := coordinator.New(&mockServiceMonitor{members: []serviceregistry.HostInfo{
+		owner,
+		{ID: "coord-b", Host: replacementHost, Port: replacementPort, Status: serviceregistry.ServiceStatusActive},
+	}}, coordinator.DefaultConfig())
+
+	stream, err := client.StreamLogsTo(t.Context(), owner)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&coordinatorv1.LogChunk{Data: []byte("replacement")}))
+	_, err = stream.CloseAndRecv()
+	require.NoError(t, err)
+	assert.Equal(t, "replacement", <-received)
 }
 
 func TestClientHeartbeatFailsOverAfterHealthCheckStalls(t *testing.T) {
@@ -1615,6 +1854,34 @@ func TestClientReportStatus(t *testing.T) {
 	})
 }
 
+func TestClientGetDAGRunStatusReturnsResponseError(t *testing.T) {
+	t.Parallel()
+
+	config := coordinator.DefaultConfig()
+	config.MaxRetries = 0
+	config.RequestTimeout = 100 * time.Millisecond
+
+	mockCoord := &mockCoordinatorService{
+		getRunStatusFunc: func(_ context.Context, req *coordinatorv1.GetDAGRunStatusRequest) (*coordinatorv1.GetDAGRunStatusResponse, error) {
+			assert.Equal(t, "test-dag", req.DagName)
+			assert.Equal(t, "run-123", req.DagRunId)
+			return &coordinatorv1.GetDAGRunStatusResponse{Error: "failed to read status: storage unavailable"}, nil
+		},
+	}
+
+	server, addr := startMockServer(t, mockCoord)
+	defer server.Stop()
+
+	host, port := parseHostPort(addr)
+	monitor := &mockServiceMonitor{
+		members: []serviceregistry.HostInfo{{Host: host, Port: port, Status: serviceregistry.ServiceStatusActive}},
+	}
+	client := coordinator.New(monitor, config)
+
+	_, err := client.GetDAGRunStatus(context.Background(), "test-dag", "run-123", nil)
+	require.ErrorContains(t, err, "failed to read status: storage unavailable")
+}
+
 func TestClientMetrics(t *testing.T) {
 	t.Parallel()
 
@@ -1772,9 +2039,11 @@ type mockCoordinatorService struct {
 
 	dispatchFunc     func(context.Context, *coordinatorv1.DispatchRequest) (*coordinatorv1.DispatchResponse, error)
 	pollFunc         func(context.Context, *coordinatorv1.PollRequest) (*coordinatorv1.PollResponse, error)
+	ackTaskClaimFunc func(context.Context, *coordinatorv1.AckTaskClaimRequest) (*coordinatorv1.AckTaskClaimResponse, error)
 	getWorkersFunc   func(context.Context, *coordinatorv1.GetWorkersRequest) (*coordinatorv1.GetWorkersResponse, error)
 	heartbeatFunc    func(context.Context, *coordinatorv1.HeartbeatRequest) (*coordinatorv1.HeartbeatResponse, error)
 	reportStatusFunc func(context.Context, *coordinatorv1.ReportStatusRequest) (*coordinatorv1.ReportStatusResponse, error)
+	getRunStatusFunc func(context.Context, *coordinatorv1.GetDAGRunStatusRequest) (*coordinatorv1.GetDAGRunStatusResponse, error)
 	streamLogsFunc   func(coordinatorv1.CoordinatorService_StreamLogsServer) error
 	getStateFunc     func(context.Context, *coordinatorv1.GetStateRequest) (*coordinatorv1.GetStateResponse, error)
 	putStateFunc     func(context.Context, *coordinatorv1.PutStateRequest) (*coordinatorv1.PutStateResponse, error)
@@ -1809,6 +2078,13 @@ func (m *mockCoordinatorService) Poll(ctx context.Context, req *coordinatorv1.Po
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
+func (m *mockCoordinatorService) AckTaskClaim(ctx context.Context, req *coordinatorv1.AckTaskClaimRequest) (*coordinatorv1.AckTaskClaimResponse, error) {
+	if m.ackTaskClaimFunc != nil {
+		return m.ackTaskClaimFunc(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
 func (m *mockCoordinatorService) GetWorkers(ctx context.Context, req *coordinatorv1.GetWorkersRequest) (*coordinatorv1.GetWorkersResponse, error) {
 	if m.getWorkersFunc != nil {
 		return m.getWorkersFunc(ctx, req)
@@ -1826,6 +2102,13 @@ func (m *mockCoordinatorService) Heartbeat(ctx context.Context, req *coordinator
 func (m *mockCoordinatorService) ReportStatus(ctx context.Context, req *coordinatorv1.ReportStatusRequest) (*coordinatorv1.ReportStatusResponse, error) {
 	if m.reportStatusFunc != nil {
 		return m.reportStatusFunc(ctx, req)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockCoordinatorService) GetDAGRunStatus(ctx context.Context, req *coordinatorv1.GetDAGRunStatusRequest) (*coordinatorv1.GetDAGRunStatusResponse, error) {
+	if m.getRunStatusFunc != nil {
+		return m.getRunStatusFunc(ctx, req)
 	}
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }

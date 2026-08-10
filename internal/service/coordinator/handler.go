@@ -652,14 +652,26 @@ func (h *Handler) createAttemptForTask(ctx context.Context, task *coordinatorv1.
 			}
 			return nil, findErr
 		}
+	}
+	if findErr != nil && !errors.Is(findErr, dagrun.ErrDAGRunIDNotFound) {
+		return nil, fmt.Errorf("failed to find existing attempt: %w", findErr)
+	}
 
-		existingStatus, readErr := existingAttempt.ReadStatus(ctx)
+	var existingStatus *ir.DAGRunStatus
+	if findErr == nil {
+		var readErr error
+		existingStatus, readErr = existingAttempt.ReadStatus(ctx)
 		if readErr != nil {
-			if errors.Is(readErr, dagrun.ErrNoStatusData) || errors.Is(readErr, dagrun.ErrCorruptedStatusFile) {
-				return nil, staleQueueDispatchError("dag-run is no longer queued")
+			if queueDispatchStatus != nil {
+				if errors.Is(readErr, dagrun.ErrNoStatusData) || errors.Is(readErr, dagrun.ErrCorruptedStatusFile) {
+					return nil, staleQueueDispatchError("dag-run is no longer queued")
+				}
+				return nil, readErr
 			}
-			return nil, readErr
+			return nil, fmt.Errorf("failed to read existing attempt: %w", readErr)
 		}
+	}
+	if queueDispatchStatus != nil {
 		if existingAttempt.ID() != queueDispatchStatus.AttemptID {
 			return nil, staleQueueDispatchError("queued attempt was superseded")
 		}
@@ -671,28 +683,25 @@ func (h *Handler) createAttemptForTask(ctx context.Context, task *coordinatorv1.
 			return nil, staleQueueDispatchError("latest attempt is " + statusLabel)
 		}
 	}
-	if findErr == nil {
-		existingStatus, readErr := existingAttempt.ReadStatus(ctx)
-		if readErr == nil && existingStatus != nil && existingStatus.Status == ir.Queued {
-			task.AttemptId = existingAttempt.ID()
-			task.AttemptKey = generateRootAttemptKey(task)
+	if existingStatus != nil && existingStatus.Status == ir.Queued {
+		task.AttemptId = existingAttempt.ID()
+		task.AttemptKey = generateRootAttemptKey(task)
 
-			if err := existingAttempt.Open(ctx); err != nil {
-				return nil, fmt.Errorf("failed to open existing attempt: %w", err)
-			}
-
-			h.attemptsMu.Lock()
-			h.openAttempts[task.DagRunId] = existingAttempt
-			h.attemptsMu.Unlock()
-
-			logger.Info(ctx, "Reusing existing queued attempt for dispatched task",
-				tag.RunID(task.DagRunId),
-				tag.Target(task.Target),
-				tag.AttemptID(task.AttemptId),
-				tag.AttemptKey(task.AttemptKey),
-			)
-			return &preparedDispatchAttempt{attempt: existingAttempt}, nil
+		if err := existingAttempt.Open(ctx); err != nil {
+			return nil, fmt.Errorf("failed to open existing attempt: %w", err)
 		}
+
+		h.attemptsMu.Lock()
+		h.openAttempts[task.DagRunId] = existingAttempt
+		h.attemptsMu.Unlock()
+
+		logger.Info(ctx, "Reusing existing queued attempt for dispatched task",
+			tag.RunID(task.DagRunId),
+			tag.Target(task.Target),
+			tag.AttemptID(task.AttemptId),
+			tag.AttemptKey(task.AttemptKey),
+		)
+		return &preparedDispatchAttempt{attempt: existingAttempt}, nil
 	}
 
 	// Create new attempt (either first attempt or retry)
@@ -711,8 +720,9 @@ func (h *Handler) createAttemptForTask(ctx context.Context, task *coordinatorv1.
 		return nil, fmt.Errorf("failed to open attempt: %w", err)
 	}
 
-	if err := h.writeInitialStatus(ctx, attempt, task, dag.Name, ir.DAGRunRef{}, labels); err != nil {
-		return nil, fmt.Errorf("failed to write initial status: %w", err)
+	if writeErr := h.writeInitialStatus(ctx, attempt, task, dag.Name, ir.DAGRunRef{}, labels); writeErr != nil {
+		closeErr := attempt.Close(context.WithoutCancel(ctx))
+		return nil, errors.Join(fmt.Errorf("failed to write initial status: %w", writeErr), closeErr)
 	}
 
 	h.attemptsMu.Lock()
@@ -771,11 +781,6 @@ func (h *Handler) createSubAttemptForTask(ctx context.Context, task *coordinator
 
 	rootRef := ir.DAGRunRef{Name: task.RootDagRunName, ID: task.RootDagRunId}
 
-	attempt, err := h.dagRunStore.CreateSubAttempt(ctx, rootRef, task.DagRunId)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create sub-attempt: %w", err)
-	}
-
 	loadOpts := []spec.LoadOption{spec.WithName(task.Target)}
 	if task.BaseConfig != "" {
 		loadOpts = append(loadOpts, spec.WithBaseConfigContent([]byte(task.BaseConfig)))
@@ -787,6 +792,11 @@ func (h *Handler) createSubAttemptForTask(ctx context.Context, task *coordinator
 	dag.SourceFile = task.SourceFile
 	labels := labelsForInitialStatus(task, dag)
 	task.Labels = strings.Join(labels, ",")
+
+	attempt, err := h.dagRunStore.CreateSubAttempt(ctx, rootRef, task.DagRunId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create sub-attempt: %w", err)
+	}
 	attempt.SetDAG(dag)
 
 	task.AttemptId = attempt.ID()
@@ -799,8 +809,9 @@ func (h *Handler) createSubAttemptForTask(ctx context.Context, task *coordinator
 		return nil, fmt.Errorf("failed to open sub-attempt: %w", err)
 	}
 
-	if err := h.writeInitialStatus(ctx, attempt, task, task.Target, rootRef, labels); err != nil {
-		return nil, fmt.Errorf("failed to write initial status: %w", err)
+	if writeErr := h.writeInitialStatus(ctx, attempt, task, task.Target, rootRef, labels); writeErr != nil {
+		closeErr := attempt.Close(context.WithoutCancel(ctx))
+		return nil, errors.Join(fmt.Errorf("failed to write initial status: %w", writeErr), closeErr)
 	}
 
 	h.attemptsMu.Lock()
@@ -1136,6 +1147,16 @@ func (h *Handler) AckTaskClaim(ctx context.Context, req *coordinatorv1.AckTaskCl
 	claimed, err := h.dispatchTaskStore.GetClaim(ctx, req.ClaimToken)
 	if err != nil {
 		if errors.Is(err, dispatch.ErrDispatchTaskNotFound) {
+			if req.AttemptKey != "" && req.WorkerId != "" {
+				lease, leaseErr := h.dagRunLeaseStore.Get(ctx, req.AttemptKey)
+				if leaseErr == nil && lease.MatchesClaim(req.AttemptKey, req.WorkerId) &&
+					lease.ClaimToken == req.ClaimToken {
+					return &coordinatorv1.AckTaskClaimResponse{Accepted: true}, nil
+				}
+				if leaseErr != nil && !errors.Is(leaseErr, dispatch.ErrDAGRunLeaseNotFound) {
+					return nil, status.Error(codes.Internal, "failed to load acknowledged claim: "+leaseErr.Error())
+				}
+			}
 			return &coordinatorv1.AckTaskClaimResponse{Accepted: false, Error: "claim not found or expired"}, nil
 		}
 		return nil, status.Error(codes.Internal, "failed to load claim: "+err.Error())
@@ -1146,7 +1167,10 @@ func (h *Handler) AckTaskClaim(ctx context.Context, req *coordinatorv1.AckTaskCl
 	if claimed.Task == nil {
 		return &coordinatorv1.AckTaskClaimResponse{Accepted: false, Error: "claim has no task payload"}, nil
 	}
-
+	claimOwner := claimed.Owner
+	if claimOwner == (dispatch.CoordinatorEndpoint{}) {
+		claimOwner = claimed.Task.Owner
+	}
 	workerID := req.WorkerId
 	if workerID == "" {
 		workerID = claimed.WorkerID
@@ -1155,11 +1179,20 @@ func (h *Handler) AckTaskClaim(ctx context.Context, req *coordinatorv1.AckTaskCl
 		return &coordinatorv1.AckTaskClaimResponse{Accepted: false, Error: "worker_id is required"}, nil
 	}
 
+	if claimOwner != (dispatch.CoordinatorEndpoint{}) {
+		claimed.Task.Owner = claimOwner
+	}
 	task, err := convert.DispatchTaskToProto(claimed.Task)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to encode claimed task: "+err.Error())
 	}
+	if req.AttemptKey != "" && req.AttemptKey != task.AttemptKey {
+		return &coordinatorv1.AckTaskClaimResponse{Accepted: false, Error: "claim belongs to a different attempt"}, nil
+	}
 	if err := h.attemptOwnership().recordTaskClaim(ctx, task, workerID); err != nil {
+		if errors.Is(err, dispatch.ErrDAGRunLeaseConflict) {
+			return &coordinatorv1.AckTaskClaimResponse{Accepted: false, Error: "attempt claim conflicts with the active lease"}, nil
+		}
 		return nil, status.Error(codes.Internal, "failed to create run lease: "+err.Error())
 	}
 	if err := h.dispatchTaskStore.DeleteClaim(ctx, req.ClaimToken); err != nil {
@@ -1178,15 +1211,23 @@ func (h *Handler) RunHeartbeat(ctx context.Context, req *coordinatorv1.RunHeartb
 	if h.dagRunLeaseStore == nil {
 		return nil, status.Error(codes.FailedPrecondition, "dag-run lease store is not configured")
 	}
-	if h.owner.ID != "" && req.OwnerCoordinatorId != h.owner.ID {
-		return nil, status.Error(codes.FailedPrecondition, "run heartbeat sent to non-owner coordinator")
-	}
-
 	cancelledRuns := make([]*coordinatorv1.CancelledRun, 0)
 	observedAt := time.Now().UTC()
 	for _, task := range req.RunningTasks {
 		if task == nil || task.AttemptKey == "" {
 			continue
+		}
+		identity, identityErr := runningTaskIdentity(req.WorkerId, task)
+		if identityErr != nil {
+			cancelledRuns = appendCancelledRunIfMissing(cancelledRuns, task.AttemptKey)
+			continue
+		}
+		if err := h.validateAttempt(ctx, identity); err != nil {
+			if status.Code(err) == codes.FailedPrecondition {
+				cancelledRuns = appendCancelledRunIfMissing(cancelledRuns, task.AttemptKey)
+				continue
+			}
+			return nil, err
 		}
 		if err := h.refreshRunLease(ctx, task.AttemptKey, observedAt); err != nil {
 			if errors.Is(err, dispatch.ErrDAGRunLeaseNotFound) || errors.Is(err, persis.ErrCorrupt) {
@@ -1595,10 +1636,6 @@ func (h *Handler) ReportStatus(ctx context.Context, req *coordinatorv1.ReportSta
 	if h.dagRunStore == nil {
 		return nil, status.Error(codes.FailedPrecondition, "status reporting not configured: DAG run storage not available")
 	}
-	if h.owner.ID != "" && req.OwnerCoordinatorId != h.owner.ID {
-		return nil, status.Error(codes.FailedPrecondition, "status update sent to non-owner coordinator")
-	}
-
 	if req.Status == nil {
 		return nil, status.Error(codes.InvalidArgument, "status is required")
 	}
@@ -1610,6 +1647,17 @@ func (h *Handler) ReportStatus(ctx context.Context, req *coordinatorv1.ReportSta
 	}
 	if len(dagRunStatus.Labels) == 0 {
 		dagRunStatus.Labels = splitTaskLabels(req.Labels)
+	}
+	leaseMissing := false
+	if h.dagRunLeaseStore != nil {
+		var validationErr error
+		leaseMissing, validationErr = h.validateStatusLease(ctx, req.WorkerId, dagRunStatus)
+		if validationErr != nil {
+			if status.Code(validationErr) == codes.FailedPrecondition {
+				return &coordinatorv1.ReportStatusResponse{Accepted: false, Error: status.Convert(validationErr).Message()}, nil
+			}
+			return nil, validationErr
+		}
 	}
 
 	// Transform worker-local log paths to coordinator paths.
@@ -1660,6 +1708,10 @@ func (h *Handler) ReportStatus(ctx context.Context, req *coordinatorv1.ReportSta
 	}
 
 	ownership := h.attemptOwnership()
+	if leaseMissing && latestStatus.Status != ir.NotStarted && !isTerminalRunStatus(latestStatus.Status) {
+		logRejectedRemoteStatusUpdate(ctx, req.WorkerId, dagRunStatus, latestStatus, remoteAttemptRejectedLeaseInactive)
+		return &coordinatorv1.ReportStatusResponse{Accepted: false, Error: remoteAttemptRejectedLeaseInactive}, nil
+	}
 	accepted, rejectReason := ownership.statusDecision(ctx, latestStatus, dagRunStatus, statusDecisionOptions{
 		CancellationRequested: h.sameAttemptCancellationRequested(ctx, latestAttempt, latestStatus, dagRunStatus),
 		ClaimKey:              dagRunStatus.EffectiveClaimKey(),
@@ -2258,7 +2310,10 @@ func (h *Handler) StreamLogs(stream coordinatorv1.CoordinatorService_StreamLogsS
 	}
 
 	// Delegate to the log handler
-	logHandler := newLogHandler(h.logDir, h.owner.ID)
+	logHandler := newLogHandler(h.logDir)
+	if h.dagRunLeaseStore != nil {
+		logHandler.attemptValidator = h.validateAttempt
+	}
 	defer logHandler.Close(stream.Context()) // Ensure file handles are closed on stream end or error
 	return logHandler.handleStream(stream)
 }
@@ -2272,8 +2327,10 @@ func (h *Handler) StreamArtifacts(stream coordinatorv1.CoordinatorService_Stream
 		return status.Error(codes.FailedPrecondition, "artifact streaming not configured: dagRunStore is empty")
 	}
 
-	artifactHandler := newArtifactHandler(h.dagRunStore, h.owner.ID)
-	defer artifactHandler.Close(stream.Context())
+	artifactHandler := newArtifactHandler(h.dagRunStore)
+	if h.dagRunLeaseStore != nil {
+		artifactHandler.attemptValidator = h.validateAttempt
+	}
 	return artifactHandler.handleStream(stream)
 }
 
@@ -2304,27 +2361,23 @@ func (h *Handler) GetDAGRunStatus(ctx context.Context, req *coordinatorv1.GetDAG
 		attempt, err = h.dagRunStore.FindAttempt(ctx, ref)
 	}
 
-	if err != nil {
-		// Not found is not an error, just return found=false
+	if errors.Is(err, dagrun.ErrDAGRunIDNotFound) || errors.Is(err, dagrun.ErrNoStatusData) {
 		return &coordinatorv1.GetDAGRunStatusResponse{
 			Found: false,
 		}, nil
+	}
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to find DAG run status: "+err.Error())
 	}
 
 	runStatus, err := attempt.ReadStatus(ctx)
 	if err != nil {
-		return &coordinatorv1.GetDAGRunStatusResponse{
-			Found: false,
-			Error: fmt.Sprintf("failed to read status: %v", err),
-		}, nil
+		return nil, status.Error(codes.Internal, "failed to read DAG run status: "+err.Error())
 	}
 
 	protoStatus, convErr := convert.DAGRunStatusToProto(runStatus)
 	if convErr != nil {
-		return &coordinatorv1.GetDAGRunStatusResponse{
-			Found: false,
-			Error: fmt.Sprintf("failed to convert status: %v", convErr),
-		}, nil
+		return nil, status.Error(codes.Internal, "failed to convert DAG run status: "+convErr.Error())
 	}
 
 	return &coordinatorv1.GetDAGRunStatusResponse{
@@ -2363,6 +2416,15 @@ func (h *Handler) StartZombieDetector(ctx context.Context, interval time.Duratio
 
 	go func() {
 		defer close(h.zombieDetectorDone)
+		if h.dagRunLeaseStore != nil {
+			timer := time.NewTimer(h.staleLeaseThreshold)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
 		h.detectAndCleanupZombies(ctx)
 
 		ticker := time.NewTicker(interval)

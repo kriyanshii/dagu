@@ -203,6 +203,9 @@ func (o *attemptOwnership) upsertLeaseFromStatus(
 	}
 	if existing, err := o.leaseStore.Get(ctx, attemptKey); err == nil && existing != nil {
 		lease.ClaimedAt = existing.ClaimedAt
+		if existing.Owner != (dispatch.CoordinatorEndpoint{}) {
+			lease.Owner = existing.Owner
+		}
 		if status.ProcGroup == "" && existing.QueueName != "" {
 			lease.QueueName = existing.QueueName
 		}
@@ -365,6 +368,14 @@ func (o *attemptOwnership) leaseFromTask(
 	workerID string,
 	now time.Time,
 ) dispatch.DAGRunLease {
+	owner := dispatch.CoordinatorEndpoint{
+		ID:   task.OwnerCoordinatorId,
+		Host: task.OwnerCoordinatorHost,
+		Port: int(task.OwnerCoordinatorPort),
+	}
+	if owner.ID == "" || owner.Host == "" || owner.Port <= 0 {
+		owner = o.owner
+	}
 	root := ir.DAGRunRef{Name: task.RootDagRunName, ID: task.RootDagRunId}
 	if root.Zero() {
 		root = ir.DAGRunRef{Name: task.Target, ID: task.DagRunId}
@@ -383,7 +394,8 @@ func (o *attemptOwnership) leaseFromTask(
 		AttemptID:       task.AttemptId,
 		QueueName:       queueName,
 		WorkerID:        workerID,
-		Owner:           o.owner,
+		Owner:           owner,
+		ClaimToken:      task.ClaimToken,
 		ClaimedAt:       now.UnixMilli(),
 		LastHeartbeatAt: now.UnixMilli(),
 	}

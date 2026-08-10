@@ -35,7 +35,9 @@ import (
 	coordinatorv1 "github.com/dagucloud/dagu/v2/proto/coordinator/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 var _ TaskHandler = (*remoteTaskHandler)(nil)
@@ -88,6 +90,18 @@ func TestTaskOwner(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, serviceregistry.HostInfo{ID: "coord-1", Host: "127.0.0.1", Port: 4321}, owner)
 	})
+
+	t.Run("AcceptsEndpointWithoutProcessID", func(t *testing.T) {
+		t.Parallel()
+
+		owner, err := taskOwner(&coordinatorv1.Task{
+			OwnerCoordinatorHost: "coordinator",
+			OwnerCoordinatorPort: 50055,
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, serviceregistry.HostInfo{Host: "coordinator", Port: 50055}, owner)
+	})
 }
 
 func TestPollerAckTaskClaimRejectsPartialOwnerMetadata(t *testing.T) {
@@ -104,13 +118,39 @@ func TestPollerAckTaskClaimRejectsPartialOwnerMetadata(t *testing.T) {
 	err := poller.ackTaskClaim(context.Background(), &coordinatorv1.Task{
 		ClaimToken:           "claim-1",
 		OwnerCoordinatorHost: "127.0.0.1",
-		OwnerCoordinatorPort: 4321,
-		OwnerCoordinatorId:   "",
+		OwnerCoordinatorId:   "coord-1",
 	})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "incomplete owner coordinator metadata")
 	assert.False(t, called)
+}
+
+func TestPollerAckTaskClaimRetriesTransientFailure(t *testing.T) {
+	t.Parallel()
+
+	client := newMockRemoteCoordinatorClient()
+	calls := 0
+	client.AckTaskClaimFunc = func(_ context.Context, _ serviceregistry.HostInfo, req *coordinatorv1.AckTaskClaimRequest) (*coordinatorv1.AckTaskClaimResponse, error) {
+		calls++
+		require.Equal(t, "attempt-key-1", req.AttemptKey)
+		if calls == 1 {
+			return nil, status.Error(codes.Unavailable, "coordinator restarting")
+		}
+		return &coordinatorv1.AckTaskClaimResponse{Accepted: true}, nil
+	}
+
+	poller := NewPoller("worker-1", client, nil, 0, nil)
+	err := poller.ackTaskClaim(t.Context(), &coordinatorv1.Task{
+		AttemptKey:           "attempt-key-1",
+		ClaimToken:           "claim-1",
+		OwnerCoordinatorHost: "coordinator",
+		OwnerCoordinatorPort: 50055,
+		OwnerCoordinatorId:   "coord-a",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 2, calls)
 }
 
 type mockStreamLogsClient struct {
@@ -1829,6 +1869,61 @@ func TestRemoteRunReporter_FinalizesSchedulerLogByClosingLiveWriterOnce(t *testi
 	require.Equal(t, finalsBeforeClose, finalsAfterClose, "deferred close should not send a duplicate final scheduler marker")
 	require.Equal(t, streamCountAfterFinalization, streamCountAfterCachedReplay, "cached finalization should not reopen the stream")
 	require.Equal(t, []string{"terminal-status"}, events)
+}
+
+func TestRemoteRunReporter_RetainsClaimKeyWhenReusedWithPartialMetadata(t *testing.T) {
+	const (
+		dagName   = "claim-key-reuse"
+		dagRunID  = "run-claim-key-reuse"
+		attemptID = "attempt-claim-key-reuse"
+		claimKey  = "claim-key"
+	)
+
+	logStream := newMockStreamLogsClient()
+	artifactStream := newMockStreamArtifactsClient()
+	client := newMockRemoteCoordinatorClient()
+	client.StreamLogsFunc = func(context.Context) (coordinatorv1.CoordinatorService_StreamLogsClient, error) {
+		return logStream, nil
+	}
+	client.StreamArtifactsFunc = func(context.Context) (coordinatorv1.CoordinatorService_StreamArtifactsClient, error) {
+		return artifactStream, nil
+	}
+
+	root := ir.NewDAGRunRef(dagName, dagRunID)
+	full := remoteRunMetadata{
+		dagRunID:  dagRunID,
+		dagName:   dagName,
+		attemptID: attemptID,
+		claimKey:  claimKey,
+		root:      root,
+	}
+	partial := full
+	partial.claimKey = ""
+	reporter := newRemoteRunReporter(client, "worker-1", full, serviceregistry.HostInfo{})
+
+	streamer := reporter.logStreamerFor(full)
+	require.Same(t, streamer, reporter.logStreamerFor(partial))
+	writer := streamer.NewStepWriter(context.Background(), "step", runctx.StreamTypeStdout)
+	_, err := writer.Write([]byte("output"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	uploader := reporter.artifactUploaderFor(full)
+	require.Same(t, uploader, reporter.artifactUploaderFor(partial))
+	artifactDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(artifactDir, "out.txt"), []byte("artifact"), 0o600))
+	require.NoError(t, uploader.UploadDir(context.Background(), artifactDir))
+
+	logChunks := logStream.snapshotChunks()
+	require.NotEmpty(t, logChunks)
+	for _, chunk := range logChunks {
+		assert.Equal(t, claimKey, chunk.AttemptKey)
+	}
+	artifactChunks := artifactStream.snapshotChunks()
+	require.NotEmpty(t, artifactChunks)
+	for _, chunk := range artifactChunks {
+		assert.Equal(t, claimKey, chunk.AttemptKey)
+	}
 }
 
 func TestFinalSchedulerLogStatusPusher_BoundsSchedulerLogFinalization(t *testing.T) {

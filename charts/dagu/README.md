@@ -88,6 +88,17 @@ persistence:
   storageClass: "<your-rwx-storage-class>"
 ```
 
+The coordinator defaults to one replica. Set two replicas to keep the coordinator endpoint available when a pod is replaced:
+
+```yaml
+coordinator:
+  replicas: 2
+```
+
+Coordinator replicas must share the same `ReadWriteMany` volume. The durable lease on that volume authorizes owner-bound worker traffic, so another replica can continue an active run even when its process ID or network endpoint differs from the original owner. No cluster ID setting is required: the shared data root is the ownership boundary. The chart configures the shared volume and stable coordinator Service automatically.
+
+Upgrades replace one coordinator at a time without creating surge replicas. With two or more replicas, at least one coordinator remains available throughout the rollout; with one replica, the replacement causes a brief coordinator outage. During the first upgrade from a version that fenced traffic by process ID, an older pod may temporarily reject traffic for work accepted by a newer pod. Workers retry final status, log, and artifact delivery through the available replicas during that mixed-version window.
+
 Install with those values:
 
 ```bash

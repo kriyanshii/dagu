@@ -5,15 +5,33 @@ package coordreport
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"time"
 
+	"github.com/dagucloud/dagu/v2/internal/cmn/backoff"
 	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/proto/convert"
 	"github.com/dagucloud/dagu/v2/internal/runtime"
 	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
 	"github.com/dagucloud/dagu/v2/internal/serviceregistry"
 	coordinatorv1 "github.com/dagucloud/dagu/v2/proto/coordinator/v1"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
+
+const (
+	finalDeliveryRetryInitialInterval = 100 * time.Millisecond
+	finalDeliveryRetryMaxInterval     = 2 * time.Second
+	finalDeliveryRetryTimeout         = 3 * time.Minute
+)
+
+func finalDeliveryRetryPolicy() backoff.RetryPolicy {
+	policy := backoff.NewExponentialBackoffPolicy(finalDeliveryRetryInitialInterval)
+	policy.MaxInterval = finalDeliveryRetryMaxInterval
+	return backoff.WithJitter(policy, backoff.Jitter)
+}
 
 var _ runtime.StatusPusher = (*StatusPusher)(nil)
 
@@ -91,10 +109,20 @@ func (p *StatusPusher) Push(ctx context.Context, status ir.DAGRunStatus) error {
 	}
 
 	var resp *coordinatorv1.ReportStatusResponse
-	if p.owner.Host != "" {
-		resp, err = p.client.ReportStatusTo(ctx, p.owner, req)
+	report := func(ctx context.Context) error {
+		if p.owner.Host != "" {
+			resp, err = p.client.ReportStatusTo(ctx, p.owner, req)
+		} else {
+			resp, err = p.client.ReportStatus(ctx, req)
+		}
+		return err
+	}
+	if status.Status != ir.NotStarted && !status.Status.IsActive() {
+		retryCtx, cancel := context.WithTimeout(ctx, finalDeliveryRetryTimeout)
+		defer cancel()
+		err = backoff.Retry(retryCtx, report, finalDeliveryRetryPolicy(), isRetryableRPCError)
 	} else {
-		resp, err = p.client.ReportStatus(ctx, req)
+		err = report(ctx)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to report status: %w", err)
@@ -109,4 +137,13 @@ func (p *StatusPusher) Push(ctx context.Context, status ir.DAGRunStatus) error {
 	}
 
 	return nil
+}
+
+func isRetryableRPCError(err error) bool {
+	code := grpcstatus.Code(err)
+	return code == codes.Unavailable || code == codes.DeadlineExceeded
+}
+
+func isRetryableStreamError(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || isRetryableRPCError(err)
 }

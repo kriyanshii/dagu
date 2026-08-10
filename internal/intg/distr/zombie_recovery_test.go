@@ -12,6 +12,7 @@ import (
 	osexec "os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,7 +21,10 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/dispatch"
 	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
 	"github.com/dagucloud/dagu/v2/internal/service/worker"
+	"github.com/dagucloud/dagu/v2/internal/serviceregistry"
+	"github.com/dagucloud/dagu/v2/internal/test"
 	"github.com/dagucloud/dagu/v2/internal/test/intgharness"
 	coordinatorv1 "github.com/dagucloud/dagu/v2/proto/coordinator/v1"
 	"github.com/stretchr/testify/assert"
@@ -42,6 +46,58 @@ func delayedAfterAckFailureTimeout() time.Duration {
 
 func waitForReleaseFileScript(path string) string {
 	return intgharness.PortableCommands().WaitForFile(path)
+}
+
+func rollingReplacementLogCommand(before, after, releasePath string) string {
+	return test.JoinLines(
+		test.Output(before),
+		waitForReleaseFileScript(releasePath),
+		test.Output(after),
+	)
+}
+
+type failedLogSendObserver struct {
+	coordinator.Client
+	failed chan struct{}
+	once   sync.Once
+}
+
+func newFailedLogSendObserver(client coordinator.Client) *failedLogSendObserver {
+	return &failedLogSendObserver{Client: client, failed: make(chan struct{})}
+}
+
+func (o *failedLogSendObserver) StreamLogs(ctx context.Context) (coordinatorv1.CoordinatorService_StreamLogsClient, error) {
+	stream, err := o.Client.StreamLogs(ctx)
+	return o.wrap(stream, err)
+}
+
+func (o *failedLogSendObserver) StreamLogsTo(ctx context.Context, owner serviceregistry.HostInfo) (coordinatorv1.CoordinatorService_StreamLogsClient, error) {
+	stream, err := o.Client.StreamLogsTo(ctx, owner)
+	return o.wrap(stream, err)
+}
+
+func (o *failedLogSendObserver) wrap(
+	stream coordinatorv1.CoordinatorService_StreamLogsClient,
+	err error,
+) (coordinatorv1.CoordinatorService_StreamLogsClient, error) {
+	if err != nil {
+		return nil, err
+	}
+	return &observedLogStream{CoordinatorService_StreamLogsClient: stream, observer: o}, nil
+}
+
+type observedLogStream struct {
+	coordinatorv1.CoordinatorService_StreamLogsClient
+	observer *failedLogSendObserver
+}
+
+func (s *observedLogStream) Send(chunk *coordinatorv1.LogChunk) error {
+	err := s.CoordinatorService_StreamLogsClient.Send(chunk)
+	if err != nil && chunk.StepName == "wait" &&
+		chunk.StreamType == coordinatorv1.LogStreamType_LOG_STREAM_TYPE_STDOUT {
+		s.observer.once.Do(func() { close(s.observer.failed) })
+	}
+	return err
 }
 
 // TestDistributedRun_WorkerCrash_MarkedFailed verifies that a hard-killed
@@ -226,6 +282,129 @@ steps:
 	require.NoError(t, os.WriteFile(releaseFile, []byte("ok"), 0o600))
 	finalStatus := f.waitForStatus(ir.Succeeded, finalStatusTimeout)
 	assert.Equal(t, ir.Succeeded, finalStatus.Status)
+}
+
+func TestDistributedRun_CoordinatorRollingReplacementPreservesActiveRun(t *testing.T) {
+	heartbeatThreshold := testStaleHeartbeatThreshold
+	// Leave enough lease headroom for graceful coordinator drain and the next
+	// owner-bound heartbeat after the replacement starts.
+	leaseThreshold := 8 * time.Second
+	runningTimeout := 15 * time.Second
+	replacementTimeout := leaseThreshold + 15*time.Second
+	completionTimeout := 20 * time.Second
+	if runtime.GOOS == "windows" {
+		heartbeatThreshold = 12 * time.Second
+		leaseThreshold = 20 * time.Second
+		runningTimeout = 30 * time.Second
+		replacementTimeout = leaseThreshold + 30*time.Second
+		completionTimeout = 90 * time.Second
+	}
+
+	releaseFile := filepath.Join(t.TempDir(), "coordinator-replacement.release")
+	completionReleaseFile := filepath.Join(t.TempDir(), "coordinator-replacement-complete.release")
+	beforeReplacement := "before-coordinator-replacement"
+	afterReplacement := "after-coordinator-replacement"
+	f := newTestFixture(t, fmt.Sprintf(`
+name: coordinator-replacement
+worker_selector:
+  test: "true"
+steps:
+  - name: wait
+    command: |
+%s
+  - name: hold
+    depends: [wait]
+    command: |
+%s
+`, indentYAMLBlock(rollingReplacementLogCommand(beforeReplacement, afterReplacement, releaseFile), 6),
+		indentYAMLBlock(waitForReleaseFileScript(completionReleaseFile), 6)),
+		withStaleThresholds(heartbeatThreshold, leaseThreshold),
+		withZombieDetectionInterval(testZombieDetectorInterval),
+		withLogPersistence(),
+		withWorkerCount(0),
+	)
+	logObserver := newFailedLogSendObserver(f.coordinatorClient)
+	f.coordinatorClient = logObserver
+	f.workers = append(f.workers, f.setupWorker("worker-1", map[string]string{"test": "true"}, ""))
+	defer func() {
+		_ = os.WriteFile(releaseFile, []byte("ok"), 0o600)
+		_ = os.WriteFile(completionReleaseFile, []byte("ok"), 0o600)
+		f.cleanup()
+	}()
+
+	require.NoError(t, f.enqueue())
+	f.waitForQueued()
+	f.startScheduler(30 * time.Second)
+
+	initialStatus := f.waitForStatus(ir.Running, runningTimeout)
+	require.NotEmpty(t, initialStatus.AttemptID)
+	require.NotEmpty(t, initialStatus.AttemptKey)
+	initialLease := waitForLease(t, f, initialStatus.AttemptKey, 5*time.Second)
+	initialOwner := initialLease.Owner
+	initialHeartbeat := initialLease.LastHeartbeatAt
+	require.Equal(t, f.coord.InstanceID(), initialOwner.ID)
+	require.Eventually(t, func() bool {
+		files := findLogFiles(t, f.logDir(), f.dagWrapper.Name, initialStatus.DAGRunID, "wait", "stdout")
+		if len(files) == 0 {
+			return false
+		}
+		content, err := os.ReadFile(files[0])
+		return err == nil && strings.Contains(string(content), beforeReplacement)
+	}, distrTestTimeout(runningTimeout), 100*time.Millisecond, "step output should reach the original coordinator before replacement")
+
+	peer := f.coord.StartPeer(t)
+	require.NotEqual(t, initialOwner.ID, peer.InstanceID())
+	require.NotEqual(t, f.coord.Address(), peer.Address())
+	heartbeatResp, err := peer.RunHeartbeat(t, &coordinatorv1.RunHeartbeatRequest{
+		WorkerId:           initialLease.WorkerID,
+		OwnerCoordinatorId: initialOwner.ID,
+		RunningTasks: []*coordinatorv1.RunningTask{{
+			DagRunId:   initialStatus.DAGRunID,
+			DagName:    initialStatus.Name,
+			AttemptKey: initialStatus.AttemptKey,
+		}},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, heartbeatResp.CancelledRuns)
+
+	require.NoError(t, f.coord.Stop())
+	failoverStartedAt := time.Now().UTC()
+	require.NoError(t, os.WriteFile(releaseFile, []byte("ok"), 0o600))
+	select {
+	case <-logObserver.failed:
+	case <-time.After(distrTestTimeout(runningTimeout)):
+		t.Fatal("step log writer did not observe the stopped coordinator before closing")
+	}
+
+	var refreshedLease *dispatch.DAGRunLease
+	require.Eventually(t, func() bool {
+		currentStatus, err := f.latestStatus()
+		if err != nil || currentStatus.Status != ir.Running ||
+			currentStatus.AttemptID != initialStatus.AttemptID || currentStatus.AttemptKey != initialStatus.AttemptKey {
+			return false
+		}
+		lease, err := f.coord.DAGRunLeaseStore.Get(f.coord.Context, initialStatus.AttemptKey)
+		if err != nil || lease == nil || lease.LastHeartbeatAt <= initialHeartbeat {
+			return false
+		}
+		if !time.UnixMilli(lease.LastHeartbeatAt).After(failoverStartedAt.Add(leaseThreshold)) {
+			return false
+		}
+		refreshedLease = lease
+		return true
+	}, distrTestTimeout(replacementTimeout), 100*time.Millisecond, "peer coordinator should refresh the original attempt lease")
+	require.NotNil(t, refreshedLease)
+	assert.Equal(t, initialOwner, refreshedLease.Owner)
+
+	require.NoError(t, os.WriteFile(completionReleaseFile, []byte("ok"), 0o600))
+	finalStatus := f.waitForStatus(ir.Succeeded, completionTimeout)
+	assert.Equal(t, initialStatus.AttemptID, finalStatus.AttemptID)
+	assert.Equal(t, initialStatus.AttemptKey, finalStatus.AttemptKey)
+	stdoutFiles := findLogFiles(t, f.logDir(), f.dagWrapper.Name, finalStatus.DAGRunID, "wait", "stdout")
+	require.NotEmpty(t, stdoutFiles)
+	stdout := getLogContent(t, stdoutFiles[0])
+	assert.Equal(t, 1, strings.Count(stdout, beforeReplacement))
+	assert.Equal(t, 1, strings.Count(stdout, afterReplacement))
 }
 
 // TestDistributedRun_QueueConcurrency_ActiveRunCounted verifies that a running

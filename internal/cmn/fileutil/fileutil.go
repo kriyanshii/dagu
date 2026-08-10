@@ -72,9 +72,16 @@ func OpenOrCreateFileWithoutSync(filepath string) (*os.File, error) {
 	return openOrCreateFile(filepath, 0)
 }
 
-func openOrCreateFile(filepath string, extraFlags int) (*os.File, error) {
-	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND | extraFlags
+// OpenOrCreateFileForRandomWrite opens or creates a file for writes at explicit offsets.
+func OpenOrCreateFileForRandomWrite(filepath string) (*os.File, error) {
+	return openFileWithFlags(filepath, os.O_CREATE|os.O_WRONLY)
+}
 
+func openOrCreateFile(filepath string, extraFlags int) (*os.File, error) {
+	return openFileWithFlags(filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND|extraFlags)
+}
+
+func openFileWithFlags(filepath string, flags int) (*os.File, error) {
 	var file *os.File
 	err := retryWindowsFileOp(func() error {
 		opened, err := os.OpenFile(filepath, flags, 0600) // nolint:gosec

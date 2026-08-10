@@ -28,10 +28,6 @@ type DAGStateStore struct {
 	mu  sync.Mutex
 }
 
-type lockableCollection interface {
-	WithLock(ctx context.Context, key string, fn func() error) error
-}
-
 type recordIDCollection interface {
 	RecordIDs(ctx context.Context, prefix string) ([]string, error)
 }
@@ -213,12 +209,7 @@ func (s *DAGStateStore) List(ctx context.Context, opts dagrun.StateListOptions) 
 }
 
 func (s *DAGStateStore) withRecordLock(ctx context.Context, id string, fn func() error) error {
-	if locked, ok := s.col.(lockableCollection); ok {
-		return locked.WithLock(ctx, id, fn)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return fn()
+	return withCollectionRecordLock(ctx, s.col, &s.mu, id, fn)
 }
 
 func (s *DAGStateStore) putEntry(ctx context.Context, id string, entry *dagrun.StateEntry, createdAt, updatedAt time.Time) error {
