@@ -10,109 +10,23 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/v2/internal/dagrun"
-	"github.com/dagucloud/dagu/v2/internal/dagstore"
 	"github.com/dagucloud/dagu/v2/internal/ir"
-	"github.com/dagucloud/dagu/v2/internal/pagination"
+	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
-var _ dagstore.DAGStore = (*mockDAGStore)(nil)
-
-// mockDAGStore implements models.DAGStore
-type mockDAGStore struct {
+type mockDAGLoader struct {
 	mock.Mock
 }
 
-func (m *mockDAGStore) Create(ctx context.Context, fileName string, spec []byte) error {
-	args := m.Called(ctx, fileName, spec)
-	return args.Error(0)
-}
-
-func (m *mockDAGStore) Delete(ctx context.Context, fileName string) error {
-	args := m.Called(ctx, fileName)
-	return args.Error(0)
-}
-
-func (m *mockDAGStore) List(ctx context.Context, params dagstore.ListDAGsOptions) (pagination.PaginatedResult[*ir.DAG], []string, error) {
-	args := m.Called(ctx, params)
-	return args.Get(0).(pagination.PaginatedResult[*ir.DAG]), args.Get(1).([]string), args.Error(2)
-}
-
-func (m *mockDAGStore) GetMetadata(ctx context.Context, fileName string) (*ir.DAG, error) {
-	args := m.Called(ctx, fileName)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*ir.DAG), args.Error(1)
-}
-
-func (m *mockDAGStore) GetDetails(ctx context.Context, fileName string, opts dagstore.DAGLoadOptions) (*ir.DAG, error) {
+func (m *mockDAGLoader) GetDetails(ctx context.Context, fileName string, opts persis.DAGLoadOptions) (*ir.DAG, error) {
 	args := m.Called(ctx, fileName, opts)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*ir.DAG), args.Error(1)
-}
-
-func (m *mockDAGStore) Grep(ctx context.Context, pattern string) ([]*dagstore.GrepDAGsResult, []string, error) {
-	args := m.Called(ctx, pattern)
-	return args.Get(0).([]*dagstore.GrepDAGsResult), args.Get(1).([]string), args.Error(2)
-}
-
-func (m *mockDAGStore) SearchCursor(ctx context.Context, opts dagstore.SearchDAGsOptions) (*pagination.CursorResult[dagstore.SearchDAGResult], []string, error) {
-	args := m.Called(ctx, opts)
-	if args.Get(0) == nil {
-		return nil, args.Get(1).([]string), args.Error(2)
-	}
-	return args.Get(0).(*pagination.CursorResult[dagstore.SearchDAGResult]), args.Get(1).([]string), args.Error(2)
-}
-
-func (m *mockDAGStore) SearchMatches(ctx context.Context, fileName string, opts dagstore.SearchDAGMatchesOptions) (*pagination.CursorResult[*dagstore.Match], error) {
-	args := m.Called(ctx, fileName, opts)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*pagination.CursorResult[*dagstore.Match]), args.Error(1)
-}
-
-func (m *mockDAGStore) Rename(ctx context.Context, oldID, newID string) error {
-	args := m.Called(ctx, oldID, newID)
-	return args.Error(0)
-}
-
-func (m *mockDAGStore) GetSpec(ctx context.Context, fileName string) (string, error) {
-	args := m.Called(ctx, fileName)
-	return args.Get(0).(string), args.Error(1)
-}
-
-func (m *mockDAGStore) UpdateSpec(ctx context.Context, fileName string, spec []byte) error {
-	args := m.Called(ctx, fileName, spec)
-	return args.Error(0)
-}
-
-func (m *mockDAGStore) LoadSpec(ctx context.Context, source []byte, _ string, opts dagstore.DAGLoadOptions) (*ir.DAG, error) {
-	args := m.Called(ctx, source, opts)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*ir.DAG), args.Error(1)
-}
-
-func (m *mockDAGStore) LabelList(ctx context.Context) ([]string, []string, error) {
-	args := m.Called(ctx)
-	return args.Get(0).([]string), args.Get(1).([]string), args.Error(2)
-}
-
-func (m *mockDAGStore) ToggleSuspend(ctx context.Context, fileName string, suspend bool) error {
-	args := m.Called(ctx, fileName, suspend)
-	return args.Error(0)
-}
-
-func (m *mockDAGStore) IsSuspended(ctx context.Context, fileName string) bool {
-	args := m.Called(ctx, fileName)
-	return args.Bool(0)
 }
 
 var _ dagrun.DAGRunStore = (*mockDAGRunStore)(nil)
@@ -214,31 +128,30 @@ func (m *mockDAGRunStore) RemoveOldDAGRuns(ctx context.Context, name string, ret
 func TestDBClient_GetDAG(t *testing.T) {
 	testDAG := &ir.DAG{Name: "test-dag"}
 
-	// Helper to create a mock DAG store with pre-set GetDetails expectations.
-	setupMockDS := func(name string, dag *ir.DAG, err error) *mockDAGStore {
-		m := new(mockDAGStore)
+	setupMockLoader := func(name string, dag *ir.DAG, err error) *mockDAGLoader {
+		m := new(mockDAGLoader)
 		m.On("GetDetails", mock.Anything, name, mock.Anything).Return(dag, err)
 		return m
 	}
 
 	tests := []struct {
 		name              string
-		ds                dagstore.DAGStore // nil means no local store
-		remoteLoader      RemoteDAGLoader   // nil means no remote loader
+		dagLoader         dagDetailsLoader // nil means no local loader
+		remoteLoader      RemoteDAGLoader  // nil means no remote loader
 		expectDAG         *ir.DAG
 		expectError       bool
 		expectErrContains string
 	}{
 		{
 			name:         "local hit returns dag",
-			ds:           setupMockDS("test-dag", testDAG, nil),
+			dagLoader:    setupMockLoader("test-dag", testDAG, nil),
 			remoteLoader: nil,
 			expectDAG:    testDAG,
 			expectError:  false,
 		},
 		{
-			name: "local not-found + remote hit",
-			ds:   setupMockDS("test-dag", nil, dagstore.ErrDAGNotFound),
+			name:      "local not-found + remote hit",
+			dagLoader: setupMockLoader("test-dag", nil, persis.ErrDAGNotFound),
 			remoteLoader: func(ctx context.Context, name string) (*ir.DAG, error) {
 				return testDAG, nil
 			},
@@ -246,8 +159,8 @@ func TestDBClient_GetDAG(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "local not-found + remote returns nil",
-			ds:   setupMockDS("test-dag", nil, dagstore.ErrDAGNotFound),
+			name:      "local not-found + remote returns nil",
+			dagLoader: setupMockLoader("test-dag", nil, persis.ErrDAGNotFound),
 			remoteLoader: func(ctx context.Context, name string) (*ir.DAG, error) {
 				return nil, nil
 			},
@@ -255,8 +168,8 @@ func TestDBClient_GetDAG(t *testing.T) {
 			expectErrContains: "DAG is not found",
 		},
 		{
-			name: "local not-found + remote returns error",
-			ds:   setupMockDS("test-dag", nil, dagstore.ErrDAGNotFound),
+			name:      "local not-found + remote returns error",
+			dagLoader: setupMockLoader("test-dag", nil, persis.ErrDAGNotFound),
 			remoteLoader: func(ctx context.Context, name string) (*ir.DAG, error) {
 				return nil, errors.New("remote unavailable")
 			},
@@ -265,14 +178,14 @@ func TestDBClient_GetDAG(t *testing.T) {
 		},
 		{
 			name:              "local not-found + no remote loader",
-			ds:                setupMockDS("test-dag", nil, dagstore.ErrDAGNotFound),
+			dagLoader:         setupMockLoader("test-dag", nil, persis.ErrDAGNotFound),
 			remoteLoader:      nil,
 			expectError:       true,
 			expectErrContains: "DAG is not found",
 		},
 		{
-			name: "local non-not-found error propagates immediately",
-			ds:   setupMockDS("test-dag", nil, errors.New("permission denied")),
+			name:      "local non-not-found error propagates immediately",
+			dagLoader: setupMockLoader("test-dag", nil, errors.New("permission denied")),
 			remoteLoader: func(ctx context.Context, name string) (*ir.DAG, error) {
 				return testDAG, nil // should NOT be called
 			},
@@ -280,8 +193,8 @@ func TestDBClient_GetDAG(t *testing.T) {
 			expectErrContains: "permission denied",
 		},
 		{
-			name: "nil ds + remote hit",
-			ds:   nil,
+			name:      "nil local loader + remote hit",
+			dagLoader: nil,
 			remoteLoader: func(ctx context.Context, name string) (*ir.DAG, error) {
 				return testDAG, nil
 			},
@@ -289,8 +202,8 @@ func TestDBClient_GetDAG(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "nil ds + remote returns nil dag",
-			ds:   nil,
+			name:      "nil local loader + remote returns nil dag",
+			dagLoader: nil,
 			remoteLoader: func(ctx context.Context, name string) (*ir.DAG, error) {
 				return nil, nil
 			},
@@ -298,8 +211,8 @@ func TestDBClient_GetDAG(t *testing.T) {
 			expectErrContains: "not found locally or remotely",
 		},
 		{
-			name: "nil ds + remote returns error",
-			ds:   nil,
+			name:      "nil local loader + remote returns error",
+			dagLoader: nil,
 			remoteLoader: func(ctx context.Context, name string) (*ir.DAG, error) {
 				return nil, errors.New("remote unavailable")
 			},
@@ -307,8 +220,8 @@ func TestDBClient_GetDAG(t *testing.T) {
 			expectErrContains: "remote DAG load failed",
 		},
 		{
-			name:              "nil ds + no remote loader",
-			ds:                nil,
+			name:              "nil local loader + no remote loader",
+			dagLoader:         nil,
 			remoteLoader:      nil,
 			expectError:       true,
 			expectErrContains: "no local DAG store and no remote loader",
@@ -319,7 +232,7 @@ func TestDBClient_GetDAG(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			mockDRS := new(mockDAGRunStore)
-			client := newDBClient(mockDRS, tt.ds, tt.remoteLoader)
+			client := newDBClient(mockDRS, tt.dagLoader, tt.remoteLoader)
 
 			dag, err := client.GetDAG(ctx, "test-dag")
 
@@ -335,8 +248,8 @@ func TestDBClient_GetDAG(t *testing.T) {
 			}
 
 			// Assert mock expectations for the DAG store (when a mock is used).
-			if mockDS, ok := tt.ds.(*mockDAGStore); ok {
-				mockDS.AssertExpectations(t)
+			if loader, ok := tt.dagLoader.(*mockDAGLoader); ok {
+				loader.AssertExpectations(t)
 			}
 		})
 	}
