@@ -12,10 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/stringutil"
-	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/cmn/runenv"
+
+	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
+	cmnvalue "github.com/dagucloud/dagu/v2/internal/cmn/value"
+	"github.com/dagucloud/dagu/v2/internal/ir"
 )
 
 // EvalBool evaluates the given value with the variables within the execution context
@@ -58,6 +59,8 @@ func resolverFromEnv(env Env) cmnvalue.Resolver {
 		Env:            env.Scope,
 		Steps:          env.StepMap,
 		Foreach:        env.Foreach,
+		Inputs:         env.Inputs,
+		Outputs:        env.Outputs,
 		BuiltinContext: builtinContextFromEnv(env),
 	}
 	return cmnvalue.NewResolver(cmnvalue.StaticScope{Consts: consts, Params: paramDeclarations}, scope)
@@ -67,7 +70,7 @@ func builtinContextFromEnv(env Env) cmnvalue.BuiltinContext {
 	return builtinContextFromDAGContext(env.Context, env.Scope, env.Step)
 }
 
-func builtinContextFromDAGContext(rCtx Context, scope *cmnvalue.EnvScope, step core.Step) cmnvalue.BuiltinContext {
+func builtinContextFromDAGContext(rCtx Context, scope *cmnvalue.EnvScope, step ir.Step) cmnvalue.BuiltinContext {
 	values := make(map[string]string)
 	addBuiltinContextValue(values, "context.dag.name", dagName(rCtx))
 	addBuiltinContextValue(values, "context.run.id", rCtx.DAGRunID)
@@ -82,17 +85,19 @@ func builtinContextFromDAGContext(rCtx Context, scope *cmnvalue.EnvScope, step c
 	addBuiltinContextValue(values, "context.step.name", step.Name)
 	addBuiltinContextValue(values, "context.trigger.type", rCtx.TriggerType.String())
 	addBuiltinContextValue(values, "context.trigger.actor", rCtx.TriggerActor)
-	addBuiltinContextEnvValue(values, "context.run.status", scope, exec.EnvKeyDAGRunStatus)
-	addBuiltinContextEnvValue(values, "context.paths.log_file", scope, exec.EnvKeyDAGRunLogFile)
-	addBuiltinContextEnvValue(values, "context.paths.work_dir", scope, exec.EnvKeyDAGRunWorkDir)
-	addBuiltinContextEnvValue(values, "context.paths.artifacts_dir", scope, exec.EnvKeyDAGRunArtifactsDir)
-	addBuiltinContextEnvValue(values, "context.paths.step_stdout_file", scope, exec.EnvKeyDAGRunStepStdoutFile)
-	addBuiltinContextEnvValue(values, "context.paths.step_stderr_file", scope, exec.EnvKeyDAGRunStepStderrFile)
-	addBuiltinContextEnvValue(values, "context.paths.step_output_file", scope, exec.EnvKeyDAGUOutputFile)
+	addBuiltinContextEnvValue(values, "context.run.status", scope, runenv.EnvKeyDAGRunStatus)
+	addBuiltinContextEnvValue(values, "context.paths.log_file", scope, runenv.EnvKeyDAGRunLogFile)
+	addBuiltinContextEnvValue(values, "context.paths.work_dir", scope, runenv.EnvKeyDAGRunWorkDir)
+	addBuiltinContextEnvValue(values, "context.paths.artifacts_dir", scope, runenv.EnvKeyDAGRunArtifactsDir)
+	addBuiltinContextEnvValue(values, "context.paths.wiki_dir", scope, runenv.EnvKeyDAGWikiDir)
+	addBuiltinContextEnvValue(values, "context.paths.docs_dir", scope, runenv.EnvKeyDAGDocsDir)
+	addBuiltinContextEnvValue(values, "context.paths.step_stdout_file", scope, runenv.EnvKeyDAGRunStepStdoutFile)
+	addBuiltinContextEnvValue(values, "context.paths.step_stderr_file", scope, runenv.EnvKeyDAGRunStepStderrFile)
+	addBuiltinContextEnvValue(values, "context.paths.step_output_file", scope, runenv.EnvKeyDAGUOutputFile)
 	addBuiltinContextValue(values, "context.profile.name", rCtx.ProfileName)
 	addBuiltinContextValue(values, "context.profile.resolved_at", rCtx.ProfileResolvedAt)
-	addBuiltinContextEnvValue(values, "context.pushback.iteration", scope, exec.EnvKeyDAGPushBackIteration)
-	addBuiltinContextEnvValue(values, "context.pushback.previous_stdout_file", scope, exec.EnvKeyDAGPushBackPreviousStdoutFile)
+	addBuiltinContextEnvValue(values, "context.pushback.iteration", scope, runenv.EnvKeyDAGPushBackIteration)
+	addBuiltinContextEnvValue(values, "context.pushback.previous_stdout_file", scope, runenv.EnvKeyDAGPushBackPreviousStdoutFile)
 	return cmnvalue.NewBuiltinContext(values)
 }
 

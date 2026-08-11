@@ -54,8 +54,8 @@
     "access_log_mode": {
       "type": "string",
       "enum": ["all", "non-public", "none"],
-      "description": "HTTP access log mode. 'all' logs every request, 'non-public' skips public endpoints (/health, /auth/login, /auth/setup), 'none' disables access logging entirely. Default: 'all'.",
-      "default": "all"
+      "description": "HTTP access log mode. 'all' logs every request, 'non-public' skips public endpoints (/health, /auth/login, /auth/setup), 'none' disables access logging entirely. Default: 'none'.",
+      "default": "none"
     },
     "default_shell": {
       "type": "string",
@@ -140,6 +140,9 @@
     },
     "paths": {
       "$ref": "#/definitions/PathsDef"
+    },
+    "dag_discovery": {
+      "$ref": "#/definitions/DAGDiscoveryDef"
     },
     "secrets": {
       "$ref": "#/definitions/SecretsDef"
@@ -775,6 +778,23 @@
         }
       }
     },
+    "DAGDiscoveryDef": {
+      "type": "object",
+      "description": "DAG definition discovery settings.",
+      "additionalProperties": false,
+      "properties": {
+        "recursive": {
+          "type": "boolean",
+          "description": "Discover DAG definitions in subdirectories.",
+          "default": false
+        },
+        "symlinks": {
+          "type": "boolean",
+          "description": "Include file symlinks in recursive DAG discovery and allow file symlinks whose targets are outside the configured DAG directory.",
+          "default": false
+        }
+      }
+    },
     "SecretsDef": {
       "type": "object",
       "description": "Shared defaults for external secret providers.",
@@ -868,6 +888,18 @@
         "token": {
           "type": "string",
           "description": "Default Vault token."
+        },
+        "ca_cert": {
+          "type": "string",
+          "description": "CA certificate file for verifying a custom Vault TLS endpoint."
+        },
+        "client_cert": {
+          "type": "string",
+          "description": "Client certificate file for Vault mutual TLS authentication."
+        },
+        "client_key": {
+          "type": "string",
+          "description": "Client private key file for Vault mutual TLS authentication."
         }
       }
     },
@@ -1153,7 +1185,7 @@
         },
         "heartbeat_sync_interval": {
           "type": "string",
-          "description": "Deprecated: use proc.heartbeat_sync_interval. Heartbeat fsync interval. Default: '10s'."
+          "description": "Deprecated and ignored. Accepted so existing configuration files remain valid."
         },
         "stale_threshold": {
           "type": "string",
@@ -1172,7 +1204,7 @@
         },
         "heartbeat_sync_interval": {
           "type": "string",
-          "description": "Heartbeat fsync interval. Default: '10s'."
+          "description": "Deprecated and ignored. Accepted so existing configuration files remain valid."
         },
         "stale_threshold": {
           "type": "string",

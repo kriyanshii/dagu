@@ -6,8 +6,8 @@ package spec022_mcp_change_tool_test
 import (
 	"testing"
 
-	api "github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/conformance/mcptest"
+	api "github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/conformance/mcptest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -165,13 +165,13 @@ func TestChangeInputValidationErrors(t *testing.T) {
 		{
 			name: "unsupported type",
 			arguments: map[string]any{
-				"type": "delete_dag",
+				"type": "archive_dag",
 				"name": "mcp_change_error_type",
 				"spec": validSpec,
 			},
 			code:       "unsupported_change_type",
 			field:      "type",
-			changeType: "delete_dag",
+			changeType: "archive_dag",
 			dagName:    "mcp_change_error_type",
 			dagURI:     changeDAGSpecURI("mcp_change_error_type"),
 		},

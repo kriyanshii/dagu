@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dagucloud/dagu/internal/cmn/buildenv"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/dagucloud/dagu/v2/internal/cmn/buildenv"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -65,6 +65,7 @@ steps:
 	)
 	prepared, err := executor.prepareDAGForSubprocess(ctx, dag, "")
 	require.NoError(t, err)
+	require.True(t, prepared.RuntimeResolved)
 
 	env := buildenv.ToMap(prepared.Env)
 	require.Equal(t, "from-workspace", env["GREETING"])

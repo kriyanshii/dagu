@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	apigen "github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	filedag "github.com/dagucloud/dagu/internal/persis/file/dag"
-	"github.com/dagucloud/dagu/internal/runtime"
-	apiv1 "github.com/dagucloud/dagu/internal/service/frontend/api/v1"
+	apigen "github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/dagstore"
+	filedag "github.com/dagucloud/dagu/v2/internal/persis/file/dag"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	apiv1 "github.com/dagucloud/dagu/v2/internal/service/frontend/api/v1"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,10 +22,10 @@ import (
 
 type searchTestSetup struct {
 	api      *apiv1.API
-	dagStore exec.DAGStore
+	dagStore dagstore.DAGStore
 }
 
-func newSearchAPI(dagStore exec.DAGStore, extraOptions ...apiv1.APIOption) *apiv1.API {
+func newSearchAPI(dagStore dagstore.DAGStore, extraOptions ...apiv1.APIOption) *apiv1.API {
 	cfg := &config.Config{}
 
 	options := append([]apiv1.APIOption{}, extraOptions...)

@@ -2,7 +2,7 @@
 
 Dagu is a self-contained workflow orchestration engine for running DAGs defined in YAML. It runs as a single binary without requiring an external database or message broker. It stores state locally by default and supports local, queued, and distributed execution modes.
 
-Use this compact reference when authoring, validating, or troubleshooting Dagu workflows with an AI agent. It summarizes repository-local workflow references.
+Use this compact reference with an AI agent when authoring, validating, or troubleshooting Dagu workflows, or when operating Dagu through its CLI. It summarizes repository-local workflow and CLI references.
 
 ---
 
@@ -14,6 +14,7 @@ Load only the reference file that matches the task.
 
 - Prefer `type: graph` for new DAGs. It supports both sequential flow via `depends:` and parallel flow.
 - Use `type: controller` only when the step order cannot be written down in advance and an LLM must choose it. It requires `llm:` and a `tasks:` list stating when the run is finished.
+- Use `type: build` only for local regular-file pipelines whose unchanged transformations should be reused across runs.
 - Prefer `id` on every step. Omit `name` unless the display label must differ from the step ID.
 - Prefer `dagu schema ...` and `dagu validate ...` over guessing field names or shapes.
 - Prefer `action: template.render` when generating text files, prompts, or artifacts instead of assembling them with shell `echo` or heredocs.
@@ -29,7 +30,7 @@ Load only the reference file that matches the task.
 - Prefer `state.*` actions for small persistent JSON state across DAG runs, such as cursors, checkpoints, and previous-value comparisons.
 - Prefer temporary files in the artifacts dir only when downstream steps need file paths; otherwise let commands write large artifact content to stdout and attach it with `stdout.artifact`.
 - Prefer scoped Dagu references for named values: `${consts.NAME}`, `${params.NAME}`, and `${env.NAME}`. Avoid unscoped braced names in examples unless the example is intentionally showing shell syntax.
-- Declare portable external CLI dependencies in top-level `tools` using aqua shorthand when the binary version affects reproducibility, for example `tools: ["jqlang/jq@jq-1.7.1"]`.
+- Declare portable external CLI dependencies in top-level `tools` using aqua shorthand when the binary version affects reproducibility, for example `tools: ["jqlang/jq@jq-1.7.1"]`. Append `#sha256:<64 hex>` to also pin the downloaded artifact content for the run platform, for example `jqlang/jq@jq-1.7.1#sha256:<hex>`.
 - For remote actions, put `tools` in the referenced action DAG file, not in `dagu-action.yaml`; caller DAG tools are not inherited across the action boundary.
 - Use remote action packages (`dagu-action.yaml`) when reusable logic needs helper files, its own DAG, versioning, or an input/output schema contract.
 
@@ -38,11 +39,14 @@ Load only the reference file that matches the task.
 - `output:` has two modes:
   - string form captures trimmed stdout into an env-scope variable such as `${env.VERSION}`
   - object form publishes structured step-scoped output for `${step_id.output.*}` access
-- Declared step `outputs:` publish explicit values through `${steps.<step_id>.outputs.<name>}`. Write values inside the running step to `$DAGU_OUTPUT_FILE`; Dagu captures them only after the command succeeds.
+- Value declarations in step `outputs:` publish explicit values through `${steps.<step_id>.outputs.<name>}`. Write those values to `$DAGU_OUTPUT_FILE`; Dagu captures them only after the command succeeds. Build path declarations publish the final materialization path after commit or reuse.
 - `human.task` is a processless root-DAG step with an explicit `id`, a required `with.prompt`, and an optional flat scalar form. A root DAG containing one can run locally or on a distributed worker. Every declared form property is a step output, published when submitted or defaulted, and available as `${steps.<step_id>.outputs.<name>}`.
 - `stdout.artifact` / `stderr.artifact` store command stdout/stderr directly as relative artifact paths, for example `stdout: {artifact: reports/report.md}`. Artifact outputs auto-enable artifacts unless `artifacts.enabled: false` is explicitly set, which is invalid.
 - `${step_id.stdout}` is a log file path, not stdout content.
 - Use `${context.*}` for run metadata in DAG YAML, for example `${context.dag.name}`, `${context.run.id}`, or `${context.paths.artifacts_dir}`. Unavailable context values remain unresolved text instead of becoming empty strings.
+- In a build step, `${inputs.<name>}` is the final input path and `${outputs.<name>}` is a fresh attempt staging path. Write file results only to the staging path; dependencies read the committed path as `${steps.<step_id>.outputs.<name>}`.
+- Do not read attempt-only `${step_id.stdout}`, `${step_id.stderr}`, or `${step_id.exit_code}` from potentially reusable producers. This also applies to `${step_id.output.<name>}` and `${step_id.outputs.<name>}`, including their whole-value `${step_id.output}` and `${step_id.outputs}` forms. Path-output steps cannot use `continue_on.mark_success`.
+- Build workflows are local-only. Path declarations are supported only on host command or shell steps without containers, and stream redirects cannot target declared build inputs or outputs.
 - Use `${consts.NAME}`, `${params.NAME}`, and `${env.NAME}` for Dagu-side named values. Use shell `$NAME` or `printenv NAME` only when the target shell or process should read the variable at execution time.
 - `consts:` must use list form with one key per item, for example `consts: [{service: api}]`. Const values are resolved while loading the DAG and can reference inherited or earlier consts.
 - `env:` should use list-of-maps when values depend on earlier env vars.
@@ -197,67 +201,15 @@ steps:
 
 Complete the task from a local CLI context with `dagu human-task complete --run-id=<run-id> --step=review --input environment=production <dag-name>`. A form is optional for acknowledgement-only tasks. Human tasks cannot be used in sub-DAGs; a distributed root run is re-queued through the scheduler after completion.
 
-## Example of a Controller Workflow
-
-```yaml
-type: controller
-
-env:
-  - ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-
-llm:
-  provider: anthropic
-  model: claude-sonnet-4-20250514
-  system: |
-    Never ask for sign-off on a red build.
-
-steps:
-  - name: run_tests
-    description: Run the test suite.
-    run: |
-      test -f /tmp/dagu-flaky-cleared || { echo "FAIL: flaky_test timed out"; exit 1; }
-      echo "all green"
-
-  - name: fix_flaky
-    description: Quarantine the known flaky test.
-    run: |
-      touch /tmp/dagu-flaky-cleared
-      echo "quarantined flaky_test"
-
-  - id: sign_off
-    name: sign_off
-    action: human.task
-    with:
-      prompt: Tests are green. Ship it?
-      form:
-        type: object
-        properties:
-          approved: { type: boolean }
-        required: [approved]
-
-tasks:
-  - name: tests_green
-    description: Finished when run_tests succeeded on its most recent run.
-  - name: approved
-    description: Finished when a person answered sign_off with approved=true.
-```
-
-Use `type: controller` only when the step order cannot be written down in advance. `steps` become a catalog of actions the model may pick; `tasks` are the goals and the termination condition. `llm` and a non-empty `tasks` are required, `depends` and router steps are rejected, and `__controller__` and `ask_user` are reserved names.
-
-A `dag.run` step advertises its target's parameters as tool arguments. Write a named value in `params` for anything the model should not decide: a parameter the step supplies is not advertised and cannot be overridden. Positional child parameters are rejected in controller DAGs because tool arguments are identified by name.
-
-The model settles each task with `set_task_status`, choosing `completed`, `skipped` when nothing needed doing, `failed` when it cannot be achieved, or `open` to undo an earlier decision. The run ends once no task is open, and fails if any is failed. It can also call `ask_user` to put a question of its own to a person, which suspends the run exactly like a declared human task.
-
-Bind API keys with `env:` as shown. Dagu only propagates `DAGU_*`, `DAG_*`, `LC_*`, and `KUBERNETES_*` from the shell, so an exported key alone never reaches the provider.
-
 ## Reference Guide
 
 Load only the file you need:
 
 - `references/steptypes.md` when choosing an action or checking action-specific behavior such as `human.task`, `dag.run`, `parallel`, `git.worktree.*`, `jq.filter`, `file.*`, `state.*`, or `template.render`
 - `references/dagu-action.md` when creating a reusable `dagu-action.yaml` package or checking action input/output schema behavior
-- `references/cli.md` when you need command flags or lookup commands such as `dagu schema`, `dagu config`, or `dagu history`
+- `references/cli.md` when choosing or using Dagu CLI commands, including workflow inspection, execution, and cleanup operations
 - `references/context.md` when using `${context.*}` metadata references or declared step `outputs:`
+- `references/build.md` when creating or troubleshooting a `type: build` file workflow, path references, reuse decisions, or `--no-reuse`
 - `references/harnesses.md` only when the DAG invokes external CLI harnesses through `harness.run`
 
 ---
@@ -499,9 +451,9 @@ Use `--inputs-json` instead of repeated `--input` flags when input types must be
 
 Completing the last waiting human task resumes a local run directly. A distributed run is re-queued, so its scheduler must be running.
 
-## Declared Step Outputs
+## Declared Value Outputs
 
-Declare `outputs:` when a step should publish named values for later steps as `${steps.<step_id>.outputs.<name>}`.
+Declare value-form `outputs:` when a step should publish named values for later steps as `${steps.<step_id>.outputs.<name>}`. Build file outputs use `path` instead; see `references/build.md`.
 
 ```yaml
 steps:
@@ -904,7 +856,7 @@ Harness behavior:
 - Built-in provider adapters and custom providers pass non-reserved `with` keys as CLI flags. Built-in adapters normalize `snake_case` keys to kebab-case flags.
 - `fallback` is an ordered list of provider configs. Nested fallback is not supported.
 - Provider value references must resolve to a concrete provider string before execution. Unresolved `${...}` provider values fail at runtime.
-- Prefer `action: harness.run` for new workflows. A top-level `harness:` config still causes steps without an explicit executor type to infer the harness executor for compatibility.
+- A harness step is named with `action: harness.run`. A top-level `harness:` config supplies defaults to those steps and does not set the type of any other step, so a step written with `run:`, `exec:`, or `script:` under one stays a local command.
 
 Container support:
 
@@ -1141,6 +1093,7 @@ Flags:
 - `--labels` — Additional labels (comma-separated key=value or key-only)
 - `--tags` — Deprecated alias for `--labels`
 - `--default-working-dir` — Default working directory for DAGs without explicit workingDir
+- `--no-reuse` — Recompute reusable build steps while preserving staged, atomic publication
 - `--worker-id` — Worker ID executing this DAG run; auto-set in distributed mode and defaults to `local`
 - `--trigger-type` — Trigger source (`scheduler`, `manual`, `webhook`, `subdag`, `retry`, `catchup`); defaults to `manual`
 
@@ -1161,6 +1114,7 @@ Flags:
 - `--labels` — Additional labels (comma-separated key=value or key-only)
 - `--tags` — Deprecated alias for `--labels`
 - `--default-working-dir` — Default working directory for DAGs without explicit workingDir
+- `--no-reuse` — Recompute reusable build steps when the queued run starts
 - `--trigger-type` — Trigger source (`scheduler`, `manual`, `webhook`, `subdag`, `retry`, `catchup`); defaults to `manual`
 
 ### dagu exec
@@ -1226,7 +1180,9 @@ dagu human-task complete --run-id=run-1 --step=review --inputs-json='{"environme
 
 ### dagu dry
 
-Dry-run a DAG without executing commands: `dagu dry [--params/-p] [--name/-N] <dag> [-- params...]`
+Dry-run a DAG without executing commands: `dagu dry [--params/-p] [--name/-N] [--no-reuse] <dag> [-- params...]`
+
+For a build DAG, `--no-reuse` previews the decisions with manifest reuse disabled. Dry-run still creates no locks, staging files, manifests, or run history.
 
 ### dagu validate
 
@@ -1258,9 +1214,55 @@ Flags:
 
 Default: shows runs from the last 30 days, newest first.
 
+### dagu ls
+
+List DAG definitions.
+
+This command is local-only. If a remote CLI context is selected, use `--context local`.
+
+```sh
+dagu ls [flags] [pattern]
+```
+
+Flags:
+
+- `--next/-n` — Show next scheduled run time
+- `--last/-l` — Show last run status and time
+- `--history/-H` — Show a compact recent-history summary
+- `--sort-last/-t` — Sort by last run time, newest first
+- `--reverse/-r` — Reverse sort order
+
+### dagu rm
+
+Remove DAG run history and/or the DAG YAML definition. At least one of `--history` or `--definition` is required. Active runs are never deleted from history; definition deletion is refused while the DAG has alive processes. With `--definition`, identify the DAG by filename, stem, or configured path.
+
+```sh
+dagu rm [--history|-H] [--definition|-d] [-t <duration>] [-f] [--dry-run] <dag>
+```
+
+Flags:
+
+- `--history/-H` — Delete run history
+- `--definition/-d` — Delete the DAG YAML definition
+- `--older-than/-t` — With `--history`: delete runs older than a duration (e.g. `10d`, `24h`, `1w`). Omitted = delete all history
+- `--force/-f` — Skip confirmation prompt
+- `--dry-run` — Preview deletions without removing history or the definition
+
+### dagu ps
+
+List running DAG processes.
+
+```sh
+dagu ps [-d <dag-name>] [-r <run-id>]
+```
+
+`-r`/`--run-id` accepts a partial run ID and matches accordingly.
+
 ### dagu cleanup
 
 Remove old DAG run history. Active runs are never deleted.
+
+Deprecated: prefer `dagu rm --history`.
 
 ```sh
 dagu cleanup <dag-name> [--retention-days <n>] [--dry-run] [--yes/-y]
@@ -1370,7 +1372,7 @@ Use scoped references when Dagu should resolve a named value before execution.
 | `${consts.NAME}` | Top-level `consts:` value |
 | `${params.NAME}` | Runtime parameter value |
 | `${env.NAME}` | Value in Dagu's runtime environment scope for the current step |
-| `${steps.<step_id>.outputs.<name>}` | Declared step output written through `$DAGU_OUTPUT_FILE` |
+| `${steps.<step_id>.outputs.<name>}` | Declared value output, human-task form value, or committed build path output |
 
 Use shell `$NAME` or `printenv NAME` only when the target shell or process should read the variable at execution time.
 
@@ -1455,9 +1457,9 @@ steps:
 
 Use single quotes around context references when the shell should receive the resolved value as one argument.
 
-## Declared Step Outputs
+## Declared Value Outputs
 
-A step can declare outputs and write them during execution. Dagu reads the output file after the command succeeds and publishes the values as `${steps.<step_id>.outputs.<name>}`.
+A step can declare value outputs and write them during execution. Dagu reads the output file after the command succeeds and publishes the values as `${steps.<step_id>.outputs.<name>}`.
 
 Human task form outputs use the same reference namespace without an authored `outputs:` field. Every declared property is published when submitted or defaulted.
 
@@ -1498,6 +1500,103 @@ Rules:
 
 Declared step outputs are different from DAG or remote action outputs. To publish caller-visible DAG/action outputs, use `stdout.outputs` or `action: outputs.write`.
 
+In a `type: build` workflow, an `outputs:` entry may declare `path` instead of a value `type`. The owning step writes to `${outputs.<name>}`, and `${steps.<step_id>.outputs.<name>}` publishes the final path only after commit or reuse. See `references/build.md`.
+
+---
+
+# Build Workflows
+
+Use `type: build` for local workflows that transform stable regular files and should reuse unchanged work across DAG runs. Build execution is materialization reuse, not a cache that restores a missing output: a missing or modified final output causes recomputation.
+
+## Minimal Pipeline
+
+```yaml
+type: build
+working_dir: /srv/build
+
+steps:
+  - id: compile
+    inputs:
+      - name: source
+        path: source.c
+    outputs:
+      - name: binary
+        path: app.bin
+    run: compiler "${inputs.source}" -o "${outputs.binary}"
+
+  - id: package
+    inputs:
+      - name: binary
+        path: app.bin
+    outputs:
+      - name: archive
+        path: app.tar
+    run: packager "${inputs.binary}" "${outputs.archive}"
+```
+
+The `package` step does not need `depends: compile`. Its canonical input path matches the `compile` output path, so Dagu infers the dependency. Keep explicit dependencies for ordering that is not represented by a file.
+
+## Declarations and References
+
+- Set a stable `working_dir`, or load the DAG from a file whose directory can anchor relative paths.
+- Each input requires `name` and `path`.
+- A path-backed output requires `name` and `path`. It cannot also declare a value `type`.
+- A step may declare at most one path-backed output.
+- Names must start with a letter and contain only letters, digits, or `_`.
+- Path declarations are supported only on host command and shell steps without DAG-level or step-level containers.
+- Output parent directories must already exist.
+
+| Reference | Meaning |
+| --- | --- |
+| `${inputs.<name>}` | Absolute final path of the owning step's declared input |
+| `${outputs.<name>}` | Fresh, initially absent staging path for the current executor attempt |
+| `${steps.<step_id>.outputs.<name>}` | Absolute final output path after commit or reuse |
+
+`${inputs.*}` and `${outputs.*}` are step-scoped. Use `${outputs.<name>}` only in command text, scripts, arguments, and executor environment where an attempt staging path exists. Path declarations may use stable parameters and environment values, but must resolve before execution; do not derive them from step outputs or command substitution.
+
+## Dependency and Path Rules
+
+- Matching canonical producer outputs and consumer inputs create inferred dependencies.
+- Each canonical output path must have exactly one producer.
+- A step cannot declare the same canonical path as both input and output.
+- Explicit and inferred dependencies must remain acyclic.
+- Inputs and outputs must be regular, non-symlink files. Inputs must exist when the step is evaluated.
+
+## Reuse and Publication Safety
+
+A reusable step has exactly one path-backed output and a stable host command or shell recipe. Steps with dynamic or scalar output surfaces, secrets, repeat, human tasks, approvals, parallel or foreach bodies, child DAGs, or containers execute normally instead of being reused.
+
+Dagu hashes the resolved recipe, declared input contents, and current output. A matching materialization produces a `reuse` decision and a succeeded node. Changed inputs, recipe, environment, tools, working directory, missing output, or modified output produce an `execute` decision.
+
+The default per-run scratch directory is normalized in the recipe digest, so a different run ID does not prevent reuse by itself. An authored working directory remains part of the recipe and changing it requires execution.
+
+Always write the result to `${outputs.<name>}`. Dagu verifies the staged file and input snapshots before atomically replacing the final output. Writing directly to the final output bypasses that contract. `stdout`, `stderr`, `stdout.artifact`, and `stderr.artifact` destinations cannot target any declared build input or output.
+
+Potentially reusable producers expose downstream data only through `${steps.<step_id>.outputs.<name>}`. Do not read `${step_id.stdout}`, `${step_id.stderr}`, or `${step_id.exit_code}` from them. This also applies to `${step_id.output.<name>}` and `${step_id.outputs.<name>}`, including their whole-value `${step_id.output}` and `${step_id.outputs}` forms, because reuse does not recreate attempt results. Path-output steps also cannot use `continue_on.mark_success`; failed attempts must not expose an old or missing final file as a successful publication.
+
+Each retry receives a new staging path. A failed, timed-out, or aborted attempt removes its staging file and leaves the previous final output and manifest unchanged.
+Crash recovery refuses to overwrite a final output that was externally replaced with content matching neither the previous nor the proposed materialization.
+
+## Execution Controls
+
+Build workflows are local-only. Distributed execution is rejected because workers do not share the required materialization fencing.
+
+Preview decisions without executing:
+
+```sh
+dagu dry workflow.yaml
+```
+
+Disable reuse for one run without disabling staging or commit safety:
+
+```sh
+dagu start --no-reuse workflow.yaml
+dagu enqueue --no-reuse workflow.yaml
+dagu dry --no-reuse workflow.yaml
+```
+
+In the Web UI, enable **Disable reuse for this run** in the Start or Enqueue dialog. REST and MCP `dagu_execute` clients can send `noReuse: true` for start or enqueue.
+
 ---
 
 # External CLI Harnesses
@@ -1515,6 +1614,8 @@ Use `action: harness.run` to invoke external coding-agent CLIs from DAG steps. D
 | `pi` | `pi` | `pi -p "<prompt>" [flags]` |
 
 Codex defaults to `skip_git_repo_check: true`, so its default invocation includes `--skip-git-repo-check`. Set `skip_git_repo_check: false` or `skip-git-repo-check: false` to omit it.
+
+Claude's `bare` flag skips keychain reads among other things, so a subscription login is invisible to the step and the run fails with `Not logged in`. Set it only when the credential comes from `ANTHROPIC_API_KEY` in the step environment.
 
 For host subprocess runs, built-in provider adapters resolve binaries through `PATH`. Host custom harnesses can use a binary name or an explicit path; relative paths with a path separator are resolved from the step working directory. For containerized runs, the binary is executed inside the selected container and must be valid there.
 
@@ -1587,7 +1688,6 @@ Use top-level `harness:` to define shared defaults for every harness step in the
 harness:
   provider: claude
   model: sonnet
-  bare: true
   fallback:
     - provider: codex
       full-auto: true
@@ -1625,7 +1725,8 @@ Merge rules:
 - Step-level `with.fallback` replaces DAG-level `fallback`
 - Step-level `with.fallback: []` disables inherited fallback
 - New DAGs should use `action: harness.run`. Legacy step-level `type: harness` remains loadable for backward compatibility.
-- Compatibility note: a top-level `harness:` config still causes steps without an explicit executor type to infer the harness executor. Do not mix top-level `harness:` with ordinary shell `run:` steps unless prompt inference is intended.
+- A top-level `harness:` config only supplies defaults. It does not set the type of a step that does not name one, so shell `run:` steps can sit alongside harness steps in the same DAG.
+- A step that named its prompt with a bare `command:`, relying on the removed inference, is rejected while loading. Port it to `action: harness.run` with `with.prompt`, and `with.stdin` where it used `script:`.
 
 ## Containerized Harness Steps
 
@@ -1697,7 +1798,6 @@ params:
 harness:
   provider: claude
   model: sonnet
-  bare: true
 
 steps:
   - id: run_cli
@@ -1724,7 +1824,6 @@ steps:
       prompt: "Research every approach to: ${params.topic}. List all approaches with pros, cons, and when to use each."
       provider: claude
       model: sonnet
-      bare: true
     output: RESEARCH
 
   - id: review
@@ -1754,7 +1853,6 @@ steps:
         ${env.REVIEW}
       provider: claude
       model: sonnet
-      bare: true
     depends: [review]
     output: REFINED
 ```
@@ -1796,7 +1894,6 @@ steps:
       max-budget-usd: 2.00
       permission-mode: auto
       allowed-tools: "Bash,Read,Edit"
-      bare: true
     timeout_sec: 300
     output: RESULT
 ```

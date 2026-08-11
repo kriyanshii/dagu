@@ -11,13 +11,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis/file"
-	"github.com/dagucloud/dagu/internal/persis/file/dagrun"
-	"github.com/dagucloud/dagu/internal/persis/store"
-	"github.com/dagucloud/dagu/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/dagstore"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	filedagrun "github.com/dagucloud/dagu/v2/internal/persis/file/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/persis/store"
+	procdomain "github.com/dagucloud/dagu/v2/internal/proc"
+	queuedomain "github.com/dagucloud/dagu/v2/internal/queue"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,9 +63,9 @@ func TestScheduler_StandbyHealthServerStartsBeforeLockAndStopsCleanly(t *testing
 
 type haSchedulerFixture struct {
 	cfg         *config.Config
-	dagRunStore exec.DAGRunStore
-	queueStore  exec.QueueStore
-	procStore   exec.ProcStore
+	dagRunStore dagrun.DAGRunStore
+	queueStore  queuedomain.QueueStore
+	procStore   procdomain.ProcStore
 	dagRunMgr   runtime.Manager
 }
 
@@ -85,9 +88,8 @@ func newHASchedulerFixture(t *testing.T) *haSchedulerFixture {
 			LogDir:             filepath.Join(tmpDir, "logs"),
 		},
 		Proc: config.Proc{
-			HeartbeatInterval:     5 * time.Second,
-			HeartbeatSyncInterval: 10 * time.Second,
-			StaleThreshold:        90 * time.Second,
+			HeartbeatInterval: 5 * time.Second,
+			StaleThreshold:    90 * time.Second,
 		},
 		Scheduler: config.Scheduler{
 			Port:               0,
@@ -97,9 +99,9 @@ func newHASchedulerFixture(t *testing.T) *haSchedulerFixture {
 		DefaultExecMode: config.ExecutionModeLocal,
 	}
 
-	dagRunStore := dagrun.New(
+	dagRunStore := filedagrun.New(
 		cfg.Paths.DAGRunsDir,
-		dagrun.WithArtifactDir(cfg.Paths.ArtifactDir),
+		filedagrun.WithArtifactDir(cfg.Paths.ArtifactDir),
 	)
 	queueStore := store.NewQueueStore(file.NewCollection(cfg.Paths.QueueDir))
 	procStore := newSchedulerTestProcStore(cfg.Paths.ProcDir, cfg)
@@ -260,10 +262,10 @@ func (*staticEntryReader) Start(context.Context) {}
 
 func (*staticEntryReader) Stop() {}
 
-func (*staticEntryReader) DAGs() []*core.DAG {
+func (*staticEntryReader) DAGs() []*ir.DAG {
 	return nil
 }
 
-func (*staticEntryReader) DAGStore() exec.DAGStore {
+func (*staticEntryReader) DAGStore() dagstore.DAGStore {
 	return nil
 }

@@ -6,20 +6,23 @@ import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Config } from '@/contexts/ConfigContext';
+import { AppBarContext } from '@/contexts/AppBarContext';
 import App from '../App';
 
-const { clientMock, clientGetMock, overviewImportError } = vi.hoisted(() => {
-  const clientGetMock = vi.fn();
-  return {
-    clientGetMock,
-    overviewImportError: { current: false },
-    clientMock: {
-      GET: clientGetMock,
-      POST: vi.fn(),
-      DELETE: vi.fn(),
-    },
-  };
-});
+const { clientMock, clientGetMock, overviewImportError, useQueryMock } =
+  vi.hoisted(() => {
+    const clientGetMock = vi.fn();
+    return {
+      clientGetMock,
+      overviewImportError: { current: false },
+      useQueryMock: vi.fn(),
+      clientMock: {
+        GET: clientGetMock,
+        POST: vi.fn(),
+        DELETE: vi.fn(),
+      },
+    };
+  });
 
 vi.hoisted(() => {
   vi.stubGlobal('getConfig', () => ({
@@ -31,6 +34,7 @@ vi.hoisted(() => {
 
 vi.mock('@/hooks/api', () => ({
   useClient: () => clientMock,
+  useQuery: useQueryMock,
 }));
 
 vi.mock('../layouts/Layout', () => ({
@@ -58,6 +62,7 @@ vi.mock('../pages/dags', () => ({ default: () => <h1>DAGs</h1> }));
 vi.mock('../pages/dags/dag', () => ({
   default: () => <h1>DAG Details</h1>,
 }));
+vi.mock('../pages/wiki', () => ({ default: () => <h1>Wiki</h1> }));
 vi.mock('../pages/event-logs', () => ({
   default: () => <h1>Event Logs</h1>,
 }));
@@ -100,7 +105,15 @@ vi.mock('../pages/queues', () => ({ default: () => <h1>Queues</h1> }));
 vi.mock('../pages/queues/queue', () => ({
   default: () => <h1>Queue Details</h1>,
 }));
-vi.mock('../pages/search', () => ({ default: () => <h1>Search</h1> }));
+vi.mock('../pages/search', () => ({
+  default: () => {
+    const { setTitle } = React.useContext(AppBarContext);
+    React.useEffect(() => {
+      setTitle('Search');
+    }, [setTitle]);
+    return <h1>Search</h1>;
+  },
+}));
 vi.mock('../pages/setup', () => ({ default: () => <h1>Setup</h1> }));
 vi.mock('../pages/system-status', () => ({
   default: () => <h1>System Status</h1>,
@@ -161,6 +174,8 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
       configFileUsed: '',
       gitSyncDir: '',
       auditLogsDir: '',
+      wikiDir: '',
+      docsDir: '',
     },
     ...overrides,
   };
@@ -171,25 +186,59 @@ function renderAt(path: string, config = makeConfig()): void {
   render(<App config={config} />);
 }
 
-describe('App license routing', () => {
-  beforeEach(() => {
-    localStorage.clear();
-    sessionStorage.clear();
-    clientGetMock.mockReset();
-    clientGetMock.mockResolvedValue({ data: { workspaces: [] } });
-    overviewImportError.current = false;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () =>
-        Response.json({
-          remoteNodes: [],
-          type: 'object',
-          properties: {},
-        })
-      )
-    );
+beforeEach(() => {
+  localStorage.clear();
+  sessionStorage.clear();
+  clientGetMock.mockReset();
+  clientGetMock.mockResolvedValue({ data: { workspaces: [] } });
+  useQueryMock.mockReset();
+  useQueryMock.mockReturnValue({ data: undefined });
+  overviewImportError.current = false;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      Response.json({
+        remoteNodes: [],
+        type: 'object',
+        properties: {},
+      })
+    )
+  );
+});
+
+describe('App document title', () => {
+  it('reflects the page title in the browser tab', async () => {
+    renderAt('/search');
+
+    await waitFor(() => {
+      expect(document.title).toBe('Search - Dagu');
+    });
   });
 
+  it('falls back to the configured title when a page sets none', async () => {
+    renderAt('/queues', makeConfig({ title: 'Operations' }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Queues' })
+    ).toBeVisible();
+    expect(document.title).toBe('Operations');
+  });
+});
+
+describe('legacy Wiki routing', () => {
+  it('preserves the path, query, and hash when redirecting from docs', async () => {
+    renderAt('/docs/runbooks/deploy?workspace=ops#rollback');
+
+    expect(await screen.findByRole('heading', { name: 'Wiki' })).toBeVisible();
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/wiki/runbooks/deploy');
+      expect(window.location.search).toBe('?workspace=ops');
+      expect(window.location.hash).toBe('#rollback');
+    });
+  });
+});
+
+describe('App license routing', () => {
   it.each([
     { path: '/notifications', heading: 'Notifications' },
     { path: '/notification-rules', heading: 'Notification Rules' },
@@ -214,6 +263,34 @@ describe('App license routing', () => {
     expect(
       screen.queryByRole('heading', { name: 'Incidents' })
     ).not.toBeInTheDocument();
+  });
+
+  it('updates licensed routes from the live license status', async () => {
+    useQueryMock.mockReturnValue({
+      data: {
+        valid: true,
+        plan: 'pro',
+        expiry: '2027-01-01T00:00:00Z',
+        features: ['audit'],
+        gracePeriod: false,
+        graceEndsAt: '',
+        community: false,
+        source: 'file',
+        warningCode: '',
+        error: '',
+      },
+    });
+
+    renderAt('/incidents');
+
+    expect(
+      await screen.findByRole('heading', { name: 'Incidents' })
+    ).toBeVisible();
+    expect(useQueryMock).toHaveBeenCalledWith(
+      '/license/status',
+      { params: { query: { remoteNode: 'local' } } },
+      expect.objectContaining({ refreshInterval: 60_000 })
+    );
   });
 
   it('redirects the legacy secrets route to the secret refs section', async () => {

@@ -10,13 +10,14 @@ import (
 	"maps"
 	"net/http"
 
-	"github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	notificationmodel "github.com/dagucloud/dagu/internal/notification"
-	"github.com/dagucloud/dagu/internal/service/audit"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
-	notificationservice "github.com/dagucloud/dagu/internal/service/notification"
-	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/audit"
+	"github.com/dagucloud/dagu/v2/internal/cmn/mailer/oauthconfig"
+	"github.com/dagucloud/dagu/v2/internal/dagstore"
+	"github.com/dagucloud/dagu/v2/internal/eventstore"
+	notificationmodel "github.com/dagucloud/dagu/v2/internal/notification"
+	notificationservice "github.com/dagucloud/dagu/v2/internal/service/notification"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 )
 
 var errNotificationManagementNotAvailable = &Error{
@@ -419,8 +420,8 @@ func (a *API) resolveNotificationRouteWorkspace(ctx context.Context, name string
 }
 
 func (a *API) ensureDAGExists(ctx context.Context, dagName string) error {
-	if _, err := a.dagStore.GetDetails(ctx, dagName); err != nil {
-		if errors.Is(err, exec.ErrDAGNotFound) {
+	if _, err := a.dagStore.GetDetails(ctx, dagName, dagstore.DAGLoadOptions{}); err != nil {
+		if errors.Is(err, dagstore.ErrDAGNotFound) {
 			return &Error{
 				HTTPStatus: http.StatusNotFound,
 				Code:       api.ErrorCodeNotFound,
@@ -503,6 +504,16 @@ func notificationWorkspaceSettingsFromRequest(input api.NotificationWorkspaceSet
 			From:          valueOf(input.Smtp.From),
 			ClearPassword: valueOf(input.Smtp.ClearPassword),
 		}
+		if input.Smtp.Oauth != nil {
+			settings.SMTP.OAuth = &oauthconfig.Config{
+				Provider:           oauthconfig.Provider(input.Smtp.Oauth.Provider),
+				TenantID:           valueOf(input.Smtp.Oauth.TenantId),
+				ClientID:           valueOf(input.Smtp.Oauth.ClientId),
+				ClientSecret:       valueOf(input.Smtp.Oauth.ClientSecret),
+				RefreshToken:       valueOf(input.Smtp.Oauth.RefreshToken),
+				ServiceAccountJSON: valueOf(input.Smtp.Oauth.ServiceAccountJson),
+			}
+		}
 	}
 	return settings
 }
@@ -564,6 +575,7 @@ func notificationChannelFromRequest(id string, input api.NotificationChannelInpu
 			URL:                 valueOf(input.Webhook.Url),
 			HMACSecret:          valueOf(input.Webhook.HmacSecret),
 			MessageTemplate:     valueOf(input.Webhook.MessageTemplate),
+			BodyTemplate:        valueOf(input.Webhook.BodyTemplate),
 			AllowInsecureHTTP:   valueOf(input.Webhook.AllowInsecureHttp),
 			AllowPrivateNetwork: valueOf(input.Webhook.AllowPrivateNetwork),
 			ClearHeaders:        valueOf(input.Webhook.ClearHeaders),
@@ -585,6 +597,12 @@ func notificationChannelFromRequest(id string, input api.NotificationChannelInpu
 			ChatID:          valueOf(input.Telegram.ChatId),
 			TopicID:         valueOf(input.Telegram.TopicId),
 			MessageTemplate: valueOf(input.Telegram.MessageTemplate),
+		}
+	}
+	if input.Teams != nil {
+		channel.Teams = &notificationmodel.TeamsTarget{
+			WebhookURL:      valueOf(input.Teams.WebhookUrl),
+			MessageTemplate: valueOf(input.Teams.MessageTemplate),
 		}
 	}
 	return channel
@@ -624,6 +642,7 @@ func notificationTargetFromRequest(input api.NotificationTargetInput) notificati
 			URL:                 valueOf(input.Webhook.Url),
 			HMACSecret:          valueOf(input.Webhook.HmacSecret),
 			MessageTemplate:     valueOf(input.Webhook.MessageTemplate),
+			BodyTemplate:        valueOf(input.Webhook.BodyTemplate),
 			AllowInsecureHTTP:   valueOf(input.Webhook.AllowInsecureHttp),
 			AllowPrivateNetwork: valueOf(input.Webhook.AllowPrivateNetwork),
 			ClearHeaders:        valueOf(input.Webhook.ClearHeaders),
@@ -645,6 +664,12 @@ func notificationTargetFromRequest(input api.NotificationTargetInput) notificati
 			ChatID:          valueOf(input.Telegram.ChatId),
 			TopicID:         valueOf(input.Telegram.TopicId),
 			MessageTemplate: valueOf(input.Telegram.MessageTemplate),
+		}
+	}
+	if input.Teams != nil {
+		target.Teams = &notificationmodel.TeamsTarget{
+			WebhookURL:      valueOf(input.Teams.WebhookUrl),
+			MessageTemplate: valueOf(input.Teams.MessageTemplate),
 		}
 	}
 	return target
@@ -699,6 +724,16 @@ func toAPINotificationWorkspaceSettings(settings *notificationmodel.WorkspaceSet
 			Username:           ptrOf(pub.SMTP.Username),
 			From:               ptrOf(pub.SMTP.From),
 			PasswordConfigured: pub.SMTP.PasswordConfigured,
+		}
+		if pub.SMTP.OAuth != nil {
+			result.Smtp.Oauth = &api.NotificationSMTPOAuthSettings{
+				Provider:                     api.NotificationSMTPOAuthProvider(pub.SMTP.OAuth.Provider),
+				TenantId:                     ptrOf(pub.SMTP.OAuth.TenantID),
+				ClientId:                     ptrOf(pub.SMTP.OAuth.ClientID),
+				ClientSecretConfigured:       pub.SMTP.OAuth.ClientSecretConfigured,
+				RefreshTokenConfigured:       pub.SMTP.OAuth.RefreshTokenConfigured,
+				ServiceAccountJsonConfigured: pub.SMTP.OAuth.ServiceAccountJSONConfigured,
+			}
 		}
 	}
 	return result
@@ -792,6 +827,7 @@ func toAPINotificationChannel(channel *notificationmodel.Channel) api.Notificati
 			Headers:              ptrOf(pub.Webhook.Headers),
 			HmacSecretConfigured: pub.Webhook.HMACSecretConfigured,
 			MessageTemplate:      ptrOf(pub.Webhook.MessageTemplate),
+			BodyTemplate:         ptrOf(pub.Webhook.BodyTemplate),
 			AllowInsecureHttp:    ptrOf(pub.Webhook.AllowInsecureHTTP),
 			AllowPrivateNetwork:  ptrOf(pub.Webhook.AllowPrivateNetwork),
 		}
@@ -810,6 +846,13 @@ func toAPINotificationChannel(channel *notificationmodel.Channel) api.Notificati
 			ChatId:             ptrOf(pub.Telegram.ChatID),
 			TopicId:            ptrOf(pub.Telegram.TopicID),
 			MessageTemplate:    ptrOf(pub.Telegram.MessageTemplate),
+		}
+	}
+	if pub.Teams != nil {
+		result.Teams = &api.NotificationTeamsTarget{
+			WebhookUrlConfigured: pub.Teams.WebhookURLConfigured,
+			WebhookUrlPreview:    ptrOf(pub.Teams.WebhookURLPreview),
+			MessageTemplate:      ptrOf(pub.Teams.MessageTemplate),
 		}
 	}
 	return result
@@ -855,6 +898,7 @@ func toAPINotificationTarget(target notificationmodel.PublicTarget) api.Notifica
 			Headers:              ptrOf(target.Webhook.Headers),
 			HmacSecretConfigured: target.Webhook.HMACSecretConfigured,
 			MessageTemplate:      ptrOf(target.Webhook.MessageTemplate),
+			BodyTemplate:         ptrOf(target.Webhook.BodyTemplate),
 			AllowInsecureHttp:    ptrOf(target.Webhook.AllowInsecureHTTP),
 			AllowPrivateNetwork:  ptrOf(target.Webhook.AllowPrivateNetwork),
 		}
@@ -873,6 +917,13 @@ func toAPINotificationTarget(target notificationmodel.PublicTarget) api.Notifica
 			ChatId:             ptrOf(target.Telegram.ChatID),
 			TopicId:            ptrOf(target.Telegram.TopicID),
 			MessageTemplate:    ptrOf(target.Telegram.MessageTemplate),
+		}
+	}
+	if target.Teams != nil {
+		result.Teams = &api.NotificationTeamsTarget{
+			WebhookUrlConfigured: target.Teams.WebhookURLConfigured,
+			WebhookUrlPreview:    ptrOf(target.Teams.WebhookURLPreview),
+			MessageTemplate:      ptrOf(target.Teams.MessageTemplate),
 		}
 	}
 	return result

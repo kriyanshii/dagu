@@ -13,6 +13,7 @@ import {
   Status,
   StatusLabel,
 } from '@/api/v1/schema';
+import { ToastProvider } from '@/components/ui/simple-toast';
 import { AppBarContext } from '@/contexts/AppBarContext';
 import { DAGRunContext } from '@/features/dag-runs/contexts/DAGRunContext';
 import { useQuery } from '@/hooks/api';
@@ -85,6 +86,63 @@ describe('NodeStatusTableRow', () => {
       isValidating: false,
       mutate: vi.fn(),
     }));
+  });
+
+  it('keeps the selected remote node in producer run links', async () => {
+    const user = userEvent.setup();
+    const node = {
+      step: { name: 'build' },
+      status: NodeStatus.Success,
+      statusLabel: NodeStatusLabel.succeeded,
+      stdout: '',
+      stderr: '',
+      startedAt: '',
+      finishedAt: '',
+      retryCount: 0,
+      doneCount: 1,
+      build: {
+        decision: 'reuse',
+        phase: 'complete',
+        reason: 'matched',
+        producerRun: { name: 'producer', id: 'run-2' },
+      },
+    } as components['schemas']['Node'];
+
+    render(
+      <MemoryRouter>
+        <AppBarContext.Provider
+          value={{
+            ...appBarValue,
+            remoteNodes: ['worker-a'],
+            selectedRemoteNode: 'worker-a',
+          }}
+        >
+          <table>
+            <tbody>
+              <NodeStatusTableRow
+                rownum={1}
+                node={node}
+                name="example.yaml"
+                dagRun={dagRun}
+                view="desktop"
+              />
+            </tbody>
+          </table>
+        </AppBarContext.Provider>
+      </MemoryRouter>
+    );
+
+    await user.hover(screen.getByText('reused'));
+    const links = await screen.findAllByRole('link', {
+      name: 'Produced by producer:run-2',
+    });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link).toHaveAttribute(
+        'href',
+        '/dag-runs/producer/run-2?remoteNode=worker-a'
+      );
+    }
   });
 
   it('shows log step messages in the status table without opening step logs', () => {
@@ -411,6 +469,7 @@ describe('NodeStatusTableRow', () => {
   it('retries a child step through its root DAG run', async () => {
     const user = userEvent.setup();
     postMock.mockResolvedValueOnce({});
+    const refresh = vi.fn();
     const node = {
       step: { name: 'build' },
       status: NodeStatus.Failed,
@@ -425,33 +484,35 @@ describe('NodeStatusTableRow', () => {
 
     render(
       <MemoryRouter>
-        <AppBarContext.Provider value={appBarValue}>
-          <DAGContext.Provider
-            value={{
-              refresh: vi.fn(),
-              name: 'child',
-              fileName: 'child.yaml',
-            }}
-          >
-            <table>
-              <tbody>
-                <NodeStatusTableRow
-                  rownum={1}
-                  node={node}
-                  name="child.yaml"
-                  dagRun={{
-                    ...dagRun,
-                    name: 'child',
-                    dagRunId: 'child-run',
-                    rootDAGRunName: 'root',
-                    rootDAGRunId: 'root-run',
-                  }}
-                  view="desktop"
-                />
-              </tbody>
-            </table>
-          </DAGContext.Provider>
-        </AppBarContext.Provider>
+        <ToastProvider>
+          <AppBarContext.Provider value={appBarValue}>
+            <DAGContext.Provider
+              value={{
+                refresh,
+                name: 'child',
+                fileName: 'child.yaml',
+              }}
+            >
+              <table>
+                <tbody>
+                  <NodeStatusTableRow
+                    rownum={1}
+                    node={node}
+                    name="child.yaml"
+                    dagRun={{
+                      ...dagRun,
+                      name: 'child',
+                      dagRunId: 'child-run',
+                      rootDAGRunName: 'root',
+                      rootDAGRunId: 'root-run',
+                    }}
+                    view="desktop"
+                  />
+                </tbody>
+              </table>
+            </DAGContext.Provider>
+          </AppBarContext.Provider>
+        </ToastProvider>
       </MemoryRouter>
     );
 
@@ -477,6 +538,8 @@ describe('NodeStatusTableRow', () => {
         }
       );
     });
+    expect(await screen.findByText('Step retry started')).toBeVisible();
+    expect(refresh).toHaveBeenCalled();
   });
 
   it.each(['desktop', 'mobile'] as const)(

@@ -7,7 +7,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core"
+	"github.com/dagucloud/dagu/v2/internal/ir"
 )
 
 // Test exports expose internal helpers to external-package tests.
@@ -15,6 +15,7 @@ var (
 	ExtractWebhookToken         = extractWebhookToken
 	MarshalWebhookPayload       = marshalWebhookPayload
 	MarshalWebhookHeaders       = marshalWebhookHeaders
+	RequestedWebhookProfile     = requestedWebhookProfile
 	IsWebhookTriggerPath        = isWebhookTriggerPath
 	WithRawBody                 = withRawBody
 	WithRequestHeaders          = withRequestHeaders
@@ -26,6 +27,6 @@ var (
 const ArtifactTextPreviewMaxBytesForTest = artifactTextPreviewMaxBytes
 
 // NextRunProjectionForTest returns the API next-run projector for external-package tests.
-func NextRunProjectionForTest(ctx context.Context, a *API) func(*core.DAG, time.Time) time.Time {
+func NextRunProjectionForTest(ctx context.Context, a *API) func(*ir.DAG, time.Time) time.Time {
 	return a.nextRunProjection(ctx)
 }

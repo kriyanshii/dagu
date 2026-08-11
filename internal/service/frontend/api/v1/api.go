@@ -15,37 +15,43 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/auth"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	cmnvalue "github.com/dagucloud/dagu/internal/cmn/value"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/baseconfig"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/dagsettings"
-	incidentmodel "github.com/dagucloud/dagu/internal/incident"
-	"github.com/dagucloud/dagu/internal/launcher"
-	"github.com/dagucloud/dagu/internal/license"
-	notificationmodel "github.com/dagucloud/dagu/internal/notification"
-	profilepkg "github.com/dagucloud/dagu/internal/profile"
-	"github.com/dagucloud/dagu/internal/remotenode"
-	"github.com/dagucloud/dagu/internal/runtime"
-	secretpkg "github.com/dagucloud/dagu/internal/secret"
-	"github.com/dagucloud/dagu/internal/service/audit"
-	authservice "github.com/dagucloud/dagu/internal/service/auth"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
-	"github.com/dagucloud/dagu/internal/service/frontend/api/pathutil"
-	frontendauth "github.com/dagucloud/dagu/internal/service/frontend/auth"
-	incidentservice "github.com/dagucloud/dagu/internal/service/incident"
-	notificationservice "github.com/dagucloud/dagu/internal/service/notification"
-	"github.com/dagucloud/dagu/internal/service/resource"
-	"github.com/dagucloud/dagu/internal/service/scheduler"
-	"github.com/dagucloud/dagu/internal/tunnel"
-	"github.com/dagucloud/dagu/internal/view"
-	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/audit"
+	"github.com/dagucloud/dagu/v2/internal/auth"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	cmnvalue "github.com/dagucloud/dagu/v2/internal/cmn/value"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/dagsettings"
+	"github.com/dagucloud/dagu/v2/internal/dagstore"
+	"github.com/dagucloud/dagu/v2/internal/dispatch"
+	"github.com/dagucloud/dagu/v2/internal/eventstore"
+	incidentmodel "github.com/dagucloud/dagu/v2/internal/incident"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/launcher"
+	"github.com/dagucloud/dagu/v2/internal/license"
+	notificationmodel "github.com/dagucloud/dagu/v2/internal/notification"
+	"github.com/dagucloud/dagu/v2/internal/pagination"
+	"github.com/dagucloud/dagu/v2/internal/proc"
+	profilepkg "github.com/dagucloud/dagu/v2/internal/profile"
+	"github.com/dagucloud/dagu/v2/internal/queue"
+	"github.com/dagucloud/dagu/v2/internal/remotenode"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	secretpkg "github.com/dagucloud/dagu/v2/internal/secret"
+	authservice "github.com/dagucloud/dagu/v2/internal/service/auth"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	"github.com/dagucloud/dagu/v2/internal/service/frontend/api/pathutil"
+	frontendauth "github.com/dagucloud/dagu/v2/internal/service/frontend/auth"
+	incidentservice "github.com/dagucloud/dagu/v2/internal/service/incident"
+	notificationservice "github.com/dagucloud/dagu/v2/internal/service/notification"
+	"github.com/dagucloud/dagu/v2/internal/service/resource"
+	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
+	"github.com/dagucloud/dagu/v2/internal/serviceregistry"
+	"github.com/dagucloud/dagu/v2/internal/tunnel"
+	"github.com/dagucloud/dagu/v2/internal/view"
+	"github.com/dagucloud/dagu/v2/internal/wiki"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-chi/chi/v5"
@@ -57,20 +63,20 @@ import (
 var _ api.StrictServerInterface = (*API)(nil)
 
 type API struct {
-	dagStore             exec.DAGStore
-	dagRunStore          exec.DAGRunStore
+	dagStore             dagstore.DAGStore
+	dagRunStore          dagrun.DAGRunStore
 	dagRunMgr            runtime.Manager
-	queueStore           exec.QueueStore
-	procStore            exec.ProcStore
-	dagRunLeaseStore     exec.DAGRunLeaseStore
-	workerHeartbeatStore exec.WorkerHeartbeatStore
+	queueStore           queue.QueueStore
+	procStore            proc.ProcStore
+	dagRunLeaseStore     dispatch.DAGRunLeaseStore
+	workerHeartbeatStore dispatch.WorkerHeartbeatStore
 	remoteNodeResolver   *remotenode.Resolver
 	remoteNodeStore      remotenode.Store
 	logEncodingCharset   string
 	config               *config.Config
 	metricsRegistry      *prometheus.Registry
 	coordinatorCli       coordinator.Client
-	serviceRegistry      exec.ServiceRegistry
+	serviceRegistry      serviceregistry.ServiceRegistry
 	subCmdBuilder        *launcher.SubCmdBuilder
 	resourceService      *resource.Service
 	authService          AuthService
@@ -82,8 +88,10 @@ type API struct {
 	tunnelService        *tunnel.Service
 	defaultExecMode      config.ExecutionMode
 	dagWritesDisabled    bool // True when git sync read-only mode is active
-	baseConfigStore      baseconfig.Store
+	baseConfigStore      dagsettings.BaseConfigStore
 	dagSettingsStore     dagsettings.Store
+	wikiStore            wiki.PageStore
+	workspaceWikiMu      sync.RWMutex
 	secretStore          secretpkg.Store
 	profileStore         profilepkg.Store
 	viewStore            view.Store
@@ -93,10 +101,12 @@ type API struct {
 	leaseStaleThreshold  time.Duration
 	schedulerStateStore  scheduler.WatermarkStore
 	dagMutationNotifier  func(fileName string)
+	wikiMutationNotifier func()
 	baseConfigFactory    WorkspaceBaseConfigStoreFactory
+	oidcRoleMapping      func() config.OIDCRoleMapping
 }
 
-type WorkspaceBaseConfigStoreFactory func(dagsDir, workspaceName string) (baseconfig.Store, error)
+type WorkspaceBaseConfigStoreFactory func(dagsDir, workspaceName string) (dagsettings.BaseConfigStore, error)
 
 type NotificationService interface {
 	GetByDAGName(ctx context.Context, dagName string) (*notificationmodel.Settings, error)
@@ -155,9 +165,10 @@ type AuthService interface {
 	RegenerateWebhookToken(ctx context.Context, dagName string) (*authservice.CreateWebhookResult, error)
 	EnableWebhookHMAC(ctx context.Context, dagName string, authMode auth.WebhookAuthMode, enforcementMode auth.WebhookHMACEnforcementMode) (*authservice.WebhookHMACSecretResult, error)
 	ConfigureWebhookHMAC(ctx context.Context, dagName string, authMode auth.WebhookAuthMode, enforcementMode auth.WebhookHMACEnforcementMode) (*auth.Webhook, error)
+	ConfigureWebhookProfiles(ctx context.Context, dagName string, allowedProfiles []string) (*auth.Webhook, error)
 	RegenerateWebhookHMACSecret(ctx context.Context, dagName string) (*authservice.WebhookHMACSecretResult, error)
 	DisableWebhookHMAC(ctx context.Context, dagName string) (*auth.Webhook, error)
-	AuthorizeWebhookRequest(ctx context.Context, dagName, token, signature string, body []byte) (*auth.Webhook, error)
+	AuthorizeWebhookRequest(ctx context.Context, input authservice.AuthorizeWebhookRequestInput) (*auth.Webhook, error)
 	ToggleWebhook(ctx context.Context, dagName string, enabled bool) (*auth.Webhook, error)
 	ValidateWebhookToken(ctx context.Context, dagName, token string) (*auth.Webhook, error)
 	HasWebhookStore() bool
@@ -217,7 +228,7 @@ func WithTunnelService(ts *tunnel.Service) APIOption {
 }
 
 // WithBaseConfigStore returns an APIOption that sets the API's base config store.
-func WithBaseConfigStore(store baseconfig.Store) APIOption {
+func WithBaseConfigStore(store dagsettings.BaseConfigStore) APIOption {
 	return func(a *API) {
 		a.baseConfigStore = store
 	}
@@ -257,6 +268,13 @@ func WithDAGSettingsStore(store dagsettings.Store) APIOption {
 	}
 }
 
+// WithWikiStore returns an APIOption that sets the API's Wiki page store.
+func WithWikiStore(store wiki.PageStore) APIOption {
+	return func(a *API) {
+		a.wikiStore = store
+	}
+}
+
 // WithLicenseManager returns an APIOption that sets the API's license manager.
 func WithLicenseManager(m *license.Manager) APIOption {
 	return func(a *API) {
@@ -285,6 +303,13 @@ func WithWorkspaceStore(s workspace.Store) APIOption {
 	}
 }
 
+// WithOIDCRoleMapping sets the source used for current OIDC policy metadata.
+func WithOIDCRoleMapping(load func() config.OIDCRoleMapping) APIOption {
+	return func(a *API) {
+		a.oidcRoleMapping = load
+	}
+}
+
 // WithSchedulerStateStore sets the scheduler state store used for next-run projections.
 func WithSchedulerStateStore(store scheduler.WatermarkStore) APIOption {
 	return func(a *API) {
@@ -300,8 +325,16 @@ func WithDAGMutationNotifier(fn func(fileName string)) APIOption {
 	}
 }
 
+// WithWikiMutationNotifier returns an APIOption that is called after successful
+// Wiki page mutations that should invalidate live Wiki views.
+func WithWikiMutationNotifier(fn func()) APIOption {
+	return func(a *API) {
+		a.wikiMutationNotifier = fn
+	}
+}
+
 // WithDAGRunLeaseStore sets the shared distributed run lease store.
-func WithDAGRunLeaseStore(store exec.DAGRunLeaseStore) APIOption {
+func WithDAGRunLeaseStore(store dispatch.DAGRunLeaseStore) APIOption {
 	return func(a *API) {
 		a.dagRunLeaseStore = store
 	}
@@ -309,7 +342,7 @@ func WithDAGRunLeaseStore(store exec.DAGRunLeaseStore) APIOption {
 
 // WithWorkerHeartbeatStore sets the shared worker heartbeat store used for
 // conservative distributed run auto-repair on single-run reads.
-func WithWorkerHeartbeatStore(store exec.WorkerHeartbeatStore) APIOption {
+func WithWorkerHeartbeatStore(store dispatch.WorkerHeartbeatStore) APIOption {
 	return func(a *API) {
 		a.workerHeartbeatStore = store
 	}
@@ -328,14 +361,14 @@ func WithLeaseStaleThreshold(threshold time.Duration) APIOption {
 // and resource service. It builds the remote node map and base path, then
 // applies any supplied APIOption functions to customize the instance.
 func New(
-	dr exec.DAGStore,
-	drs exec.DAGRunStore,
-	qs exec.QueueStore,
-	ps exec.ProcStore,
+	dr dagstore.DAGStore,
+	drs dagrun.DAGRunStore,
+	qs queue.QueueStore,
+	ps proc.ProcStore,
 	drm runtime.Manager,
 	cfg *config.Config,
 	cc coordinator.Client,
-	sr exec.ServiceRegistry,
+	sr serviceregistry.ServiceRegistry,
 	mr *prometheus.Registry,
 	rs *resource.Service,
 	opts ...APIOption,
@@ -354,7 +387,7 @@ func New(
 		metricsRegistry:     mr,
 		resourceService:     rs,
 		defaultExecMode:     cfg.DefaultExecMode,
-		leaseStaleThreshold: exec.DefaultStaleLeaseThreshold,
+		leaseStaleThreshold: dagrun.DefaultStaleLeaseThreshold,
 	}
 
 	for _, opt := range opts {
@@ -378,6 +411,12 @@ func (a *API) requireValidBaseConfigWiring() {
 func (a *API) notifyDAGMutation(fileName string) {
 	if a.dagMutationNotifier != nil {
 		a.dagMutationNotifier(fileName)
+	}
+}
+
+func (a *API) notifyWikiMutation() {
+	if a.wikiMutationNotifier != nil {
+		a.wikiMutationNotifier()
 	}
 }
 
@@ -582,7 +621,7 @@ func validateDAGFileNameFromRequest(request any) error {
 		return nil
 	}
 
-	if err := core.ValidateDAGName(fileName.String()); err != nil {
+	if err := ir.ValidateDAGName(fileName.String()); err != nil {
 		return &Error{
 			HTTPStatus: http.StatusBadRequest,
 			Code:       api.ErrorCodeBadRequest,
@@ -720,14 +759,17 @@ func (a *API) resolveError(err error) (api.ErrorCode, string, int) {
 		return apiErr.Code, apiErr.Message, apiErr.HTTPStatus
 	}
 
-	if errors.Is(err, exec.ErrDAGNotFound) {
+	if errors.Is(err, dagstore.ErrDAGNotFound) {
 		return api.ErrorCodeNotFound, "DAG not found", http.StatusNotFound
 	}
-	if errors.Is(err, exec.ErrDAGRunIDNotFound) {
+	if errors.Is(err, dagrun.ErrDAGRunIDNotFound) {
 		return api.ErrorCodeNotFound, "dag-run ID not found", http.StatusNotFound
 	}
-	if errors.Is(err, exec.ErrDAGAlreadyExists) {
+	if errors.Is(err, dagstore.ErrDAGAlreadyExists) {
 		return api.ErrorCodeAlreadyExists, "DAG already exists", http.StatusConflict
+	}
+	if errors.Is(err, dagstore.ErrDAGReadOnly) {
+		return api.ErrorCodeForbidden, "DAG definition is read-only because it is managed through an external file symlink", http.StatusForbidden
 	}
 
 	return api.ErrorCodeInternalError, "An unexpected error occurred", http.StatusInternalServerError
@@ -1086,7 +1128,7 @@ func valueOf[T any](ptr *T) T {
 }
 
 // toPagination converts a paginated result to an API pagination object.
-func toPagination[T any](paginatedResult exec.PaginatedResult[T]) api.Pagination {
+func toPagination[T any](paginatedResult pagination.PaginatedResult[T]) api.Pagination {
 	return api.Pagination{
 		CurrentPage:  paginatedResult.CurrentPage,
 		NextPage:     paginatedResult.NextPage,

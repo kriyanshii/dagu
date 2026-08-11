@@ -26,7 +26,6 @@ import DAGDetailsContent from './DAGDetailsContent';
 
 type DAGDetailsResponse = {
   dag?: components['schemas']['DAGDetails'];
-  filePath?: string;
   latestDAGRun?: components['schemas']['DAGRunDetails'];
   localDags?: components['schemas']['LocalDag'][];
 };
@@ -37,7 +36,8 @@ type EnqueueHandler = (
   params: string,
   dagRunId?: string,
   immediate?: boolean,
-  profile?: string
+  profile?: string,
+  noReuse?: boolean
 ) => string | void | Promise<string | void>;
 
 type Props = {
@@ -104,6 +104,7 @@ function getLoadState(
 }
 
 function buildFullscreenUrl(fileName: string, activeTab: string): string {
+  if (activeTab === 'docs') activeTab = 'wiki';
   return activeTab === 'status'
     ? `/dags/${fileName}`
     : `/dags/${fileName}/${activeTab}`;
@@ -125,7 +126,9 @@ function DAGDetailsSidePanel({
 
   const [shouldRender, setShouldRender] = React.useState(isOpen);
   const [isVisible, setIsVisible] = React.useState(false);
-  const [activeTab, setActiveTab] = React.useState(initialTab);
+  const [activeTab, setActiveTab] = React.useState(
+    initialTab === 'docs' ? 'wiki' : initialTab
+  );
   const [trackedDagRunId, setTrackedDagRunId] = React.useState<string>();
   const [currentDAGRun, setCurrentDAGRun] = React.useState<
     components['schemas']['DAGRunDetails'] | undefined
@@ -173,7 +176,7 @@ function DAGDetailsSidePanel({
       return;
     }
 
-    setActiveTab(initialTab);
+    setActiveTab(initialTab === 'docs' ? 'wiki' : initialTab);
     setTrackedDagRunId(undefined);
     setCurrentDAGRun(undefined);
   }, [fileName, initialTab, isOpen, remoteNode]);
@@ -233,12 +236,18 @@ function DAGDetailsSidePanel({
   }, [mutate]);
 
   const handleEnqueue = React.useCallback<EnqueueHandler>(
-    async (params, dagRunId, immediate, profile) => {
+    async (params, dagRunId, immediate, profile, noReuse) => {
       if (!onEnqueue) {
         return;
       }
 
-      const result = await onEnqueue(params, dagRunId, immediate, profile);
+      const result = await onEnqueue(
+        params,
+        dagRunId,
+        immediate,
+        profile,
+        noReuse
+      );
       setActiveTab('status');
       if (typeof result === 'string' && result) {
         setTrackedDagRunId(result);
@@ -418,7 +427,6 @@ function DAGDetailsSidePanel({
                   {loadState.state === 'ready' && data?.dag && (
                     <DAGDetailsContent
                       fileName={stableFileName}
-                      filePath={data.filePath}
                       dag={data.dag}
                       currentDAGRun={currentDAGRun}
                       dagRunId={trackedDagRunId ?? 'latest'}

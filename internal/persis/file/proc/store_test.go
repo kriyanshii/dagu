@@ -13,11 +13,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/proc"
 )
 
-func testProcMeta(ref exec.DAGRunRef) exec.ProcMeta {
-	return exec.ProcMeta{
+func testProcMeta(ref ir.DAGRunRef) proc.ProcMeta {
+	return proc.ProcMeta{
 		StartedAt:    time.Now().UTC().Unix(),
 		Name:         ref.Name,
 		DAGRunID:     ref.ID,
@@ -32,11 +33,8 @@ func TestStoreWritesReleasedProcFileLayoutOnly(t *testing.T) {
 
 	ctx := context.Background()
 	root := t.TempDir()
-	s := New(root,
-		WithHeartbeatInterval(10*time.Millisecond),
-		WithHeartbeatSyncInterval(10*time.Millisecond),
-	)
-	ref := exec.NewDAGRunRef("sidecar-dag", "run-1")
+	s := New(root, WithHeartbeatInterval(10*time.Millisecond))
+	ref := ir.NewDAGRunRef("sidecar-dag", "run-1")
 
 	handle, err := s.Acquire(ctx, "queue-a", testProcMeta(ref))
 	require.NoError(t, err)
@@ -75,7 +73,7 @@ func TestStoreReadsAndRemovesReleasedProcFiles(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	s := New(root, WithStaleThreshold(10*time.Millisecond))
-	ref := exec.NewDAGRunRef("released-dag", "run-1")
+	ref := ir.NewDAGRunRef("released-dag", "run-1")
 	meta := testProcMeta(ref)
 	staleAt := time.Now().Add(-time.Hour).UTC()
 	procFile := s.filePath("queue-a", meta, staleAt)
@@ -92,6 +90,176 @@ func TestStoreReadsAndRemovesReleasedProcFiles(t *testing.T) {
 	require.NoError(t, s.RemoveIfStale(ctx, entries[0]))
 	_, err = os.Stat(procFile)
 	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+// writeDamagedProcFile drops an undecodable proc file into a group and stamps
+// it as last written modifiedAgo in the past.
+// writeDamagedProcFile writes an undecodable file at the path the store would
+// use for ref, and stamps it as last written modifiedAgo in the past.
+func writeDamagedProcFile(t *testing.T, s *Store, groupName string, ref ir.DAGRunRef, modifiedAgo time.Duration) string {
+	t.Helper()
+
+	path := s.filePath(groupName, testProcMeta(ref), time.Now().UTC())
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+	require.NoError(t, os.WriteFile(path, []byte{0x00, 0x01}, 0o600))
+	at := time.Now().Add(-modifiedAgo)
+	require.NoError(t, os.Chtimes(path, at, at))
+	return path
+}
+
+func TestStoreSkipsAbandonedDamagedProcFile(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	s := New(root, WithHeartbeatInterval(10*time.Millisecond), WithStaleThreshold(time.Second))
+	ref := ir.NewDAGRunRef("healthy-dag", "run-1")
+
+	handle, err := s.Acquire(ctx, "queue-a", testProcMeta(ref))
+	require.NoError(t, err)
+	defer func() { _ = handle.Stop(ctx) }()
+	require.NotEmpty(t, waitForProcFile(t, root, "queue-a", "healthy-dag"))
+
+	writeDamagedProcFile(t, s, "queue-a", ir.NewDAGRunRef("healthy-dag", "abandoned-run"), time.Hour)
+
+	entries, err := s.ListEntries(ctx, "queue-a")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, ref, entries[0].Meta.DAGRun())
+
+	count, err := s.CountAlive(ctx, "queue-a")
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+
+	alive, err := s.IsRunAlive(ctx, "queue-a", ref)
+	require.NoError(t, err)
+	assert.True(t, alive)
+}
+
+func TestStoreDoesNotUndercountWhileDamagedProcFileLooksActive(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	s := New(root, WithStaleThreshold(time.Minute))
+
+	// A damaged file that is still being written may belong to a live run, so
+	// the group must not be reported as if that run were gone.
+	writeDamagedProcFile(t, s, "queue-a", ir.NewDAGRunRef("healthy-dag", "run-1"), 0)
+
+	_, err := s.ListEntries(ctx, "queue-a")
+	require.ErrorIs(t, err, errInvalidProcFile)
+
+	_, err = s.CountAlive(ctx, "queue-a")
+	require.Error(t, err)
+}
+
+func TestStoreLatestHeartbeatDoesNotReportExitWhileDamagedProcFileLooksActive(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	s := New(root, WithStaleThreshold(time.Minute))
+	ref := ir.NewDAGRunRef("healthy-dag", "run-1")
+
+	// Callers read a nil heartbeat as the run having exited, so damage that is
+	// named for this run must not be reported as an absence.
+	damaged := writeDamagedProcFile(t, s, "queue-a", ref, 0)
+
+	_, err := s.LatestHeartbeat(ctx, "queue-a", ref)
+	require.ErrorIs(t, err, errInvalidProcFile)
+
+	at := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(damaged, at, at))
+
+	heartbeat, err := s.LatestHeartbeat(ctx, "queue-a", ref)
+	require.NoError(t, err)
+	assert.Nil(t, heartbeat)
+}
+
+func TestStoreLatestHeartbeatIgnoresDamageBelongingToAnotherRun(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	s := New(root, WithHeartbeatInterval(10*time.Millisecond), WithStaleThreshold(time.Minute))
+	ref := ir.NewDAGRunRef("healthy-dag", "run-1")
+
+	handle, err := s.Acquire(ctx, "queue-a", testProcMeta(ref))
+	require.NoError(t, err)
+	defer func() { _ = handle.Stop(ctx) }()
+	require.NotEmpty(t, waitForProcFile(t, root, "queue-a", "healthy-dag"))
+
+	// Damage under another DAG in the same group says nothing about this run,
+	// so it must not block callers that only ask about this one.
+	writeDamagedProcFile(t, s, "queue-a", ir.NewDAGRunRef("other-dag", "other-run"), 0)
+
+	heartbeat, err := s.LatestHeartbeat(ctx, "queue-a", ref)
+	require.NoError(t, err)
+	require.NotNil(t, heartbeat)
+	assert.Equal(t, ref, heartbeat.DAGRun)
+}
+
+func TestStoreValidateIgnoresDamagedProcFiles(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	s := New(root, WithStaleThreshold(time.Minute))
+	writeDamagedProcFile(t, s, "queue-a", ir.NewDAGRunRef("healthy-dag", "run-1"), 0)
+
+	// Every command validates the proc directory, so a damaged file must not
+	// make the store unusable.
+	require.NoError(t, s.Validate(ctx))
+}
+
+func TestStoreTreatsAbandonedFutureHeartbeatAsStale(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	s := New(root, WithStaleThreshold(time.Minute))
+	ref := ir.NewDAGRunRef("skewed-dag", "run-1")
+	meta := testProcMeta(ref)
+
+	// Nothing has written the file recently, so a heartbeat stamped in the
+	// future must not keep the entry alive forever.
+	writtenAt := time.Now().Add(-time.Hour).UTC()
+	procFile := s.filePath("queue-a", meta, writtenAt)
+	require.NoError(t, writeProcFile(procFile, time.Now().Add(time.Hour).UTC().Unix(), meta))
+	require.NoError(t, os.Chtimes(procFile, writtenAt, writtenAt))
+
+	entries, err := s.ListEntries(ctx, "queue-a")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.False(t, entries[0].Fresh)
+
+	require.NoError(t, s.RemoveIfStale(ctx, entries[0]))
+	_, err = os.Stat(procFile)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestStoreKeepsRecentlyWrittenProcFileFreshDespiteClockSkew(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	s := New(root, WithStaleThreshold(time.Minute))
+	ref := ir.NewDAGRunRef("skewed-dag", "run-1")
+	meta := testProcMeta(ref)
+
+	// A process whose clock runs ahead is still alive, and the write time proves
+	// it. Freshness must follow the file, not the timestamp the writer recorded.
+	procFile := s.filePath("queue-a", meta, time.Now().UTC())
+	require.NoError(t, writeProcFile(procFile, time.Now().Add(time.Hour).UTC().Unix(), meta))
+
+	entries, err := s.ListEntries(ctx, "queue-a")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.True(t, entries[0].Fresh)
+
+	require.NoError(t, s.RemoveIfStale(ctx, entries[0]))
+	assert.FileExists(t, procFile)
 }
 
 func waitForProcFile(t *testing.T, root, groupName, dagName string) string {

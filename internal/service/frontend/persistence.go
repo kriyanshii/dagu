@@ -6,23 +6,23 @@ package frontend
 import (
 	"context"
 
-	authmodel "github.com/dagucloud/dagu/internal/auth"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/core/baseconfig"
-	"github.com/dagucloud/dagu/internal/dagsettings"
-	"github.com/dagucloud/dagu/internal/incident"
-	"github.com/dagucloud/dagu/internal/notification"
-	"github.com/dagucloud/dagu/internal/profile"
-	"github.com/dagucloud/dagu/internal/remotenode"
-	"github.com/dagucloud/dagu/internal/secret"
-	"github.com/dagucloud/dagu/internal/service/audit"
-	authservice "github.com/dagucloud/dagu/internal/service/auth"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
-	apiv1 "github.com/dagucloud/dagu/internal/service/frontend/api/v1"
-	"github.com/dagucloud/dagu/internal/upgrade"
-	"github.com/dagucloud/dagu/internal/view"
-	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/dagucloud/dagu/v2/internal/audit"
+	authmodel "github.com/dagucloud/dagu/v2/internal/auth"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/crypto"
+	"github.com/dagucloud/dagu/v2/internal/dagsettings"
+	"github.com/dagucloud/dagu/v2/internal/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/incident"
+	"github.com/dagucloud/dagu/v2/internal/notification"
+	"github.com/dagucloud/dagu/v2/internal/profile"
+	"github.com/dagucloud/dagu/v2/internal/remotenode"
+	"github.com/dagucloud/dagu/v2/internal/secret"
+	authservice "github.com/dagucloud/dagu/v2/internal/service/auth"
+	apiv1 "github.com/dagucloud/dagu/v2/internal/service/frontend/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/upgrade"
+	"github.com/dagucloud/dagu/v2/internal/view"
+	"github.com/dagucloud/dagu/v2/internal/wiki"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 )
 
 // StoreFactories contains backend-specific persistence wiring for the frontend server.
@@ -34,6 +34,7 @@ type StoreFactories struct {
 	SecretStoreFactory               SecretStoreFactory
 	ProfileStoreFactory              ProfileStoreFactory
 	DAGSettingsStoreFactory          DAGSettingsStoreFactory
+	WikiStoreFactory                 WikiStoreFactory
 	NotificationStoreFactory         NotificationStoreFactory
 	NotificationMonitorStateFileFunc MonitorStateFileFunc
 	IncidentStoreFactory             IncidentStoreFactory
@@ -45,7 +46,7 @@ type StoreFactories struct {
 	ViewStoreFactory                 ViewStoreFactory
 }
 
-type BaseConfigStoreFactory func(filePath string) (baseconfig.Store, error)
+type BaseConfigStoreFactory func(filePath string) (dagsettings.BaseConfigStore, error)
 
 type SecretStoreFactory func(context.Context, *config.Config) secret.Store
 
@@ -56,6 +57,8 @@ type BuiltinAuthFactory func(context.Context, *config.Config) (*BuiltinAuthResul
 type RemoteNodeStoreFactory func(*config.Config, *crypto.Encryptor) (remotenode.Store, error)
 
 type DAGSettingsStoreFactory func(*config.Config) (dagsettings.Store, error)
+
+type WikiStoreFactory func(*config.Config) (wiki.PageStore, error)
 
 type NotificationStoreFactory func(*config.Config, *crypto.Encryptor) (notification.Store, error)
 

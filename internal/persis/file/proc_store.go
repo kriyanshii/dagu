@@ -4,8 +4,8 @@
 package file
 
 import (
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/persis/file/proc"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/persis/file/proc"
 )
 
 // NewProcStore wires the file-backed proc store without changing the released
@@ -14,7 +14,6 @@ func NewProcStore(cfg *config.Config, opts ...proc.StoreOption) *proc.Store {
 	storeOpts := []proc.StoreOption{
 		proc.WithStaleThreshold(cfg.Proc.StaleThreshold),
 		proc.WithHeartbeatInterval(cfg.Proc.HeartbeatInterval),
-		proc.WithHeartbeatSyncInterval(cfg.Proc.HeartbeatSyncInterval),
 	}
 	storeOpts = append(storeOpts, opts...)
 	return proc.New(cfg.Paths.ProcDir, storeOpts...)

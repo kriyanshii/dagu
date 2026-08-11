@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/test/intgharness"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/test/intgharness"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,7 +46,7 @@ steps:
 
 		agent := f.dagWrapper.Agent()
 		agent.RunSuccess(t)
-		f.dagWrapper.AssertLatestStatus(t, core.Succeeded)
+		f.dagWrapper.AssertLatestStatus(t, ir.Succeeded)
 
 		st, err := f.latestStatus()
 		require.NoError(t, err)
@@ -55,7 +55,7 @@ steps:
 
 		processNode := st.Nodes[0]
 		require.Equal(t, "process-items", processNode.Step.Name)
-		require.Equal(t, core.NodeSucceeded, processNode.Status)
+		require.Equal(t, ir.NodeSucceeded, processNode.Status)
 
 		require.NotEmpty(t, processNode.SubRuns)
 		require.Len(t, processNode.SubRuns, 3)
@@ -109,7 +109,7 @@ steps:
 
 		agent := f.dagWrapper.Agent()
 		agent.RunSuccess(t)
-		f.dagWrapper.AssertLatestStatus(t, core.Succeeded)
+		f.dagWrapper.AssertLatestStatus(t, ir.Succeeded)
 
 		st, err := f.latestStatus()
 		require.NoError(t, err)
@@ -117,7 +117,7 @@ steps:
 
 		processNode := st.Nodes[0]
 		require.Equal(t, "process-regions", processNode.Step.Name)
-		require.Equal(t, core.NodeSucceeded, processNode.Status)
+		require.Equal(t, ir.NodeSucceeded, processNode.Status)
 		require.Len(t, processNode.SubRuns, 3)
 
 		if value, ok := processNode.OutputVariables.Load("RESULTS"); ok {
@@ -130,6 +130,41 @@ steps:
 			t.Fatal("RESULTS output not found")
 		}
 	})
+}
+
+func TestParallel_ChildSelectorParams(t *testing.T) {
+	f := newTestFixture(t, `
+steps:
+  - name: route-item
+    action: dag.run
+    with:
+      dag: child-routed
+      params: "FACILITY=${ITEM}"
+    parallel:
+      items: ["serverA"]
+
+---
+name: child-routed
+params:
+  - name: FACILITY
+    type: string
+    required: true
+worker_selector:
+  host: ${FACILITY}
+steps:
+  - name: process
+    run: echo "$FACILITY"
+`, withLabels(map[string]string{"host": "serverA"}))
+
+	agent := f.dagWrapper.Agent()
+	agent.RunSuccess(t)
+	f.dagWrapper.AssertLatestStatus(t, ir.Succeeded)
+
+	status, err := f.latestStatus()
+	require.NoError(t, err)
+	require.Len(t, status.Nodes, 1)
+	require.Len(t, status.Nodes[0].SubRuns, 1)
+	require.Equal(t, `FACILITY="serverA"`, status.Nodes[0].SubRuns[0].Params)
 }
 
 func TestParallel_PartialFailure(t *testing.T) {
@@ -179,7 +214,7 @@ steps:
 
 		node := st.Nodes[0]
 		require.Equal(t, "process-items", node.Step.Name)
-		require.Equal(t, core.NodeFailed, node.Status)
+		require.Equal(t, ir.NodeFailed, node.Status)
 		require.Len(t, node.SubRuns, 2)
 	})
 }
@@ -213,7 +248,7 @@ steps:
 		require.Error(t, err)
 
 		st := agent.Status(f.coord.Context)
-		require.NotEqual(t, core.Succeeded, st.Status)
+		require.NotEqual(t, ir.Succeeded, st.Status)
 	})
 }
 
@@ -245,14 +280,14 @@ steps:
 		f.waitForQueued()
 		f.startScheduler(30 * time.Second)
 
-		status := f.waitForStatusIn([]core.Status{core.Succeeded, core.Failed, core.Aborted}, 25*time.Second)
+		status := f.waitForStatusIn([]ir.Status{ir.Succeeded, ir.Failed, ir.Aborted}, 25*time.Second)
 
-		require.Equal(t, core.Succeeded, status.Status)
+		require.Equal(t, ir.Succeeded, status.Status)
 		require.Len(t, status.Nodes, 1)
 
 		node := status.Nodes[0]
 		require.Equal(t, "process-items", node.Step.Name)
-		require.Equal(t, core.NodeSucceeded, node.Status)
+		require.Equal(t, ir.NodeSucceeded, node.Status)
 		require.Len(t, node.SubRuns, 3)
 
 		value, ok := node.OutputVariables.Load("RESULTS")
@@ -344,7 +379,7 @@ steps:
 			}
 			var started int
 			for _, node := range st.Nodes {
-				if node.Status == core.NodeRunning {
+				if node.Status == ir.NodeRunning {
 					started++
 				}
 			}
@@ -364,7 +399,7 @@ steps:
 
 		for _, node := range st.Nodes {
 			if node.Step.Name == "local-execution" || node.Step.Name == "distributed-execution" {
-				require.Equal(t, core.NodeAborted, node.Status,
+				require.Equal(t, ir.NodeAborted, node.Status,
 					"node %s should be canceled, got %v", node.Step.Name, node.Status)
 			}
 		}

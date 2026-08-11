@@ -15,11 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	fileeventstore "github.com/dagucloud/dagu/internal/persis/file/eventstore"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
-	"github.com/dagucloud/dagu/internal/testutil"
+	"github.com/dagucloud/dagu/v2/internal/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	fileeventstore "github.com/dagucloud/dagu/v2/internal/persis/file/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -58,11 +57,11 @@ func TestNotificationMonitor_BootstrapsFromCurrentHeadAndOnlyDeliversFutureEvent
 	require.NoError(t, err)
 	service := eventstore.New(store)
 
-	oldStatus := &exec.DAGRunStatus{
+	oldStatus := &ir.DAGRunStatus{
 		Name:       "briefing",
 		DAGRunID:   "run-old",
 		AttemptID:  "attempt-old",
-		Status:     core.Failed,
+		Status:     ir.Failed,
 		Error:      "old failure",
 		FinishedAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
 	}
@@ -75,7 +74,7 @@ func TestNotificationMonitor_BootstrapsFromCurrentHeadAndOnlyDeliversFutureEvent
 
 	var (
 		mu        sync.Mutex
-		delivered []string
+		delivered []NotificationEvent
 	)
 	transport := &fakeNotificationTransport{
 		destinations: []string{"dest-1"},
@@ -84,7 +83,7 @@ func TestNotificationMonitor_BootstrapsFromCurrentHeadAndOnlyDeliversFutureEvent
 			defer mu.Unlock()
 			for _, event := range batch.Events {
 				if event.Status != nil {
-					delivered = append(delivered, event.Status.DAGRunID)
+					delivered = append(delivered, cloneNotificationEvent(event))
 				}
 			}
 			return true
@@ -102,26 +101,34 @@ func TestNotificationMonitor_BootstrapsFromCurrentHeadAndOnlyDeliversFutureEvent
 		return monitor.ownsNotificationLock() && monitor.notificationSessionActive() && bootstrapped
 	}, notificationMonitorEventuallyTimeout(time.Second), 10*time.Millisecond)
 
-	newStatus := &exec.DAGRunStatus{
+	newStatus := &ir.DAGRunStatus{
 		Name:       "briefing",
 		DAGRunID:   "run-new",
 		AttemptID:  "attempt-new",
-		Status:     core.Failed,
+		Status:     ir.Failed,
 		Error:      "new failure",
+		Labels:     []string{"workspace=ops", "team=platform"},
 		FinishedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	require.NoError(t, service.Emit(context.Background(), eventstore.NewDAGRunEvent(
 		eventstore.Source{Service: eventstore.SourceServiceServer, Instance: "test"},
 		eventstore.TypeDAGRunFailed,
 		newStatus,
-		nil,
+		map[string]any{eventstore.DAGFileNameDataKey: "briefing-file"},
 	)))
 
 	require.Eventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return len(delivered) == 1 && delivered[0] == "run-new"
+		return len(delivered) == 1
 	}, notificationMonitorEventuallyTimeout(time.Second), 10*time.Millisecond)
+	mu.Lock()
+	deliveredEvent := cloneNotificationEvent(delivered[0])
+	mu.Unlock()
+	require.NotNil(t, deliveredEvent.Status)
+	assert.Equal(t, "run-new", deliveredEvent.Status.DAGRunID)
+	assert.Equal(t, "briefing-file", deliveredEvent.DAGFile)
+	assert.Equal(t, []string{"workspace=ops", "team=platform"}, deliveredEvent.Status.Labels)
 
 	require.Eventually(t, func() bool {
 		return !monitor.IsDelivered("dest-1", oldStatus) && monitor.IsDelivered("dest-1", newStatus)
@@ -135,9 +142,10 @@ func TestNotificationMonitor_RestartRequeuesPersistedPending(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := newTestNotificationMonitorConfig()
 
-	status := &exec.DAGRunStatus{
+	status := &ir.DAGRunStatus{
 		Name:      "briefing",
-		Status:    core.Failed,
+		Labels:    []string{"workspace=ops"},
+		Status:    ir.Failed,
 		DAGRunID:  "run-1",
 		AttemptID: "attempt-1",
 		Error:     "boom",
@@ -149,6 +157,7 @@ func TestNotificationMonitor_RestartRequeuesPersistedPending(t *testing.T) {
 			NotificationSeenKey(status): {
 				Key:        NotificationSeenKey(status),
 				Status:     cloneNotificationStatus(status),
+				DAGFile:    "briefing-file",
 				ObservedAt: time.Now().UTC(),
 			},
 		},
@@ -168,6 +177,8 @@ func TestNotificationMonitor_RestartRequeuesPersistedPending(t *testing.T) {
 			assert.Equal(t, "dest-1", destination)
 			require.Len(t, batch.Events, 1)
 			assert.Equal(t, "run-1", batch.Events[0].Status.DAGRunID)
+			assert.Equal(t, "briefing-file", batch.Events[0].DAGFile)
+			assert.Equal(t, []string{"workspace=ops"}, batch.Events[0].Status.Labels)
 			calls++
 			return true
 		},
@@ -264,11 +275,11 @@ func TestNotificationMonitor_StateLockAllowsSingleWriterAndTakeover(t *testing.T
 		}
 	}, notificationMonitorEventuallyTimeout(time.Second), 10*time.Millisecond)
 
-	firstStatus := &exec.DAGRunStatus{
+	firstStatus := &ir.DAGRunStatus{
 		Name:       "briefing",
 		DAGRunID:   "run-first",
 		AttemptID:  "attempt-first",
-		Status:     core.Failed,
+		Status:     ir.Failed,
 		Error:      "first failure",
 		FinishedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -296,7 +307,7 @@ func TestNotificationMonitor_StateLockAllowsSingleWriterAndTakeover(t *testing.T
 			return false
 		}
 		return true
-	}, time.Second, 10*time.Millisecond)
+	}, notificationMonitorEventuallyTimeout(time.Second), 10*time.Millisecond)
 
 	switch firstOwner {
 	case "monitor-1":
@@ -321,11 +332,11 @@ func TestNotificationMonitor_StateLockAllowsSingleWriterAndTakeover(t *testing.T
 		t.Fatalf("first owner not determined: %q", firstOwner)
 	}
 
-	secondStatus := &exec.DAGRunStatus{
+	secondStatus := &ir.DAGRunStatus{
 		Name:       "briefing",
 		DAGRunID:   "run-second",
 		AttemptID:  "attempt-second",
-		Status:     core.Failed,
+		Status:     ir.Failed,
 		Error:      "second failure",
 		FinishedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -361,11 +372,11 @@ func TestNotificationMonitor_CorruptStateIsQuarantinedAndOnlyFutureEventsAreDeli
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 	require.NoError(t, os.WriteFile(stateFile, []byte("{not-json"), 0o600))
 
-	oldStatus := &exec.DAGRunStatus{
+	oldStatus := &ir.DAGRunStatus{
 		Name:       "briefing",
 		DAGRunID:   "run-old",
 		AttemptID:  "attempt-old",
-		Status:     core.Failed,
+		Status:     ir.Failed,
 		Error:      "old failure",
 		FinishedAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
 	}
@@ -404,18 +415,18 @@ func TestNotificationMonitor_CorruptStateIsQuarantinedAndOnlyFutureEventsAreDeli
 			return false
 		}
 		return len(matches) == 1
-	}, time.Second, 10*time.Millisecond)
+	}, notificationMonitorEventuallyTimeout(time.Second), 10*time.Millisecond)
 	require.Eventually(t, func() bool {
 		monitor.stateMu.Lock()
 		defer monitor.stateMu.Unlock()
 		return monitor.state.Bootstrapped
-	}, time.Second, 10*time.Millisecond)
+	}, notificationMonitorEventuallyTimeout(time.Second), 10*time.Millisecond)
 
-	newStatus := &exec.DAGRunStatus{
+	newStatus := &ir.DAGRunStatus{
 		Name:       "briefing",
 		DAGRunID:   "run-new",
 		AttemptID:  "attempt-new",
-		Status:     core.Failed,
+		Status:     ir.Failed,
 		Error:      "new failure",
 		FinishedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -430,12 +441,12 @@ func TestNotificationMonitor_CorruptStateIsQuarantinedAndOnlyFutureEventsAreDeli
 		mu.Lock()
 		defer mu.Unlock()
 		return len(delivered) == 1 && delivered[0] == "run-new"
-	}, time.Second, 10*time.Millisecond)
+	}, notificationMonitorEventuallyTimeout(time.Second), 10*time.Millisecond)
 
 	assert.False(t, monitor.IsDelivered("dest-1", oldStatus))
 	require.Eventually(t, func() bool {
 		return monitor.IsDelivered("dest-1", newStatus)
-	}, time.Second, 10*time.Millisecond)
+	}, notificationMonitorEventuallyTimeout(time.Second), 10*time.Millisecond)
 }
 
 func TestNotificationStateStore_LoadUnsupportedVersionQuarantinesState(t *testing.T) {
@@ -495,18 +506,18 @@ func TestNotificationMonitor_SaveFailureDoesNotLoseUnreadEvents(t *testing.T) {
 		monitor.stateMu.Lock()
 		defer monitor.stateMu.Unlock()
 		return monitor.state.Bootstrapped
-	}, time.Second, 10*time.Millisecond)
+	}, notificationMonitorEventuallyTimeout(time.Second), 10*time.Millisecond)
 
 	require.NoError(t, os.Chmod(stateDir, 0o500))
 	defer func() {
 		_ = os.Chmod(stateDir, 0o700)
 	}()
 
-	status := &exec.DAGRunStatus{
+	status := &ir.DAGRunStatus{
 		Name:       "briefing",
 		DAGRunID:   "run-save-retry",
 		AttemptID:  "attempt-save-retry",
-		Status:     core.Failed,
+		Status:     ir.Failed,
 		Error:      "retry failure",
 		FinishedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -529,7 +540,7 @@ func TestNotificationMonitor_SaveFailureDoesNotLoseUnreadEvents(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(delivered) == 1 && delivered[0] == "run-save-retry"
-	}, time.Second, 10*time.Millisecond)
+	}, notificationMonitorEventuallyTimeout(time.Second), 10*time.Millisecond)
 
 	require.Never(t, func() bool {
 		mu.Lock()
@@ -562,11 +573,11 @@ func TestNotificationMonitor_NotifyCompletionSaveFailureDoesNotMutateLiveState(t
 		_ = os.Chmod(stateDir, 0o700)
 	}()
 
-	status := &exec.DAGRunStatus{
+	status := &ir.DAGRunStatus{
 		Name:      "briefing",
 		DAGRunID:  "run-save-fail",
 		AttemptID: "attempt-save-fail",
-		Status:    core.Failed,
+		Status:    ir.Failed,
 		Error:     "boom",
 	}
 	require.False(t, monitor.NotifyCompletion(status))
@@ -595,11 +606,11 @@ func TestNotificationMonitor_MarkBatchDeliveredSaveFailureDoesNotMutateLiveState
 	monitor.lock = nil
 	monitor.lockDir = ""
 
-	status := &exec.DAGRunStatus{
+	status := &ir.DAGRunStatus{
 		Name:      "briefing",
 		DAGRunID:  "run-ack-save-fail",
 		AttemptID: "attempt-ack-save-fail",
-		Status:    core.Succeeded,
+		Status:    ir.Succeeded,
 	}
 	event := NotificationEvent{
 		Key:        NotificationSeenKey(status),
@@ -635,9 +646,9 @@ func TestNotificationMonitor_RemovedDestinationsArePurgedOnStartup(t *testing.T)
 	t.Parallel()
 
 	stateFile := filepath.Join(t.TempDir(), "state.json")
-	status := &exec.DAGRunStatus{
+	status := &ir.DAGRunStatus{
 		Name:      "briefing",
-		Status:    core.Failed,
+		Status:    ir.Failed,
 		DAGRunID:  "run-removed",
 		AttemptID: "attempt-removed",
 		Error:     "boom",
@@ -682,7 +693,7 @@ func TestNotificationMonitor_RemovedDestinationsArePurgedOnStartup(t *testing.T)
 		_, removedExists := monitor.state.Destinations["removed-dest"]
 		_, keepExists := monitor.state.Destinations["keep-dest"]
 		return !removedExists && keepExists
-	}, time.Second, 10*time.Millisecond)
+	}, notificationMonitorEventuallyTimeout(time.Second), 10*time.Millisecond)
 
 	result := newNotificationStateStore(stateFile).Load(context.Background())
 	require.NoError(t, result.Warning)
@@ -746,11 +757,11 @@ func TestNotificationMonitor_LockTheftSelfFencesActiveOwner(t *testing.T) {
 		return !monitor.ownsNotificationLock() && !monitor.notificationSessionActive()
 	}, notificationMonitorEventuallyTimeout(2*time.Second), 10*time.Millisecond)
 
-	status := &exec.DAGRunStatus{
+	status := &ir.DAGRunStatus{
 		Name:       "briefing",
 		DAGRunID:   "run-stolen-lock",
 		AttemptID:  "attempt-stolen-lock",
-		Status:     core.Failed,
+		Status:     ir.Failed,
 		Error:      "lock failure",
 		FinishedAt: time.Now().UTC().Format(time.RFC3339),
 	}

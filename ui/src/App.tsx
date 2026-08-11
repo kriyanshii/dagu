@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import React from 'react';
-import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom';
+import {
+  BrowserRouter,
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from 'react-router-dom';
 import { SWRConfig, mutate as globalMutate } from 'swr';
 
 import { Shield } from 'lucide-react';
@@ -17,6 +24,7 @@ import {
   Config,
   ConfigContext,
   ConfigUpdateContext,
+  useUpdateConfig,
 } from './contexts/ConfigContext';
 import { useHasFeature, useLicense } from './hooks/useLicense';
 import { SchemaProvider } from './contexts/SchemaContext';
@@ -28,7 +36,7 @@ import {
 import Layout from './layouts/Layout';
 import fetchJson from './lib/fetchJson';
 import { fetchWithTimeout, shouldRetryQueryError } from './lib/requestTimeout';
-import { useClient } from './hooks/api';
+import { useClient, useQuery } from './hooks/api';
 import { addAuthSessionListener, getAuthToken } from './lib/authSession';
 import {
   getStoredWorkspaceSelection,
@@ -53,6 +61,7 @@ const DAGRuns = React.lazy(() => import('./pages/dag-runs'));
 const DAGRunDetails = React.lazy(() => import('./pages/dag-runs/dag-run'));
 const DAGs = React.lazy(() => import('./pages/dags'));
 const DAGDetails = React.lazy(() => import('./pages/dags/dag'));
+const WikiPage = React.lazy(() => import('./pages/wiki'));
 const EventLogsPage = React.lazy(() => import('./pages/event-logs'));
 const GitSyncPage = React.lazy(() => import('./pages/git-sync'));
 const HomePage = React.lazy(() => import('./pages/home'));
@@ -93,6 +102,14 @@ const WORKSPACE_SENSITIVE_TARGET_PATH_PREFIXES = [
   '/dags/{fileName}',
   '/dag-runs/{name}/{dagRunId}',
 ] as const;
+
+function LegacyWikiRouteRedirect() {
+  const location = useLocation();
+  const suffix = location.pathname.replace(/^\/docs/, '');
+  return (
+    <Navigate to={`/wiki${suffix}${location.search}${location.hash}`} replace />
+  );
+}
 
 function isWorkspaceSensitiveTargetPath(path: unknown): boolean {
   return (
@@ -276,6 +293,35 @@ function LazyRoutes({
       </React.Suspense>
     </LazyRouteErrorBoundary>
   );
+}
+
+function LicenseStatusSync({
+  enabled,
+  remoteNode,
+}: {
+  enabled: boolean;
+  remoteNode: string;
+}): null {
+  const updateConfig = useUpdateConfig();
+  const { data } = useQuery(
+    '/license/status',
+    enabled ? { params: { query: { remoteNode } } } : null,
+    {
+      keepPreviousData: true,
+      refreshInterval: 60_000,
+      revalidateOnFocus: true,
+      revalidateOnReconnect: true,
+      shouldRetryOnError: false,
+    }
+  );
+
+  React.useEffect(() => {
+    if (data) {
+      updateConfig({ license: data });
+    }
+  }, [data, updateConfig]);
+
+  return null;
 }
 
 function AppInner({ config: initialConfig }: Props): React.ReactElement {
@@ -534,6 +580,11 @@ function AppInner({ config: initialConfig }: Props): React.ReactElement {
     document.documentElement.style.backgroundColor = 'var(--background)';
   }, [theme]);
 
+  React.useEffect(() => {
+    const base = config.title || 'Dagu';
+    document.title = title ? `${title} - ${base}` : base;
+  }, [title, config.title]);
+
   return (
     <SWRConfig
       value={{
@@ -562,6 +613,10 @@ function AppInner({ config: initialConfig }: Props): React.ReactElement {
       >
         <ConfigContext.Provider value={config}>
           <ConfigUpdateContext.Provider value={updateConfig}>
+            <LicenseStatusSync
+              enabled={canFetchAuthenticatedResources}
+              remoteNode={selectedRemoteNode}
+            />
             <AuthProvider>
               <SearchStateProvider>
                 <SchemaProvider>
@@ -670,6 +725,14 @@ function AppInner({ config: initialConfig }: Props): React.ReactElement {
                                       <Route
                                         path="/search/"
                                         element={<Search />}
+                                      />
+                                      <Route
+                                        path="/wiki/*"
+                                        element={<WikiPage />}
+                                      />
+                                      <Route
+                                        path="/docs/*"
+                                        element={<LegacyWikiRouteRedirect />}
                                       />
                                       <Route
                                         path="/queues"

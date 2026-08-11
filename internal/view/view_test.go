@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/dagucloud/dagu/internal/view"
+	"github.com/dagucloud/dagu/v2/internal/view"
 )
 
 func validView() *view.View {
@@ -26,6 +26,46 @@ func validView() *view.View {
 
 func TestView_Validate_OK(t *testing.T) {
 	require.NoError(t, validView().Validate())
+}
+
+func TestView_ValidateWorkflow(t *testing.T) {
+	v := &view.View{
+		Name:           "Production workflows",
+		Type:           view.TypeWorkflow,
+		WorkspaceScope: view.WorkspaceScopeWorkspace,
+		Workspace:      "production",
+		SortField:      view.WorkflowSortNextRun,
+		SortOrder:      view.SortOrderDescending,
+		Pinned:         true,
+	}
+	v.Normalize()
+
+	require.NoError(t, v.Validate())
+	assert.Equal(t, view.MinIntervalDays, v.IntervalDays)
+	assert.Nil(t, v.Columns)
+	assert.True(t, v.Pinned)
+}
+
+func TestView_ValidateWorkflowRejectsInvalidFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*view.View)
+		want   error
+	}{
+		{"all scope with workspace", func(v *view.View) { v.Workspace = "production" }, view.ErrInvalidWorkspaceScope},
+		{"workspace scope without workspace", func(v *view.View) { v.WorkspaceScope = view.WorkspaceScopeWorkspace }, view.ErrInvalidWorkspaceScope},
+		{"unknown sort field", func(v *view.View) { v.SortField = "created" }, view.ErrInvalidSortField},
+		{"unknown sort order", func(v *view.View) { v.SortOrder = "descending" }, view.ErrInvalidSortOrder},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := &view.View{Name: "workflow", Type: view.TypeWorkflow}
+			v.Normalize()
+			tt.mutate(v)
+			assert.ErrorIs(t, v.Validate(), tt.want)
+		})
+	}
 }
 
 func TestView_Validate_Errors(t *testing.T) {
@@ -92,6 +132,25 @@ func TestView_StorageRoundTrip(t *testing.T) {
 
 	got := original.ToStorage().ToView()
 	assert.Equal(t, original, got)
+}
+
+func TestView_WorkflowStorageRoundTrip(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	original := &view.View{
+		ID:             "workflow-id",
+		Name:           "Production workflows",
+		Type:           view.TypeWorkflow,
+		WorkspaceScope: view.WorkspaceScopeDefault,
+		SortField:      view.WorkflowSortName,
+		SortOrder:      view.SortOrderAscending,
+		ActiveOnly:     true,
+		Default:        true,
+		Pinned:         true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	assert.Equal(t, original, original.ToStorage().ToView())
 }
 
 func TestView_StoredViewWithoutColumnsUsesDefaultLayout(t *testing.T) {

@@ -12,9 +12,10 @@ import (
 
 const instructions = `Dagu exposes a compact MCP surface for DAG workflow operations.
 
-Use dagu_read for current state and trusted reference resources.
-Use dagu_change with mode=preview before mode=apply when editing DAG YAML.
+Use dagu_read for current state, Wiki pages, and trusted reference resources.
+Use dagu_change with mode=preview before mode=apply when editing DAG YAML or Wiki pages.
 Use dagu_execute for start, enqueue, retry, and stop. retry and stop are actions inside dagu_execute.
+MCP Apps hosts can render run-related dagu_read and dagu_execute results in Dagu's interactive run inspector.
 After starting or enqueueing a run, read the returned dagu://runs/... resource or subscribe to it to receive a resource update notification when the run reaches a terminal state.`
 
 type referenceResource struct {
@@ -51,7 +52,12 @@ Authoring rules:
 - Use shell $NAME only when the target shell or process should read the variable at execution time.
 - Single-line run values are shell commands. Array-form run entries run one by one. Multi-line run values are scripts.
 - Dagu does not split shell syntax such as pipes, redirects, &&, or ; into separate Dagu commands.
-- Declared step outputs use a step-level outputs field and write records to DAGU_OUTPUT_FILE. Later steps read them as ${steps.step_id.outputs.name}.
+- Declared value outputs use a step-level outputs field and write records to DAGU_OUTPUT_FILE. Later steps read them as ${steps.step_id.outputs.name}.
+- type: build is for local workflows that transform stable regular-file inputs into reusable file outputs.
+- A build path step declares named inputs entries with path and at most one outputs entry with path. Only host command or shell steps without containers may declare build paths. Matching canonical producer-output and consumer-input paths infer dependencies, and each output path must have one producer.
+- Inside the owning step, ${inputs.name} is the final input path and ${outputs.name} is a fresh per-attempt staging path. Write the result to ${outputs.name}; after commit or reuse, dependent steps read the final path as ${steps.step_id.outputs.name}. stdout, stderr, and artifact stream destinations must not target declared build paths.
+- Potentially reusable producers expose downstream data through ${steps.step_id.outputs.name}; attempt-only stdout, stderr, exit-code, output, and outputs references are invalid because reuse does not recreate them. Path-output steps cannot use continue_on.mark_success.
+- Build workflows are local-only. Distributed execution requests are rejected because materialization fencing is not shared across workers.
 - human.task defines a processless root-DAG operator step with an explicit id, required with.prompt, and optional flat scalar with.form JSON Schema. Omit form for acknowledgement-only tasks.
 - Human task form properties that are required or have defaults become ${steps.step_id.outputs.name} values after completion. Do not declare outputs on a human.task step; additionalProperties defaults to false.
 - Human tasks cannot run in sub-DAGs, lifecycle handlers, or foreach.steps, and they do not support reject or rewind. Root DAGs containing human tasks may run locally or on distributed workers selected by DAG-level worker_selector. The MCP tool surface does not expose human-task completion; completion uses the local dagu human-task complete command.
@@ -74,17 +80,32 @@ Authoring rules:
 
 The server intentionally exposes three tools.
 
-- dagu_read: read DAGs, DAG specs, DAG-runs, logs, list views, and reference resources.
-- dagu_change: preview or apply a DAG YAML upsert.
+- dagu_read: read DAGs, DAG specs, Wiki pages, DAG-runs, logs, list views, and reference resources.
+- dagu_change: preview or apply DAG YAML and workspace-aware Wiki changes.
 - dagu_execute: start, enqueue, retry, or stop a DAG-run.
 
 Detailed tool references:
 
 - dagu://reference/read-tool: dagu_read inputs, targets, URI mode, query parameters, outputs, and errors.
-- dagu://reference/change-tool: dagu_change preview and apply contract for DAG YAML upsert.
+- dagu://reference/change-tool: dagu_change preview and apply contract for DAG YAML and Wiki changes.
 - dagu://reference/execute-tool: dagu_execute start, enqueue, retry, and stop contract.
+- dagu://reference/apps: interactive run inspector behavior for MCP Apps hosts.
 
 Use dagu_execute action=retry with name and dagRunId for retry. Use action=stop with name and dagRunId for stop. Use action=start or action=enqueue with targetType=dag for a stored DAG, or targetType=inline_spec with spec for an ad hoc run.`,
+		},
+		{
+			topic:       "apps",
+			uri:         "dagu://reference/apps",
+			name:        "dagu_mcp_apps_reference",
+			title:       "Dagu MCP Apps",
+			description: "Interactive run inspector behavior for MCP Apps hosts.",
+			text: `# Dagu MCP Apps
+
+Dagu supports the io.modelcontextprotocol/ui extension with text/html;profile=mcp-app resources.
+
+Hosts that support MCP Apps can render run-related dagu_read and dagu_execute results in an interactive run inspector. The inspector can display recent runs, run status, step status, scheduler logs, and individual step logs. Refresh, stop, and retry actions use the existing Dagu MCP resources and tools, so authentication, authorization, and audit attribution are unchanged.
+
+The app is a progressive enhancement. Clients without MCP Apps support continue to receive the same text content, structuredContent, and resource links from dagu_read and dagu_execute.`,
 		},
 		{
 			topic:       "read-tool",
@@ -99,14 +120,21 @@ Purpose: read Dagu state and built-in reference content. The tool is read-only.
 Addressing:
 
 - Target mode uses target plus target-specific fields.
-- URI mode uses uri and forbids target, name, dagRunId, and query.
+- URI mode uses uri and forbids all target-mode fields.
 
 Fields:
 
-- target: required in target mode. Values are references, reference, dags, dag, dag_spec, runs, run, and run_logs.
-- name: DAG name or reference topic name. Required for dag, dag_spec, run, and run_logs. Optional for reference; defaults to authoring. Forbidden for references, dags, and runs.
-- dagRunId: required for run and run_logs. Forbidden for other targets.
-- query: URL query string without a leading question mark. Allowed for dags, runs, and run_logs.
+- target: required in target mode. Values are references, reference, dags, dag, dag_spec, wiki, wiki_page, wiki_search, runs, run, run_logs, and step_log.
+- name: DAG name or reference topic name. Required for dag, dag_spec, run, run_logs, and step_log. Optional for reference; defaults to authoring. Forbidden for references, dags, and runs.
+- dagRunId: required for run, run_logs, and step_log. Forbidden for other targets.
+- stepName: required for step_log. Forbidden for other targets.
+- query: URL query string without a leading question mark. Allowed for dags, wiki, runs, and run_logs.
+- workspace: all, default, or a workspace name. Optional for wiki and wiki_search; omitted means all accessible workspaces. Required for wiki_page, where all is not allowed.
+- path: Wiki page path without .md. Required for wiki_page.
+- search: search text. Required for wiki_search.
+- prefix: Wiki page path prefix without .md. Optional for wiki and wiki_search.
+- cursor: opaque cursor returned by wiki_search. Optional for wiki_search only.
+- limit: maximum number of results from 1 to 50. Optional for wiki_search; defaults to 20.
 - uri: dagu:// resource URI for URI mode.
 
 Targets:
@@ -116,13 +144,19 @@ Targets:
 - dags lists DAGs.
 - dag reads DAG details.
 - dag_spec reads the current DAG YAML.
+- wiki lists the Wiki tree or a flat page list. In tree mode, page and perPage select direct children of the workspace or prefix, and each returned directory includes its descendants. In flat mode, they select individual pages.
+- wiki_page reads one Markdown Wiki page.
+- wiki_search searches accessible Wiki pages in stable path order. Continue with nextCursor while keeping search, workspace, and prefix unchanged.
+- docs, doc, and doc_search are deprecated aliases for the Wiki targets.
 - runs lists DAG-runs.
 - run reads one DAG-run.
 - run_logs reads scheduler and step log metadata.
+- step_log reads stdout and stderr for one DAG-run step.
 
 Query parameters:
 
-- dags: page, perPage, name, labels, sort, order.
+- dags: page, perPage, name, labels, active, sort, order.
+- wiki: page, perPage, flat, sort, order, prefix. perPage accepts 1 to 200.
 - runs: name, dagRunId, status, fromDate, toDate, limit, cursor, labels. status may repeat.
 - run_logs: tail.
 
@@ -131,6 +165,8 @@ Output:
 - Successful result text is Dagu read completed.
 - Structured output has target, data, references, and uri when the read has a canonical resource URI.
 - Reference URIs in references point to built-in guidance resources.
+- Wiki list and search entries include canonical dagu://wiki/{workspace}/{path} URIs. Nested page paths are encoded as one URI segment.
+- Wiki search output includes result snippets, modification times, hasMore, and nextCursor when another page is available.
 
 Errors:
 
@@ -148,31 +184,41 @@ Errors:
 			description: "Detailed dagu_change input, output, and error reference.",
 			text: `# dagu_change reference
 
-Purpose: validate or write a DAG YAML upsert.
+Purpose: validate or apply DAG definition and Markdown Wiki changes.
 
 Fields:
 
 - mode: preview or apply. Defaults to preview.
-- type: change type. The supported value is upsert_dag. Defaults to upsert_dag.
-- name: target DAG name. Required.
-- spec: DAG YAML document. Required.
+- type: upsert_dag, rename_dag, delete_dag, upsert_wiki_page, rename_wiki_page, or delete_wiki_page. Defaults to upsert_dag. The upsert_doc, rename_doc, and delete_doc aliases are deprecated.
+- name: DAG name. Required for DAG changes.
+- spec: complete DAG YAML. Required for upsert_dag.
+- newName: destination DAG name. Required for rename_dag.
+- workspace: default or a named workspace. Required for Wiki changes; all is not allowed.
+- path: Wiki page or directory path without .md. Required for Wiki changes.
+- content: full Markdown content. Required for upsert_wiki_page; empty content is allowed.
+- newPath: destination Wiki page or directory path. Required for rename_wiki_page.
 
 Mode behavior:
 
-- preview validates the spec and returns validation output without writing a DAG.
-- apply validates the spec and writes the DAG only when validation succeeds.
-- apply returns whether the DAG was created or updated.
+- preview validates the requested operation and reads the required current state without writing.
+- apply repeats validation and performs the requested operation through Dagu's API; Wiki operations remain workspace-aware.
+- rename_dag changes the stored DAG identifier without rewriting the YAML name or historical runs.
+- delete_dag removes the DAG definition using Dagu's existing deletion behavior.
+- upsert_wiki_page creates a missing page or updates an existing page.
+- rename_wiki_page and delete_wiki_page support pages and directories.
 
 Output:
 
-- Successful result text is Dagu change completed.
-- Structured output has mode, type, dagName, valid, errors, applied, references, and DAG data when validation succeeds.
-- dagUri is present when the DAG spec resource can be identified.
+- Successful result text describes the previewed or applied change.
+- DAG output has dagName, valid, applied, and dagUri while the target exists. Upsert output also has errors; rename output has newDagName and newDagUri, and omits the stale source dagUri after apply.
+- Wiki output has workspace, path, valid, applied, and wikiPageUri when the target is a page. docUri remains as a compatibility alias.
 
 Errors:
 
-- invalid_tool_input for missing fields, unknown mode, unknown type, malformed input, or validation failure shape that cannot be represented.
+- invalid_tool_input for missing or incompatible fields, invalid paths, unknown mode, unknown type, or malformed input.
 - unauthorized when the caller cannot perform the requested write.
+- resource_not_found when a rename or delete source does not exist.
+- conflict when a DAG rename destination exists or a Wiki path conflicts with another file or directory.
 - internal_error for unexpected failures.`,
 		},
 		{
@@ -195,6 +241,7 @@ Fields:
 - params: run parameters string for start and enqueue.
 - queue: queue name for enqueue.
 - singleton: singleton run flag for start and enqueue.
+- noReuse: when true for start or enqueue, execute eligible build steps instead of reusing prior materializations.
 - labels: labels for start and enqueue.
 - stepName: optional failed step name for retry.
 
@@ -271,6 +318,32 @@ func promptEditDAG(_ context.Context, req *mcpsdk.GetPromptRequest) (*mcpsdk.Get
 		change = "Apply the requested DAG edit."
 	}
 	return promptResult("Edit a Dagu DAG", "Read dagu://dags/"+pathEscape(name)+"/spec, make only this change: "+change+"\n\nValidate with dagu_change mode=preview. Apply only when the user wants the edit written."), nil
+}
+
+func promptCreateWikiPage(_ context.Context, req *mcpsdk.GetPromptRequest) (*mcpsdk.GetPromptResult, error) {
+	workspace := strings.TrimSpace(req.Params.Arguments["workspace"])
+	path := strings.TrimSpace(req.Params.Arguments["path"])
+	goal := strings.TrimSpace(req.Params.Arguments["goal"])
+	if goal == "" {
+		goal = "Create the Wiki page requested by the user."
+	}
+	return promptResult(
+		"Create a Dagu Wiki page",
+		"Draft Markdown for this goal: "+goal+"\n\nCall dagu_change with mode=preview, type=upsert_wiki_page, workspace="+workspace+", path="+path+", and content set to the complete drafted Markdown. Apply only when the user wants the page written.",
+	), nil
+}
+
+func promptEditWikiPage(_ context.Context, req *mcpsdk.GetPromptRequest) (*mcpsdk.GetPromptResult, error) {
+	workspace := strings.TrimSpace(req.Params.Arguments["workspace"])
+	path := strings.TrimSpace(req.Params.Arguments["path"])
+	change := strings.TrimSpace(req.Params.Arguments["change"])
+	if change == "" {
+		change = "Apply the requested Wiki page edit."
+	}
+	return promptResult(
+		"Edit a Dagu Wiki page",
+		"Read "+wikiPageURI(workspace, path)+", preserve unrelated content, and make only this change: "+change+"\n\nCall dagu_change with mode=preview, type=upsert_wiki_page, workspace="+workspace+", path="+path+", and content set to the complete edited Markdown. Apply only when the user wants the edit written.",
+	), nil
 }
 
 func promptDebugRun(_ context.Context, req *mcpsdk.GetPromptRequest) (*mcpsdk.GetPromptResult, error) {

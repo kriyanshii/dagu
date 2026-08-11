@@ -11,8 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/ir"
 )
 
 // Complete validates and durably completes one human task, then queues the run when possible.
@@ -46,7 +45,7 @@ func (s *Service) Complete(ctx context.Context, request CompleteRequest) (Result
 		return s.queueCompletedTaskResume(ctx, target)
 	}
 
-	if target.status.Status != core.Waiting {
+	if target.status.Status != ir.Waiting {
 		return Result{}, errorf(
 			ErrorConflict,
 			"DAG-run %s is not waiting (status: %s)",
@@ -56,13 +55,13 @@ func (s *Service) Complete(ctx context.Context, request CompleteRequest) (Result
 	}
 
 	completedAt := s.Now().UTC().Format(time.RFC3339)
-	var concurrentlyCompleted *exec.DAGRunStatus
+	var concurrentlyCompleted *ir.DAGRunStatus
 	updated, swapped, err := s.DAGRunStore.CompareAndSwapLatestAttemptStatus(
 		ctx,
 		target.ref,
 		target.status.AttemptID,
-		core.Waiting,
-		func(latest *exec.DAGRunStatus) error {
+		ir.Waiting,
+		func(latest *ir.DAGRunStatus) error {
 			latestNode, err := findNodeByID(latest.Nodes, request.StepID)
 			if err != nil {
 				return err
@@ -74,7 +73,7 @@ func (s *Service) Complete(ctx context.Context, request CompleteRequest) (Result
 				concurrentlyCompleted = latest
 				return errCompletionAlreadyApplied
 			}
-			if latestNode.Status != core.NodeWaiting {
+			if latestNode.Status != ir.NodeWaiting {
 				return errorf(
 					ErrorConflict,
 					"human task step %q is not waiting (status: %s)",
@@ -92,7 +91,7 @@ func (s *Service) Complete(ctx context.Context, request CompleteRequest) (Result
 				latestNode.StepOutputsValue = &outputsValue
 			}
 			latestNode.FinishedAt = completedAt
-			latestNode.Status = core.NodeSucceeded
+			latestNode.Status = ir.NodeSucceeded
 			return nil
 		},
 	)
@@ -121,7 +120,7 @@ func (s *Service) queueCompletedTaskResume(ctx context.Context, target *target) 
 func (s *Service) resolveCompletionConflict(
 	ctx context.Context,
 	target *target,
-	updated *exec.DAGRunStatus,
+	updated *ir.DAGRunStatus,
 	canonical json.RawMessage,
 ) (Result, error) {
 	if updated != nil {

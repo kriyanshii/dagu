@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/tooltip';
 import {
   ActivitySquare,
+  AlertTriangle,
   Archive,
   ClipboardCheck,
   FileCode,
@@ -20,6 +21,7 @@ import {
   MousePointerClick,
   Package,
   ShieldCheck,
+  ScrollText,
 } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { useCookies } from 'react-cookie';
@@ -115,8 +117,10 @@ function DAGStatus({
   const [selectedStep, setSelectedStep] = useState<
     components['schemas']['Step'] | undefined
   >(undefined);
-  const [selectedDetailStep, setSelectedDetailStep] = useState<
-    components['schemas']['Step'] | undefined
+  // Stored by name and re-derived each render so the open drawer tracks live
+  // node updates arriving over SSE.
+  const [selectedDetailStepName, setSelectedDetailStepName] = useState<
+    string | undefined
   >(undefined);
   const [isStepDetailsOpen, setIsStepDetailsOpen] = useState(false);
 
@@ -272,10 +276,20 @@ function DAGStatus({
       if (!n) {
         return;
       }
-      setSelectedDetailStep(n.step);
+      setSelectedDetailStepName(n.step.name);
       setIsStepDetailsOpen(true);
     },
     [displayDAGRun]
+  );
+
+  const selectedDetailNode = React.useMemo(
+    () =>
+      selectedDetailStepName
+        ? displayDAGRun.nodes?.find(
+            (node) => node.step.name === selectedDetailStepName
+          )
+        : undefined,
+    [displayDAGRun, selectedDetailStepName]
   );
 
   // Child runs open as a stack rather than a navigation, so the run you started
@@ -456,6 +470,10 @@ function DAGStatus({
   // Controller DAG-runs track goal progress alongside their steps.
   const controllerTasks = displayDAGRun.controllerTasks ?? [];
   const hasControllerTasks = controllerTasks.length > 0;
+  const failedNode = displayDAGRun.nodes?.find(
+    (node) =>
+      node.status === NodeStatus.Failed || node.status === NodeStatus.Rejected
+  );
 
   // A controller has no dependency edges, so its graph carries no information.
   // The decision timeline takes that slot instead.
@@ -554,7 +572,7 @@ function DAGStatus({
                   className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
                 >
                   <ActivitySquare className="h-4 w-4" />
-                  <span className="hidden sm:inline">Status</span>
+                  <span>Status</span>
                 </Tab>
                 {hasHumanTaskWork && (
                   <Tab
@@ -564,7 +582,7 @@ function DAGStatus({
                     className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
                   >
                     <ClipboardCheck className="h-4 w-4" />
-                    <span className="hidden sm:inline">Human tasks</span>
+                    <span>Human tasks</span>
                     {waitingHumanTaskCount > 0 && (
                       <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">
                         {waitingHumanTaskCount}
@@ -580,7 +598,7 @@ function DAGStatus({
                     className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
                   >
                     <ShieldCheck className="h-4 w-4" />
-                    <span className="hidden sm:inline">Approval</span>
+                    <span>Approval</span>
                     <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-medium text-warning">
                       {waitingApprovalCount}
                     </span>
@@ -594,7 +612,7 @@ function DAGStatus({
                     className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
                   >
                     <GanttChart className="h-4 w-4" />
-                    <span className="hidden sm:inline">Timeline</span>
+                    <span>Timeline</span>
                   </Tab>
                 )}
                 <Tab
@@ -604,7 +622,7 @@ function DAGStatus({
                   className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
                 >
                   <Package className="h-4 w-4" />
-                  <span className="hidden sm:inline">Outputs</span>
+                  <span>Outputs</span>
                 </Tab>
                 {hasArtifacts && (
                   <Tab
@@ -614,7 +632,7 @@ function DAGStatus({
                     className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
                   >
                     <Archive className="h-4 w-4" />
-                    <span className="hidden sm:inline">Artifacts</span>
+                    <span>Artifacts</span>
                   </Tab>
                 )}
                 {hasControllerTasks && (
@@ -625,7 +643,7 @@ function DAGStatus({
                     className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
                   >
                     <ListChecks className="h-4 w-4" />
-                    <span className="hidden sm:inline">Tasks</span>
+                    <span>Tasks</span>
                   </Tab>
                 )}
                 {hasChatSteps && (
@@ -636,7 +654,7 @@ function DAGStatus({
                     className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
                   >
                     <MessageSquare className="h-4 w-4" />
-                    <span className="hidden sm:inline">Chat</span>
+                    <span>Chat</span>
                   </Tab>
                 )}
                 <Tab
@@ -646,7 +664,7 @@ function DAGStatus({
                   className="flex cursor-pointer items-center gap-2 px-3 sm:px-4"
                 >
                   <FileCode className="h-4 w-4" />
-                  <span className="hidden sm:inline">Spec</span>
+                  <span>Spec</span>
                 </Tab>
               </Tabs>
             </div>
@@ -666,6 +684,59 @@ function DAGStatus({
 
         {activeTab === 'status' && (
           <div className={cn('space-y-6', scrollPaneClassName)}>
+            {failedNode && (
+              <div
+                role="alert"
+                className="rounded-lg border border-destructive/40 bg-destructive/5 p-4"
+              >
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <div>
+                      <div className="font-medium text-destructive">
+                        {failedNode.status === NodeStatus.Rejected
+                          ? 'Rejected'
+                          : 'Failed'}{' '}
+                        at {failedNode.step.name}
+                      </div>
+                      <div className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words text-sm text-foreground">
+                        {failedNode.error ||
+                          failedNode.rejectionReason ||
+                          'The step failed without an error message.'}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+                        onClick={() =>
+                          handleViewLog(
+                            `${failedNode.step.name}_stderr`,
+                            displayDAGRun.dagRunId,
+                            failedNode
+                          )
+                        }
+                      >
+                        <ScrollText className="h-3.5 w-3.5" />
+                        View stderr
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+                        onClick={() =>
+                          onInspectStepOnGraph(
+                            toMermaidNodeId(failedNode.step.name)
+                          )
+                        }
+                      >
+                        Inspect step
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Controller runs show execution order instead of a graph */}
             {isControllerRun && controllerEvents.length > 0 && (
               <ControllerTimeline
@@ -704,6 +775,7 @@ function DAGStatus({
                     <div className="w-full min-w-0 max-w-full overflow-x-auto">
                       <Graph
                         steps={displayDAGRun.nodes}
+                        name={displayDAGRun.name}
                         type="status"
                         flowchart={flowchart}
                         onChangeFlowchart={onChangeFlowchart}
@@ -715,8 +787,6 @@ function DAGStatus({
                             ? onRightClickStepOnGraph
                             : undefined
                         }
-                        showIcons={displayDAGRun.status > Status.NotStarted}
-                        animate={displayDAGRun.status == Status.Running}
                         height={graphHeight}
                       />
                     </div>
@@ -730,50 +800,44 @@ function DAGStatus({
                 </div>
               )}
 
-            <DAGContext.Consumer>
-              {(props) => (
-                <>
-                  <div className="grid min-w-0 grid-cols-1 gap-6">
-                    {/* Status Overview */}
-                    <div className="bg-surface border border-border rounded-lg p-4">
-                      <DAGStatusOverview
-                        status={displayDAGRun}
-                        onViewLog={(dagRunId) => {
-                          setLogViewer({
-                            isOpen: true,
-                            logType: 'execution',
-                            stepName: '',
-                            dagRunId,
-                            stream: Stream.stdout,
-                          });
-                        }}
-                      />
-                    </div>
+            <div className="grid min-w-0 grid-cols-1 gap-6">
+              {/* Status Overview */}
+              <div className="bg-surface border border-border rounded-lg p-4">
+                <DAGStatusOverview
+                  status={displayDAGRun}
+                  onViewLog={(dagRunId) => {
+                    setLogViewer({
+                      isOpen: true,
+                      logType: 'execution',
+                      stepName: '',
+                      dagRunId,
+                      stream: Stream.stdout,
+                    });
+                  }}
+                />
+              </div>
 
-                    {/* Steps Table */}
-                    <NodeStatusTable
-                      nodes={displayDAGRun.nodes}
-                      status={displayDAGRun}
-                      {...props}
-                      onViewLog={handleViewLog}
-                      onNodeStatusUpdated={applyDisplayNodeStatus}
-                    />
-                  </div>
+              {/* Steps Table */}
+              <NodeStatusTable
+                nodes={displayDAGRun.nodes}
+                status={displayDAGRun}
+                fileName={fileName}
+                onViewLog={handleViewLog}
+                onNodeStatusUpdated={applyDisplayNodeStatus}
+              />
+            </div>
 
-                  {/* Lifecycle Hooks */}
-                  {handlers?.length ? (
-                    <NodeStatusTable
-                      nodes={handlers}
-                      status={displayDAGRun}
-                      {...props}
-                      onViewLog={handleViewLog}
-                      onNodeStatusUpdated={applyDisplayNodeStatus}
-                      hideActions
-                    />
-                  ) : null}
-                </>
-              )}
-            </DAGContext.Consumer>
+            {/* Lifecycle Hooks */}
+            {handlers?.length ? (
+              <NodeStatusTable
+                nodes={handlers}
+                status={displayDAGRun}
+                fileName={fileName}
+                onViewLog={handleViewLog}
+                onNodeStatusUpdated={applyDisplayNodeStatus}
+                hideActions
+              />
+            ) : null}
           </div>
         )}
 
@@ -871,8 +935,19 @@ function DAGStatus({
         <StepDetailsDrawer
           dagName={displayDAGRun.name}
           isOpen={isStepDetailsOpen}
-          step={selectedDetailStep}
+          step={selectedDetailNode?.step}
+          node={selectedDetailNode}
           onClose={closeStepDetails}
+          onViewLog={(node, stream) =>
+            handleViewLog(
+              stream === 'stderr'
+                ? `${node.step.name}_stderr`
+                : node.step.name,
+              displayDAGRun.dagRunId,
+              node
+            )
+          }
+          onOpenSubRun={(node, subRunIndex) => openSubRunAt(node, subRunIndex)}
         />
 
         {/* Log viewer modal */}

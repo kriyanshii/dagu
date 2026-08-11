@@ -18,6 +18,8 @@ on:
       - "Makefile"
       - "proto/**"
       - "scripts/e2e/**"
+      - "scripts/installer.cmd"
+      - "scripts/installer.ps1"
       - "ui/**"
       - ".github/workflows/ci.yaml"
   pull_request:
@@ -38,6 +40,8 @@ on:
       - "Makefile"
       - "proto/**"
       - "scripts/e2e/**"
+      - "scripts/installer.cmd"
+      - "scripts/installer.ps1"
       - "ui/**"
       - ".github/workflows/ci.yaml"
   workflow_dispatch:
@@ -56,9 +60,10 @@ jobs:
     outputs:
       go: ${{ steps.filter.outputs.go }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      windows_installer: ${{ steps.filter.outputs.windows_installer }}
     steps:
       - name: Check out code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
 
@@ -69,6 +74,7 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             echo "go=true" >> "${GITHUB_OUTPUT}"
             echo "e2e=true" >> "${GITHUB_OUTPUT}"
+            echo "windows_installer=true" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
@@ -82,6 +88,7 @@ jobs:
           if [[ -z "${base_sha}" || "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
             echo "go=true" >> "${GITHUB_OUTPUT}"
             echo "e2e=true" >> "${GITHUB_OUTPUT}"
+            echo "windows_installer=true" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
@@ -89,6 +96,7 @@ jobs:
             echo "Base commit ${base_sha} is not available locally; running CI conservatively."
             echo "go=true" >> "${GITHUB_OUTPUT}"
             echo "e2e=true" >> "${GITHUB_OUTPUT}"
+            echo "windows_installer=true" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
@@ -97,6 +105,7 @@ jobs:
 
           go_changed=false
           e2e_changed=false
+          windows_installer_changed=false
           while IFS= read -r file; do
             case "${file}" in
               *.go|go.mod|go.sum|Makefile|.github/workflows/ci.yaml)
@@ -109,10 +118,17 @@ jobs:
                 e2e_changed=true
                 ;;
             esac
+
+            case "${file}" in
+              scripts/installer.cmd|scripts/installer.ps1|.github/workflows/ci.yaml)
+                windows_installer_changed=true
+                ;;
+            esac
           done <<< "${changed_files}"
 
           echo "go=${go_changed}" >> "${GITHUB_OUTPUT}"
           echo "e2e=${e2e_changed}" >> "${GITHUB_OUTPUT}"
+          echo "windows_installer=${windows_installer_changed}" >> "${GITHUB_OUTPUT}"
 
   # Lint Go code
   golint:
@@ -122,7 +138,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
@@ -180,7 +196,7 @@ jobs:
             codecov_name: ubuntu-intg
     steps:
       - name: Check out code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
@@ -253,7 +269,7 @@ jobs:
           make test-coverage TEST_TARGET="${{ steps.test-packages.outputs.packages }}"
 
       - name: Upload coverage
-        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: ./coverage.out
           flags: ${{ matrix.codecov_name }}
@@ -291,7 +307,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Check out code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
@@ -328,6 +344,103 @@ jobs:
           make test-e2e-build
           make test-e2e-run
 
+  test-windows-installer:
+    name: Test Windows installer
+    needs: changes
+    if: needs.changes.outputs.windows_installer == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Test PowerShell installer
+        shell: powershell
+        run: |
+          $installerPath = (Resolve-Path "scripts/installer.ps1").Path
+          $source = [IO.File]::ReadAllText(
+            $installerPath,
+            [Text.Encoding]::UTF8
+          )
+          $installerRepository = "${{ github.event.pull_request.head.repo.full_name }}"
+          $installerRef = "${{ github.event.pull_request.head.sha }}"
+          if (-not $installerRepository) {
+            $installerRepository = $env:GITHUB_REPOSITORY
+            $installerRef = $env:GITHUB_SHA
+          }
+          $installerUrl = "https://raw.githubusercontent.com/$installerRepository/$installerRef/scripts/installer.ps1"
+          $originalLocalAppData = $env:LOCALAPPDATA
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "dagu-expression-home"
+          $installDir = Join-Path $env:LOCALAPPDATA "Programs\dagu"
+          $daguExe = Join-Path $installDir "dagu.exe"
+
+          try {
+            if (-not [Console]::IsInputRedirected) {
+              throw "The test requires a non-interactive PowerShell host."
+            }
+            $script:Service = "caller-script-service"
+            $script:DaguHome = "caller-script-home"
+            & {
+              $Service = "caller-local-service"
+              irm $installerUrl | iex
+              if ($Service -ne "caller-local-service") {
+                throw "The installer changed the caller Service variable."
+              }
+            }
+            if ($script:Service -ne "caller-script-service") {
+              throw "The installer changed the caller script Service variable."
+            }
+            if ($script:DaguHome -ne "caller-script-home") {
+              throw "The installer changed the caller script DaguHome variable."
+            }
+
+            if (-not (Test-Path $daguExe)) {
+              throw "The expression-based installer did not install dagu.exe."
+            }
+            & $daguExe version
+            if ($LASTEXITCODE -ne 0) {
+              throw "The installed Dagu binary failed its version check."
+            }
+          }
+          finally {
+            & ([scriptblock]::Create($source)) -NoPrompt -Uninstall -InstallDir $installDir
+            $env:LOCALAPPDATA = $originalLocalAppData
+          }
+          if (Test-Path $daguExe) {
+            throw "The expression-based installer did not clean up dagu.exe."
+          }
+
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installerPath `
+            -NoPrompt -DryRun -Uninstall -Version latest
+          if ($LASTEXITCODE -eq 0) {
+            throw "The installer accepted install-only flags during uninstall."
+          }
+
+          & ([scriptblock]::Create($source)) `
+            -NoPrompt -DryRun -Service no -OpenBrowser no `
+            -InstallDir "$env:RUNNER_TEMP\dagu-user-install"
+
+          & ([scriptblock]::Create($source)) `
+            -NoPrompt -DryRun -Service yes -OpenBrowser no `
+            -InstallDir "$env:RUNNER_TEMP\dagu-service-install"
+
+          & ([scriptblock]::Create($source)) `
+            -NoPrompt -DryRun -Uninstall `
+            -InstallDir "$env:RUNNER_TEMP\dagu-uninstall"
+
+      - name: Test CMD installer
+        shell: cmd
+        env:
+          _DAGU_INSTALLER_PS1_PATH: ${{ github.workspace }}\scripts\installer.ps1
+        run: |
+          scripts\installer.cmd -NoPrompt -Service no -OpenBrowser no -InstallDir "%RUNNER_TEMP%\dagu-cmd-install"
+          if errorlevel 1 exit /b 1
+          "%RUNNER_TEMP%\dagu-cmd-install\dagu.exe" version
+          if errorlevel 1 exit /b 1
+          scripts\installer.cmd -NoPrompt -Uninstall -InstallDir "%RUNNER_TEMP%\dagu-cmd-install"
+          if errorlevel 1 exit /b 1
+          if exist "%RUNNER_TEMP%\dagu-cmd-install\dagu.exe" exit /b 1
+
   test-windows:
     name: Test on windows-latest (${{ matrix.suite_index }}/${{ matrix.suite_total }})
     needs: changes
@@ -346,7 +459,7 @@ jobs:
             suite_total: 2
     steps:
       - name: Check out code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0

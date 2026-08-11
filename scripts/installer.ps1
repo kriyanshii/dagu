@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 
+# Keep installer parameters and state isolated from the calling session.
+& {
 [CmdletBinding()]
 param(
     [string]$Version = "",
@@ -26,12 +28,44 @@ param(
     [switch]$VerboseMode
 )
 
+# Installer state requires a script-file scope.
+if ([string]::IsNullOrWhiteSpace($MyInvocation.MyCommand.Path)) {
+    $stagedInstaller = Join-Path ([IO.Path]::GetTempPath()) ("dagu-installer-" + [guid]::NewGuid().ToString("N") + ".ps1")
+    $forwardArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $stagedInstaller)
+    foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+        if ($entry.Value -is [System.Management.Automation.SwitchParameter]) {
+            if ($entry.Value.IsPresent) {
+                $forwardArgs += "-$($entry.Key)"
+            }
+            continue
+        }
+        foreach ($value in @($entry.Value)) {
+            $forwardArgs += @("-$($entry.Key)", [string]$value)
+        }
+    }
+
+    $exitCode = 0
+    try {
+        [IO.File]::WriteAllText($stagedInstaller, $MyInvocation.MyCommand.Definition, [Text.Encoding]::UTF8)
+        & powershell.exe @forwardArgs
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        Remove-Item -LiteralPath $stagedInstaller -Force -ErrorAction SilentlyContinue
+    }
+    if ($exitCode -ne 0) {
+        throw "The Dagu installer exited with code $exitCode."
+    }
+    return
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$Script:InstallerSource = $MyInvocation.MyCommand.Definition
+$Script:InstallerSource = [IO.File]::ReadAllText($MyInvocation.MyCommand.Path, [Text.Encoding]::UTF8)
+$Script:InstallerBoundParameterNames = @($PSBoundParameters.Keys)
 $Script:ReleaseBase = "https://github.com/dagucloud/dagu/releases"
 $Script:ReleaseApi = "https://api.github.com/repos/dagucloud/dagu/releases/latest"
 $Script:WinSWVersion = "v2.12.0"
@@ -61,7 +95,7 @@ function Write-Section {
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "· $Message" -ForegroundColor DarkGray
+    Write-Host "- $Message" -ForegroundColor DarkGray
 }
 
 function Write-WarnMessage {
@@ -71,12 +105,12 @@ function Write-WarnMessage {
 
 function Write-Success {
     param([string]$Message)
-    Write-Host "✓ $Message" -ForegroundColor Cyan
+    Write-Host "+ $Message" -ForegroundColor Cyan
 }
 
 function Write-ErrorMessage {
     param([string]$Message)
-    Write-Host "✗ $Message" -ForegroundColor Red
+    Write-Host "x $Message" -ForegroundColor Red
 }
 
 function Show-Banner {
@@ -85,7 +119,7 @@ function Show-Banner {
 }
 
 function Test-Interactive {
-    if ($NoPrompt) { return $false }
+    if ($NoPrompt -or [Console]::IsInputRedirected) { return $false }
     return ($Host.Name -ne "ServerRemoteHost")
 }
 
@@ -265,19 +299,19 @@ function Validate-UninstallArgs {
     if (-not $Uninstall) {
         return
     }
-    if ($PSBoundParameters.ContainsKey("Version")) {
+    if ($Script:InstallerBoundParameterNames -contains "Version") {
         throw "-Version is only supported during install."
     }
-    if ($PSBoundParameters.ContainsKey("HostAddress") -or $PSBoundParameters.ContainsKey("Port")) {
+    if (($Script:InstallerBoundParameterNames -contains "HostAddress") -or ($Script:InstallerBoundParameterNames -contains "Port")) {
         throw "-HostAddress and -Port are only supported during install."
     }
-    if ($PSBoundParameters.ContainsKey("AdminUsername") -or $PSBoundParameters.ContainsKey("AdminPassword")) {
+    if (($Script:InstallerBoundParameterNames -contains "AdminUsername") -or ($Script:InstallerBoundParameterNames -contains "AdminPassword")) {
         throw "Admin bootstrap flags are only supported during install."
     }
-    if ($PSBoundParameters.ContainsKey("OpenBrowser")) {
+    if ($Script:InstallerBoundParameterNames -contains "OpenBrowser") {
         throw "-OpenBrowser is only supported during install."
     }
-    if ($PSBoundParameters.ContainsKey("Service")) {
+    if ($Script:InstallerBoundParameterNames -contains "Service") {
         throw "-Service is only supported during install. Use -ServiceScope to narrow service uninstall discovery."
     }
     if ($ServiceScope -and $ServiceScope -ne "system") {
@@ -334,17 +368,17 @@ function Resolve-Defaults {
 }
 
 function Detect-SkillTargets {
-    $home = [Environment]::GetFolderPath("UserProfile")
+    $userHome = [Environment]::GetFolderPath("UserProfile")
     $count = 0
-    $agentsHome = if ($env:AGENTS_HOME) { $env:AGENTS_HOME } else { Join-Path $home ".agents" }
-    $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $home ".codex" }
-    if (Test-Path (Join-Path $home ".claude\.claude.json")) { $count++ }
+    $agentsHome = if ($env:AGENTS_HOME) { $env:AGENTS_HOME } else { Join-Path $userHome ".agents" }
+    $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $userHome ".codex" }
+    if (Test-Path (Join-Path $userHome ".claude\.claude.json")) { $count++ }
     if (Test-Path $agentsHome) { $count++ }
     elseif (Test-Path $codexHome) { $count++ }
-    if (Test-Path (Join-Path $home ".config\opencode")) { $count++ }
-    if (Test-Path (Join-Path $home ".gemini\GEMINI.md")) { $count++ }
-    $xdg = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { $home }
-    if ((Test-Path (Join-Path $xdg ".copilot\config.json")) -or (Test-Path (Join-Path $home ".copilot\config.json"))) { $count++ }
+    if (Test-Path (Join-Path $userHome ".config\opencode")) { $count++ }
+    if (Test-Path (Join-Path $userHome ".gemini\GEMINI.md")) { $count++ }
+    $xdg = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { $userHome }
+    if ((Test-Path (Join-Path $xdg ".copilot\config.json")) -or (Test-Path (Join-Path $userHome ".copilot\config.json"))) { $count++ }
     $Script:DetectedSkillTargets = $count
 }
 
@@ -377,17 +411,17 @@ function Get-XmlEnvValue {
 }
 
 function Discover-SkillRemovals {
-    $home = [Environment]::GetFolderPath("UserProfile")
-    $agentsHome = if ($env:AGENTS_HOME) { $env:AGENTS_HOME } else { Join-Path $home ".agents" }
-    $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $home ".codex" }
-    $xdg = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { $home }
-    $claudeSkill = Join-Path $home ".claude\skills\dagu"
+    $userHome = [Environment]::GetFolderPath("UserProfile")
+    $agentsHome = if ($env:AGENTS_HOME) { $env:AGENTS_HOME } else { Join-Path $userHome ".agents" }
+    $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $userHome ".codex" }
+    $xdg = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { $userHome }
+    $claudeSkill = Join-Path $userHome ".claude\skills\dagu"
     $agentsSkill = Join-Path $agentsHome "skills\dagu"
     $codexSkill = Join-Path $codexHome "skills\dagu"
-    $openCodeSkill = Join-Path $home ".config\opencode\skills\dagu"
-    $geminiSkill = Join-Path $home ".gemini\skills\dagu"
+    $openCodeSkill = Join-Path $userHome ".config\opencode\skills\dagu"
+    $geminiSkill = Join-Path $userHome ".gemini\skills\dagu"
     $xdgCopilot = Join-Path $xdg ".copilot\copilot-instructions.md"
-    $homeCopilot = Join-Path $home ".copilot\copilot-instructions.md"
+    $homeCopilot = Join-Path $userHome ".copilot\copilot-instructions.md"
     foreach ($dir in @($claudeSkill, $agentsSkill, $codexSkill, $openCodeSkill, $geminiSkill)) {
         if (Test-Path $dir) {
             Add-UniqueItem ([ref]$Script:UninstallSkillDirs) $dir
@@ -501,7 +535,7 @@ function Show-UninstallPlan {
     Write-Host ("Binary paths".PadRight(20) + $(if ($Script:UninstallInstallPaths.Count -gt 0) { Join-Values $Script:UninstallInstallPaths } else { "none" }))
     Write-Host ("Background service".PadRight(20) + $(if ($Script:UninstallServicePresent) { $Script:ServiceName } else { "none" }))
     $dataAction = if ($PurgeData) { "remove" } else { "keep" }
-    Write-Host ("Data directory".PadRight(20) + "$dataAction: $(if ($Script:UninstallDaguHomes.Count -gt 0) { Join-Values $Script:UninstallDaguHomes } else { 'none detected' })")
+    Write-Host ("Data directory".PadRight(20) + "${dataAction}: $(if ($Script:UninstallDaguHomes.Count -gt 0) { Join-Values $Script:UninstallDaguHomes } else { 'none detected' })")
     Write-Host ("PATH cleanup".PadRight(20) + $(if ($Script:UninstallPathScopes.Count -gt 0) { Join-Values $Script:UninstallPathScopes } else { "none detected" }))
     if ($RemoveSkill) {
         $skillTargets = @($Script:UninstallSkillDirs + $Script:UninstallCopilotFiles)
@@ -1220,3 +1254,4 @@ Verify-Bootstrap
 Install-AISkill
 Show-Summary
 Open-BrowserIfRequested
+} @args

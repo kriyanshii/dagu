@@ -22,27 +22,28 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/cmn/buildenv"
-	"github.com/dagucloud/dagu/internal/cmn/collections"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/cmn/stringutil"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/core/spec"
-	spectypes "github.com/dagucloud/dagu/internal/core/spec/types"
-	"github.com/dagucloud/dagu/internal/dagrun/intake"
-	"github.com/dagucloud/dagu/internal/dagwarning"
-	"github.com/dagucloud/dagu/internal/dispatch"
-	"github.com/dagucloud/dagu/internal/humantask"
-	"github.com/dagucloud/dagu/internal/launcher"
-	"github.com/dagucloud/dagu/internal/runtime"
-	"github.com/dagucloud/dagu/internal/runtime/executor"
-	"github.com/dagucloud/dagu/internal/service/audit"
-	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/audit"
+	"github.com/dagucloud/dagu/v2/internal/cmn/collections"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/dispatch"
+	"github.com/dagucloud/dagu/v2/internal/humantask"
+	"github.com/dagucloud/dagu/v2/internal/intake"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/launcher"
+	"github.com/dagucloud/dagu/v2/internal/queue"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/runtime/executor"
+	"github.com/dagucloud/dagu/v2/internal/runtimeenv"
+	runtimeenvtransport "github.com/dagucloud/dagu/v2/internal/runtimeenv/transport"
+	"github.com/dagucloud/dagu/v2/internal/spec"
+	spectypes "github.com/dagucloud/dagu/v2/internal/spec/types"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/parser"
 )
@@ -226,7 +227,7 @@ func (a *API) ExecuteDAGRunFromSpec(ctx context.Context, request api.ExecuteDAGR
 		return nil, err
 	}
 
-	if err := a.startDAGRun(ctx, dag, params, dagRunId, valueOf(request.Body.Name), labels, profileName); err != nil {
+	if err := a.startDAGRun(ctx, dag, params, dagRunId, valueOf(request.Body.Name), labels, profileName, valueOf(request.Body.NoReuse)); err != nil {
 		return nil, &Error{
 			HTTPStatus: http.StatusInternalServerError,
 			Code:       api.ErrorCodeInternalError,
@@ -306,7 +307,7 @@ func (a *API) EnqueueDAGRunFromSpec(ctx context.Context, request api.EnqueueDAGR
 		dag.Queue = *request.Body.Queue
 	}
 
-	if _, err := a.dagRunStore.FindAttempt(ctx, exec.DAGRunRef{Name: dag.Name, ID: dagRunId}); !errors.Is(err, exec.ErrDAGRunIDNotFound) {
+	if _, err := a.dagRunStore.FindAttempt(ctx, ir.DAGRunRef{Name: dag.Name, ID: dagRunId}); !errors.Is(err, dagrun.ErrDAGRunIDNotFound) {
 		return nil, &Error{
 			HTTPStatus: http.StatusConflict,
 			Code:       api.ErrorCodeAlreadyExists,
@@ -336,7 +337,7 @@ func (a *API) EnqueueDAGRunFromSpec(ctx context.Context, request api.EnqueueDAGR
 		}
 	}
 
-	if err := a.enqueueDAGRun(ctx, dag, params, dagRunId, valueOf(request.Body.Name), core.TriggerTypeManual, "", profileName); err != nil {
+	if err := a.enqueueDAGRun(ctx, dag, params, dagRunId, valueOf(request.Body.Name), ir.TriggerTypeManual, "", profileName, valueOf(request.Body.NoReuse)); err != nil {
 		return nil, fmt.Errorf("error enqueuing dag-run: %w", err)
 	}
 
@@ -357,7 +358,7 @@ func (a *API) EnqueueDAGRunFromSpec(ctx context.Context, request api.EnqueueDAGR
 
 // persistInlineEnqueueLabels patches the inline temp spec file so queued DAG runs
 // persist the effective label set without relying on the generic CLI sync path.
-func persistInlineEnqueueLabels(dag *core.DAG, labels string) error {
+func persistInlineEnqueueLabels(dag *ir.DAG, labels string) error {
 	if labels == "" || len(dag.YamlData) == 0 {
 		return nil
 	}
@@ -396,7 +397,7 @@ func applyInlineEnqueueLabels(data []byte, labels string) ([]byte, error) {
 
 	merged := append(existingLabels, strings.Split(labels, ",")...)
 	deleteInlineEnqueueMapValue(&firstDoc, "tags")
-	setInlineEnqueueMapValue(&firstDoc, "labels", core.NewLabels(merged).Strings())
+	setInlineEnqueueMapValue(&firstDoc, "labels", ir.NewLabels(merged).Strings())
 
 	patched, err := yaml.Marshal(firstDoc)
 	if err != nil {
@@ -494,10 +495,10 @@ func deleteInlineEnqueueMapValue(ms *yaml.MapSlice, key string) {
 	}
 }
 
-func (a *API) loadInlineDAG(ctx context.Context, specContent string, name *string, dagRunID string, extraLoadOpts ...spec.LoadOption) (*core.DAG, func(), error) {
+func (a *API) loadInlineDAG(ctx context.Context, specContent string, name *string, dagRunID string, extraLoadOpts ...spec.LoadOption) (*ir.DAG, func(), error) {
 	nameHint := "inline"
 	if name != nil && *name != "" {
-		if err := core.ValidateDAGName(*name); err != nil {
+		if err := ir.ValidateDAGName(*name); err != nil {
 			return nil, func() {}, &Error{
 				HTTPStatus: http.StatusBadRequest,
 				Code:       api.ErrorCodeBadRequest,
@@ -564,83 +565,27 @@ func (a *API) loadInlineDAG(ctx context.Context, specContent string, name *strin
 	return dag, cleanup, nil
 }
 
-func restoreDAGRunSnapshot(ctx context.Context, dag *core.DAG, status *exec.DAGRunStatus) (*core.DAG, string, error) {
+func restoreDAGRunSnapshot(ctx context.Context, dag *ir.DAG, status *ir.DAGRunStatus) (*ir.DAG, string, error) {
 	runtimeParams := append([]string(nil), status.ParamsList...)
 	dag.Params = runtimeParams
-	if err := dagwarning.LoadDotEnv(ctx, dag); err != nil {
+	resolvedEnv, err := runtimeenv.Resolve(ctx, dag)
+	dag.Env = resolvedEnv.Env
+	dag.RuntimeResolved = true
+	for _, warning := range resolvedEnv.Warnings {
+		logger.Warn(ctx, warning)
+	}
+	if err != nil {
 		return nil, "", err
 	}
 
 	quotedParams := spec.QuoteRuntimeParams(runtimeParams, dag.ParamDefs)
-	restored, err := rebuildDAGRunSnapshotFromYAML(ctx, dag, quotedParams)
+	restored, err := spec.RebuildFromYAML(ctx, dag, quotedParams)
 	if err != nil {
 		return nil, "", err
 	}
 
 	preservedParams := strings.Join(quotedParams, " ")
 	return restored, preservedParams, nil
-}
-
-func rebuildDAGRunSnapshotFromYAML(ctx context.Context, dag *core.DAG, paramsOverride ...[]string) (*core.DAG, error) {
-	if len(dag.YamlData) == 0 {
-		return dag, nil
-	}
-
-	buildEnvMap := buildenv.ToMap(dag.Env)
-	for key, value := range dag.PresolvedBuildEnv {
-		if buildEnvMap == nil {
-			buildEnvMap = make(map[string]string)
-		}
-		buildEnvMap[key] = value
-	}
-
-	presolvedBuildEnv, err := buildenv.Load()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load presolved build env: %w", err)
-	}
-	for key, value := range presolvedBuildEnv {
-		if buildEnvMap == nil {
-			buildEnvMap = make(map[string]string)
-		}
-		buildEnvMap[key] = value
-	}
-
-	params := dag.Params
-	if len(paramsOverride) > 0 {
-		params = paramsOverride[0]
-	}
-	loadOpts := []spec.LoadOption{
-		spec.WithParams(params),
-		spec.SkipSchemaValidation(),
-	}
-	if len(buildEnvMap) > 0 {
-		loadOpts = append(loadOpts, spec.WithBuildEnv(buildEnvMap))
-	}
-	if len(dag.BaseConfigData) > 0 {
-		loadOpts = append(loadOpts, spec.WithBaseConfigContent(dag.BaseConfigData))
-	}
-	if dag.Name != "" {
-		loadOpts = append(loadOpts, spec.WithName(dag.Name))
-	}
-
-	fresh, err := spec.LoadYAML(ctx, dag.YamlData, loadOpts...)
-	if err != nil {
-		return nil, err
-	}
-	fresh.SourceFile = dag.SourceFile
-
-	dag.Env = fresh.Env
-	dag.Params = fresh.Params
-	dag.ParamsJSON = fresh.ParamsJSON
-	dag.SMTP = fresh.SMTP
-	dag.SSH = fresh.SSH
-	dag.RegistryAuths = fresh.RegistryAuths
-	dag.Harness = fresh.Harness
-	dag.Harnesses = fresh.Harnesses
-
-	core.InitializeDefaults(dag)
-
-	return dag, nil
 }
 
 func (a *API) ListDAGRuns(ctx context.Context, request api.ListDAGRunsRequestObject) (api.ListDAGRunsResponseObject, error) {
@@ -662,7 +607,7 @@ func (a *API) ListDAGRuns(ctx context.Context, request api.ListDAGRunsRequestObj
 	if err != nil {
 		return nil, err
 	}
-	opts.query = append(opts.query, exec.WithWorkspaceFilter(workspaceFilter))
+	opts.query = append(opts.query, dagrun.WithWorkspaceFilter(workspaceFilter))
 	var dagName, dagRunID string
 	if request.Params.Name != nil {
 		dagName = *request.Params.Name
@@ -706,7 +651,7 @@ func (a *API) ListDAGRunsByName(ctx context.Context, request api.ListDAGRunsByNa
 	if err != nil {
 		return nil, err
 	}
-	opts.query = append(opts.query, exec.WithWorkspaceFilter(workspaceFilter))
+	opts.query = append(opts.query, dagrun.WithWorkspaceFilter(workspaceFilter))
 	var dagRunID string
 	if request.Params.DagRunId != nil {
 		dagRunID = *request.Params.DagRunId
@@ -734,7 +679,7 @@ func (a *API) ListDAGRunsByName(ctx context.Context, request api.ListDAGRunsByNa
 }
 
 type dagRunListOptions struct {
-	query []exec.ListDAGRunStatusesOption
+	query []dagrun.ListDAGRunStatusesOption
 }
 
 type dagRunListFilterInput struct {
@@ -759,55 +704,55 @@ func buildDAGRunListOptions(input dagRunListFilterInput) dagRunListOptions {
 	limit := defaultLimit
 
 	if statuses := toCoreStatuses(input.statuses); len(statuses) > 0 {
-		opts.query = append(opts.query, exec.WithStatuses(statuses))
+		opts.query = append(opts.query, dagrun.WithStatuses(statuses))
 	}
 	if input.fromDate != nil {
-		opts.query = append(opts.query, exec.WithFrom(exec.NewUTC(time.Unix(*input.fromDate, 0))))
+		opts.query = append(opts.query, dagrun.WithFrom(dagrun.NewUTC(time.Unix(*input.fromDate, 0))))
 	}
 	if input.toDate != nil {
-		opts.query = append(opts.query, exec.WithTo(exec.NewUTC(time.Unix(*input.toDate, 0))))
+		opts.query = append(opts.query, dagrun.WithTo(dagrun.NewUTC(time.Unix(*input.toDate, 0))))
 	}
 	if input.exactName != nil && *input.exactName != "" {
-		opts.query = append(opts.query, exec.WithExactName(*input.exactName))
+		opts.query = append(opts.query, dagrun.WithExactName(*input.exactName))
 	} else if input.name != nil && *input.name != "" {
-		opts.query = append(opts.query, exec.WithName(*input.name))
+		opts.query = append(opts.query, dagrun.WithName(*input.name))
 	}
 	if input.dagRunID != nil && *input.dagRunID != "" {
-		opts.query = append(opts.query, exec.WithDAGRunID(*input.dagRunID))
+		opts.query = append(opts.query, dagrun.WithDAGRunID(*input.dagRunID))
 	}
 	if labels := parseCommaSeparatedLabels(input.labels); len(labels) > 0 {
-		opts.query = append(opts.query, exec.WithLabels(labels))
+		opts.query = append(opts.query, dagrun.WithLabels(labels))
 	}
 	if input.limit != nil {
 		limit = clampInt(*input.limit, 1, maxLimit)
 	}
 	if input.cursor != nil && *input.cursor != "" {
-		opts.query = append(opts.query, exec.WithCursor(*input.cursor))
+		opts.query = append(opts.query, dagrun.WithCursor(*input.cursor))
 	}
-	opts.query = append(opts.query, exec.WithLimit(limit))
+	opts.query = append(opts.query, dagrun.WithLimit(limit))
 	return opts
 }
 
 func (a *API) readDAGRunsPage(
 	ctx context.Context,
 	info dagRunReadRequestInfo,
-	opts []exec.ListDAGRunStatusesOption,
-) (exec.DAGRunStatusPage, error) {
-	page, err := withDAGRunReadTimeout(ctx, info, func(readCtx context.Context) (exec.DAGRunStatusPage, error) {
+	opts []dagrun.ListDAGRunStatusesOption,
+) (dagrun.DAGRunStatusPage, error) {
+	page, err := withDAGRunReadTimeout(ctx, info, func(readCtx context.Context) (dagrun.DAGRunStatusPage, error) {
 		page, listErr := a.dagRunStore.ListStatusesPage(readCtx, opts...)
 		if listErr != nil {
-			return exec.DAGRunStatusPage{}, fmt.Errorf("error listing dag-runs: %w", listErr)
+			return dagrun.DAGRunStatusPage{}, fmt.Errorf("error listing dag-runs: %w", listErr)
 		}
 		return page, nil
 	})
 	if err != nil {
-		return exec.DAGRunStatusPage{}, err
+		return dagrun.DAGRunStatusPage{}, err
 	}
 	return page, nil
 }
 
 func dagRunListBadRequest(err error) *Error {
-	if !errors.Is(err, exec.ErrInvalidQueryCursor) {
+	if !errors.Is(err, dagrun.ErrInvalidQueryCursor) {
 		return nil
 	}
 	return &Error{
@@ -857,7 +802,7 @@ func queryLabelsParam(labelsParam, deprecatedTagsParam *string) (*string, error)
 }
 
 func (a *API) GetDAGRunLog(ctx context.Context, request api.GetDAGRunLogRequestObject) (api.GetDAGRunLogResponseObject, error) {
-	ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
 		return api.GetDAGRunLog404JSONResponse{
@@ -891,7 +836,7 @@ func (a *API) GetDAGRunLog(ctx context.Context, request api.GetDAGRunLogRequestO
 }
 
 func (a *API) DownloadDAGRunLog(ctx context.Context, request api.DownloadDAGRunLogRequestObject) (api.DownloadDAGRunLogResponseObject, error) {
-	ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
 		return api.DownloadDAGRunLog404JSONResponse{
@@ -1019,7 +964,7 @@ func (a *API) DownloadDAGRunArtifact(ctx context.Context, request api.DownloadDA
 }
 
 func (a *API) GetDAGRunOutputs(ctx context.Context, request api.GetDAGRunOutputsRequestObject) (api.GetDAGRunOutputsResponseObject, error) {
-	var attempt exec.DAGRunAttempt
+	var attempt dagrun.DAGRunAttempt
 	var err error
 
 	if request.DagRunId == "latest" {
@@ -1031,7 +976,7 @@ func (a *API) GetDAGRunOutputs(ctx context.Context, request api.GetDAGRunOutputs
 			}, nil
 		}
 	} else {
-		ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+		ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 		attempt, err = a.dagRunStore.FindAttempt(ctx, ref)
 		if err != nil {
 			return api.GetDAGRunOutputs404JSONResponse{
@@ -1050,17 +995,21 @@ func (a *API) GetDAGRunOutputs(ctx context.Context, request api.GetDAGRunOutputs
 
 	outputs, err := attempt.ReadOutputs(ctx)
 	if err != nil {
+		resolvedRunID := request.DagRunId
+		if status, statusErr := attempt.ReadStatus(ctx); statusErr == nil && status != nil && status.DAGRunID != "" {
+			resolvedRunID = status.DAGRunID
+		}
 		logger.Error(ctx, "Failed to read outputs",
 			tag.Error(err),
-			slog.String("dag", request.Name),
-			slog.String("dagRunId", request.DagRunId),
+			tag.DAG(request.Name),
+			tag.RunID(resolvedRunID),
 		)
 		return nil, fmt.Errorf("error reading outputs: %w", err)
 	}
 
 	if outputs == nil {
-		outputs = &exec.DAGRunOutputs{
-			Metadata: exec.OutputsMetadata{},
+		outputs = &ir.DAGRunOutputs{
+			Metadata: ir.OutputsMetadata{},
 			Outputs:  make(map[string]string),
 		}
 	}
@@ -1086,7 +1035,7 @@ func (a *API) GetDAGRunOutputs(ctx context.Context, request api.GetDAGRunOutputs
 }
 
 func (a *API) GetDAGRunStepLog(ctx context.Context, request api.GetDAGRunStepLogRequestObject) (api.GetDAGRunStepLogResponseObject, error) {
-	ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
 		return api.GetDAGRunStepLog404JSONResponse{
@@ -1130,7 +1079,7 @@ func (a *API) GetDAGRunStepLog(ctx context.Context, request api.GetDAGRunStepLog
 }
 
 func (a *API) DownloadDAGRunStepLog(ctx context.Context, request api.DownloadDAGRunStepLogRequestObject) (api.DownloadDAGRunStepLogResponseObject, error) {
-	ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
 		return api.DownloadDAGRunStepLog404JSONResponse{
@@ -1179,7 +1128,7 @@ func (a *API) UpdateDAGRunStepStatus(ctx context.Context, request api.UpdateDAGR
 	if err := a.isAllowed(config.PermissionRunDAGs); err != nil {
 		return nil, err
 	}
-	ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
 		return &api.UpdateDAGRunStepStatus404JSONResponse{
@@ -1190,7 +1139,7 @@ func (a *API) UpdateDAGRunStepStatus(ctx context.Context, request api.UpdateDAGR
 	if err := a.requireDAGRunStatusExecute(ctx, dagStatus); err != nil {
 		return nil, err
 	}
-	if dagStatus.Status == core.NotStarted || dagStatus.Status.IsActive() {
+	if dagStatus.Status == ir.NotStarted || dagStatus.Status.IsActive() {
 		return &api.UpdateDAGRunStepStatus400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("dag-run ID %s for DAG %s is still active", request.DagRunId, request.Name),
@@ -1212,7 +1161,7 @@ func (a *API) UpdateDAGRunStepStatus(ctx context.Context, request api.UpdateDAGR
 	}
 
 	newStatus := nodeStatusMapping[request.Body.Status]
-	_, swapped, err := a.compareAndSwapManualStatus(ctx, ref, dagStatus, func(latest *exec.DAGRunStatus) error {
+	_, swapped, err := a.compareAndSwapManualStatus(ctx, ref, dagStatus, func(latest *ir.DAGRunStatus) error {
 		latestStepIdx := findStepByName(latest.Nodes, request.StepName)
 		if latestStepIdx < 0 {
 			return fmt.Errorf("step %s not found in DAG %s", request.StepName, request.Name)
@@ -1255,7 +1204,7 @@ func (a *API) ApproveDAGRunStep(ctx context.Context, request api.ApproveDAGRunSt
 	if err := a.isAllowed(config.PermissionRunDAGs); err != nil {
 		return nil, err
 	}
-	ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
 		return &api.ApproveDAGRunStep404JSONResponse{
@@ -1277,7 +1226,7 @@ func (a *API) ApproveDAGRunStep(ctx context.Context, request api.ApproveDAGRunSt
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for dag-run to settle: %w", err)
 	}
-	if dagStatus.Status != core.Waiting {
+	if dagStatus.Status != ir.Waiting {
 		return &api.ApproveDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("dag-run is not waiting for approval (status: %s)", dagStatus.Status),
@@ -1292,7 +1241,7 @@ func (a *API) ApproveDAGRunStep(ctx context.Context, request api.ApproveDAGRunSt
 		}, nil
 	}
 
-	if dagStatus.Nodes[stepIdx].Status != core.NodeWaiting {
+	if dagStatus.Nodes[stepIdx].Status != ir.NodeWaiting {
 		return &api.ApproveDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("step %s is not waiting for approval (status: %s)", request.StepName, dagStatus.Nodes[stepIdx].Status),
@@ -1312,7 +1261,7 @@ func (a *API) ApproveDAGRunStep(ctx context.Context, request api.ApproveDAGRunSt
 		}, nil
 	}
 
-	updated, swapped, err := a.compareAndSwapManualStatus(ctx, ref, dagStatus, func(latest *exec.DAGRunStatus) error {
+	updated, swapped, err := a.compareAndSwapManualStatus(ctx, ref, dagStatus, func(latest *ir.DAGRunStatus) error {
 		latestStepIdx := findStepByName(latest.Nodes, request.StepName)
 		if latestStepIdx < 0 {
 			return fmt.Errorf("step %s not found in DAG %s", request.StepName, request.Name)
@@ -1321,7 +1270,7 @@ func (a *API) ApproveDAGRunStep(ctx context.Context, request api.ApproveDAGRunSt
 		if err := requireApprovalNode(latestNode, request.StepName); err != nil {
 			return err
 		}
-		if latestNode.Status != core.NodeWaiting {
+		if latestNode.Status != ir.NodeWaiting {
 			return fmt.Errorf("step %s is not waiting for approval (status: %s)", request.StepName, latestNode.Status)
 		}
 		if err := validateRequiredInputs(latestNode.Step, request.Body); err != nil {
@@ -1360,7 +1309,7 @@ func (a *API) ApproveDAGRunStep(ctx context.Context, request api.ApproveDAGRunSt
 			shouldResume = false
 		} else {
 			logger.Info(ctx, "DAG resumed after approval",
-				slog.String("dagRunId", request.DagRunId),
+				tag.RunID(request.DagRunId),
 				slog.String("step", request.StepName),
 			)
 		}
@@ -1379,7 +1328,7 @@ func (a *API) ApproveSubDAGRunStep(ctx context.Context, request api.ApproveSubDA
 	if err := a.isAllowed(config.PermissionRunDAGs); err != nil {
 		return nil, err
 	}
-	rootRef := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	rootRef := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	mutationRef, dagStatus, err := a.getReferencedDAGRunStatusWithRef(ctx, rootRef, request.SubDAGRunId, "")
 	if err != nil {
 		return &api.ApproveSubDAGRunStep404JSONResponse{
@@ -1401,7 +1350,7 @@ func (a *API) ApproveSubDAGRunStep(ctx context.Context, request api.ApproveSubDA
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for sub DAG-run to settle: %w", err)
 	}
-	if dagStatus.Status != core.Waiting {
+	if dagStatus.Status != ir.Waiting {
 		return &api.ApproveSubDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("sub DAG-run is not waiting for approval (status: %s)", dagStatus.Status),
@@ -1412,7 +1361,7 @@ func (a *API) ApproveSubDAGRunStep(ctx context.Context, request api.ApproveSubDA
 		if err != nil {
 			return nil, fmt.Errorf("error reading root dag-run status: %w", err)
 		}
-		if rootStatus.Status != core.Waiting {
+		if rootStatus.Status != ir.Waiting {
 			return &api.ApproveSubDAGRunStep400JSONResponse{
 				Code:    api.ErrorCodeBadRequest,
 				Message: fmt.Sprintf("root dag-run is not waiting for approval (status: %s)", rootStatus.Status),
@@ -1428,7 +1377,7 @@ func (a *API) ApproveSubDAGRunStep(ctx context.Context, request api.ApproveSubDA
 		}, nil
 	}
 
-	if dagStatus.Nodes[stepIdx].Status != core.NodeWaiting {
+	if dagStatus.Nodes[stepIdx].Status != ir.NodeWaiting {
 		return &api.ApproveSubDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("step %s is not waiting for approval (status: %s)", request.StepName, dagStatus.Nodes[stepIdx].Status),
@@ -1448,7 +1397,7 @@ func (a *API) ApproveSubDAGRunStep(ctx context.Context, request api.ApproveSubDA
 		}, nil
 	}
 
-	updated, swapped, err := a.compareAndSwapManualStatus(ctx, mutationRef, dagStatus, func(latest *exec.DAGRunStatus) error {
+	updated, swapped, err := a.compareAndSwapManualStatus(ctx, mutationRef, dagStatus, func(latest *ir.DAGRunStatus) error {
 		latestStepIdx := findStepByName(latest.Nodes, request.StepName)
 		if latestStepIdx < 0 {
 			return fmt.Errorf("step %s not found in sub DAG-run %s", request.StepName, request.SubDAGRunId)
@@ -1457,7 +1406,7 @@ func (a *API) ApproveSubDAGRunStep(ctx context.Context, request api.ApproveSubDA
 		if err := requireApprovalNode(latestNode, request.StepName); err != nil {
 			return err
 		}
-		if latestNode.Status != core.NodeWaiting {
+		if latestNode.Status != ir.NodeWaiting {
 			return fmt.Errorf("step %s is not waiting for approval (status: %s)", request.StepName, latestNode.Status)
 		}
 		if err := validateRequiredInputs(latestNode.Step, request.Body); err != nil {
@@ -1490,7 +1439,7 @@ func (a *API) ApproveSubDAGRunStep(ctx context.Context, request api.ApproveSubDA
 			shouldResume = false
 		} else {
 			logger.Info(ctx, "Sub DAG resumed after approval",
-				slog.String("subDagRunId", request.SubDAGRunId),
+				tag.SubRunID(request.SubDAGRunId),
 				slog.String("step", request.StepName),
 			)
 		}
@@ -1506,7 +1455,7 @@ func (a *API) ApproveSubDAGRunStep(ctx context.Context, request api.ApproveSubDA
 }
 
 func (a *API) GetDAGRunStepMessages(ctx context.Context, request api.GetDAGRunStepMessagesRequestObject) (api.GetDAGRunStepMessagesResponseObject, error) {
-	ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
 		return api.GetDAGRunStepMessages404JSONResponse{
@@ -1544,12 +1493,12 @@ func (a *API) GetDAGRunStepMessages(ctx context.Context, request api.GetDAGRunSt
 		ToolDefinitions: toToolDefinitions(node.ToolDefinitions),
 		StepStatus:      api.NodeStatus(node.Status),
 		StepStatusLabel: api.NodeStatusLabel(node.Status.String()),
-		HasMore:         node.Status == core.NodeRunning,
+		HasMore:         node.Status == ir.NodeRunning,
 	}, nil
 }
 
 func (a *API) GetSubDAGRunStepMessages(ctx context.Context, request api.GetSubDAGRunStepMessagesRequestObject) (api.GetSubDAGRunStepMessagesResponseObject, error) {
-	rootRef := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	rootRef := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.getReferencedDAGRunStatus(ctx, rootRef, request.SubDAGRunId, "")
 	if err != nil {
 		return api.GetSubDAGRunStepMessages404JSONResponse{
@@ -1587,7 +1536,7 @@ func (a *API) GetSubDAGRunStepMessages(ctx context.Context, request api.GetSubDA
 		ToolDefinitions: toToolDefinitions(node.ToolDefinitions),
 		StepStatus:      api.NodeStatus(node.Status),
 		StepStatusLabel: api.NodeStatusLabel(node.Status.String()),
-		HasMore:         node.Status == core.NodeRunning,
+		HasMore:         node.Status == ir.NodeRunning,
 	}, nil
 }
 
@@ -1596,7 +1545,7 @@ func (a *API) RejectDAGRunStep(ctx context.Context, request api.RejectDAGRunStep
 	if err := a.isAllowed(config.PermissionRunDAGs); err != nil {
 		return nil, err
 	}
-	ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
 		return &api.RejectDAGRunStep404JSONResponse{
@@ -1618,7 +1567,7 @@ func (a *API) RejectDAGRunStep(ctx context.Context, request api.RejectDAGRunStep
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for dag-run to settle: %w", err)
 	}
-	if dagStatus.Status != core.Waiting {
+	if dagStatus.Status != ir.Waiting {
 		return &api.RejectDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("dag-run is not waiting for approval (status: %s)", dagStatus.Status),
@@ -1633,7 +1582,7 @@ func (a *API) RejectDAGRunStep(ctx context.Context, request api.RejectDAGRunStep
 		}, nil
 	}
 
-	if dagStatus.Nodes[stepIdx].Status != core.NodeWaiting {
+	if dagStatus.Nodes[stepIdx].Status != ir.NodeWaiting {
 		return &api.RejectDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("step %s is not waiting for approval (status: %s)", request.StepName, dagStatus.Nodes[stepIdx].Status),
@@ -1650,7 +1599,7 @@ func (a *API) RejectDAGRunStep(ctx context.Context, request api.RejectDAGRunStep
 	if request.Body != nil {
 		reason = request.Body.Reason
 	}
-	_, swapped, err := a.compareAndSwapManualStatus(ctx, ref, dagStatus, func(latest *exec.DAGRunStatus) error {
+	_, swapped, err := a.compareAndSwapManualStatus(ctx, ref, dagStatus, func(latest *ir.DAGRunStatus) error {
 		latestStepIdx := findStepByName(latest.Nodes, request.StepName)
 		if latestStepIdx < 0 {
 			return fmt.Errorf("step %s not found in DAG %s", request.StepName, request.Name)
@@ -1659,7 +1608,7 @@ func (a *API) RejectDAGRunStep(ctx context.Context, request api.RejectDAGRunStep
 		if err := requireApprovalNode(latestNode, request.StepName); err != nil {
 			return err
 		}
-		if latestNode.Status != core.NodeWaiting {
+		if latestNode.Status != ir.NodeWaiting {
 			return fmt.Errorf("step %s is not waiting for approval (status: %s)", request.StepName, latestNode.Status)
 		}
 		applyRejection(ctx, latestNode, latest, reason)
@@ -1682,7 +1631,7 @@ func (a *API) RejectDAGRunStep(ctx context.Context, request api.RejectDAGRunStep
 	}
 
 	logger.Info(ctx, "Step rejected",
-		slog.String("dagRunId", request.DagRunId),
+		tag.RunID(request.DagRunId),
 		slog.String("step", request.StepName),
 	)
 
@@ -1699,7 +1648,7 @@ func (a *API) RejectSubDAGRunStep(ctx context.Context, request api.RejectSubDAGR
 	if err := a.isAllowed(config.PermissionRunDAGs); err != nil {
 		return nil, err
 	}
-	rootRef := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	rootRef := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	mutationRef, dagStatus, err := a.getReferencedDAGRunStatusWithRef(ctx, rootRef, request.SubDAGRunId, "")
 	if err != nil {
 		return &api.RejectSubDAGRunStep404JSONResponse{
@@ -1721,7 +1670,7 @@ func (a *API) RejectSubDAGRunStep(ctx context.Context, request api.RejectSubDAGR
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for sub DAG-run to settle: %w", err)
 	}
-	if dagStatus.Status != core.Waiting {
+	if dagStatus.Status != ir.Waiting {
 		return &api.RejectSubDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("sub DAG-run is not waiting for approval (status: %s)", dagStatus.Status),
@@ -1732,7 +1681,7 @@ func (a *API) RejectSubDAGRunStep(ctx context.Context, request api.RejectSubDAGR
 		if err != nil {
 			return nil, fmt.Errorf("error reading root dag-run status: %w", err)
 		}
-		if rootStatus.Status != core.Waiting {
+		if rootStatus.Status != ir.Waiting {
 			return &api.RejectSubDAGRunStep400JSONResponse{
 				Code:    api.ErrorCodeBadRequest,
 				Message: fmt.Sprintf("root dag-run is not waiting for approval (status: %s)", rootStatus.Status),
@@ -1748,7 +1697,7 @@ func (a *API) RejectSubDAGRunStep(ctx context.Context, request api.RejectSubDAGR
 		}, nil
 	}
 
-	if dagStatus.Nodes[stepIdx].Status != core.NodeWaiting {
+	if dagStatus.Nodes[stepIdx].Status != ir.NodeWaiting {
 		return &api.RejectSubDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("step %s is not waiting for approval (status: %s)", request.StepName, dagStatus.Nodes[stepIdx].Status),
@@ -1765,7 +1714,7 @@ func (a *API) RejectSubDAGRunStep(ctx context.Context, request api.RejectSubDAGR
 	if request.Body != nil {
 		reason = request.Body.Reason
 	}
-	_, swapped, err := a.compareAndSwapManualStatus(ctx, mutationRef, dagStatus, func(latest *exec.DAGRunStatus) error {
+	_, swapped, err := a.compareAndSwapManualStatus(ctx, mutationRef, dagStatus, func(latest *ir.DAGRunStatus) error {
 		latestStepIdx := findStepByName(latest.Nodes, request.StepName)
 		if latestStepIdx < 0 {
 			return fmt.Errorf("step %s not found in sub DAG-run %s", request.StepName, request.SubDAGRunId)
@@ -1774,7 +1723,7 @@ func (a *API) RejectSubDAGRunStep(ctx context.Context, request api.RejectSubDAGR
 		if err := requireApprovalNode(latestNode, request.StepName); err != nil {
 			return err
 		}
-		if latestNode.Status != core.NodeWaiting {
+		if latestNode.Status != ir.NodeWaiting {
 			return fmt.Errorf("step %s is not waiting for approval (status: %s)", request.StepName, latestNode.Status)
 		}
 		applyRejection(ctx, latestNode, latest, reason)
@@ -1797,7 +1746,7 @@ func (a *API) RejectSubDAGRunStep(ctx context.Context, request api.RejectSubDAGR
 	}
 
 	logger.Info(ctx, "Sub DAG step rejected",
-		slog.String("subDagRunId", request.SubDAGRunId),
+		tag.SubRunID(request.SubDAGRunId),
 		slog.String("step", request.StepName),
 	)
 
@@ -1814,7 +1763,7 @@ func (a *API) PushBackDAGRunStep(ctx context.Context, request api.PushBackDAGRun
 	if err := a.isAllowed(config.PermissionRunDAGs); err != nil {
 		return nil, err
 	}
-	ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
 		return &api.PushBackDAGRunStep404JSONResponse{
@@ -1836,7 +1785,7 @@ func (a *API) PushBackDAGRunStep(ctx context.Context, request api.PushBackDAGRun
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for dag-run to settle: %w", err)
 	}
-	if dagStatus.Status != core.Waiting {
+	if dagStatus.Status != ir.Waiting {
 		return &api.PushBackDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("dag-run is not waiting for approval (status: %s)", dagStatus.Status),
@@ -1853,7 +1802,7 @@ func (a *API) PushBackDAGRunStep(ctx context.Context, request api.PushBackDAGRun
 
 	node := dagStatus.Nodes[stepIdx]
 
-	if node.Status != core.NodeWaiting {
+	if node.Status != ir.NodeWaiting {
 		return &api.PushBackDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("step %s is not waiting for approval (status: %s)", request.StepName, node.Status),
@@ -1874,8 +1823,8 @@ func (a *API) PushBackDAGRunStep(ctx context.Context, request api.PushBackDAGRun
 		}, nil
 	}
 
-	var original *exec.DAGRunStatus
-	updated, swapped, err := a.compareAndSwapManualStatus(ctx, ref, dagStatus, func(latest *exec.DAGRunStatus) error {
+	var original *ir.DAGRunStatus
+	updated, swapped, err := a.compareAndSwapManualStatus(ctx, ref, dagStatus, func(latest *ir.DAGRunStatus) error {
 		latestStepIdx := findStepByName(latest.Nodes, request.StepName)
 		if latestStepIdx < 0 {
 			return fmt.Errorf("step %s not found in DAG %s", request.StepName, request.Name)
@@ -1884,7 +1833,7 @@ func (a *API) PushBackDAGRunStep(ctx context.Context, request api.PushBackDAGRun
 		if err := requireApprovalNode(latestNode, request.StepName); err != nil {
 			return err
 		}
-		if latestNode.Status != core.NodeWaiting {
+		if latestNode.Status != ir.NodeWaiting {
 			return fmt.Errorf("step %s is not waiting for approval (status: %s)", request.StepName, latestNode.Status)
 		}
 		if err := validatePushBackInputs(latestNode.Step, request.Body); err != nil {
@@ -1930,7 +1879,7 @@ func (a *API) PushBackDAGRunStep(ctx context.Context, request api.PushBackDAGRun
 	}
 
 	logger.Info(ctx, "DAG resumed after push-back",
-		slog.String("dagRunId", request.DagRunId),
+		tag.RunID(request.DagRunId),
 		slog.String("step", request.StepName),
 		slog.Int("iteration", approvalIteration),
 	)
@@ -1950,7 +1899,7 @@ func (a *API) PushBackSubDAGRunStep(ctx context.Context, request api.PushBackSub
 	if err := a.isAllowed(config.PermissionRunDAGs); err != nil {
 		return nil, err
 	}
-	rootRef := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	rootRef := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	mutationRef, dagStatus, err := a.getReferencedDAGRunStatusWithRef(ctx, rootRef, request.SubDAGRunId, "")
 	if err != nil {
 		return &api.PushBackSubDAGRunStep404JSONResponse{
@@ -1972,7 +1921,7 @@ func (a *API) PushBackSubDAGRunStep(ctx context.Context, request api.PushBackSub
 	if err != nil {
 		return nil, fmt.Errorf("error waiting for sub DAG-run to settle: %w", err)
 	}
-	if dagStatus.Status != core.Waiting {
+	if dagStatus.Status != ir.Waiting {
 		return &api.PushBackSubDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("sub DAG-run is not waiting for approval (status: %s)", dagStatus.Status),
@@ -1983,7 +1932,7 @@ func (a *API) PushBackSubDAGRunStep(ctx context.Context, request api.PushBackSub
 		if err != nil {
 			return nil, fmt.Errorf("error reading root dag-run status: %w", err)
 		}
-		if rootStatus.Status != core.Waiting {
+		if rootStatus.Status != ir.Waiting {
 			return &api.PushBackSubDAGRunStep400JSONResponse{
 				Code:    api.ErrorCodeBadRequest,
 				Message: fmt.Sprintf("root dag-run is not waiting for approval (status: %s)", rootStatus.Status),
@@ -2001,7 +1950,7 @@ func (a *API) PushBackSubDAGRunStep(ctx context.Context, request api.PushBackSub
 
 	node := dagStatus.Nodes[stepIdx]
 
-	if node.Status != core.NodeWaiting {
+	if node.Status != ir.NodeWaiting {
 		return &api.PushBackSubDAGRunStep400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("step %s is not waiting for approval (status: %s)", request.StepName, node.Status),
@@ -2022,8 +1971,8 @@ func (a *API) PushBackSubDAGRunStep(ctx context.Context, request api.PushBackSub
 		}, nil
 	}
 
-	var original *exec.DAGRunStatus
-	updated, swapped, err := a.compareAndSwapManualStatus(ctx, mutationRef, dagStatus, func(latest *exec.DAGRunStatus) error {
+	var original *ir.DAGRunStatus
+	updated, swapped, err := a.compareAndSwapManualStatus(ctx, mutationRef, dagStatus, func(latest *ir.DAGRunStatus) error {
 		latestStepIdx := findStepByName(latest.Nodes, request.StepName)
 		if latestStepIdx < 0 {
 			return fmt.Errorf("step %s not found in sub DAG-run %s", request.StepName, request.SubDAGRunId)
@@ -2032,7 +1981,7 @@ func (a *API) PushBackSubDAGRunStep(ctx context.Context, request api.PushBackSub
 		if err := requireApprovalNode(latestNode, request.StepName); err != nil {
 			return err
 		}
-		if latestNode.Status != core.NodeWaiting {
+		if latestNode.Status != ir.NodeWaiting {
 			return fmt.Errorf("step %s is not waiting for approval (status: %s)", request.StepName, latestNode.Status)
 		}
 		if err := validatePushBackInputs(latestNode.Step, request.Body); err != nil {
@@ -2078,7 +2027,7 @@ func (a *API) PushBackSubDAGRunStep(ctx context.Context, request api.PushBackSub
 	}
 
 	logger.Info(ctx, "Sub DAG resumed after push-back",
-		slog.String("subDagRunId", request.SubDAGRunId),
+		tag.SubRunID(request.SubDAGRunId),
 		slog.String("step", request.StepName),
 		slog.Int("iteration", approvalIteration),
 	)
@@ -2133,7 +2082,7 @@ func (a *API) DeleteDAGRun(ctx context.Context, request api.DeleteDAGRunRequestO
 		}, nil
 	}
 
-	ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	workspaceName, err := a.workspaceNameForDAGRun(ctx, ref)
 	if err != nil {
 		if isDAGRunLookupNotFound(err) {
@@ -2147,15 +2096,15 @@ func (a *API) DeleteDAGRun(ctx context.Context, request api.DeleteDAGRunRequestO
 	if err := a.requireDAGWriteForWorkspace(ctx, workspaceName); err != nil {
 		return nil, err
 	}
-	if err := a.dagRunStore.RemoveDAGRun(ctx, ref, exec.WithRejectActiveDAGRun()); err != nil {
-		if errors.Is(err, exec.ErrDAGRunIDNotFound) || errors.Is(err, exec.ErrNoStatusData) {
+	if err := a.dagRunStore.RemoveDAGRun(ctx, ref, dagrun.WithRejectActiveDAGRun()); err != nil {
+		if errors.Is(err, dagrun.ErrDAGRunIDNotFound) || errors.Is(err, dagrun.ErrNoStatusData) {
 			return api.DeleteDAGRun404JSONResponse{
 				Code:    api.ErrorCodeNotFound,
 				Message: fmt.Sprintf("DAG run %s not found", request.DagRunId),
 			}, nil
 		}
-		if errors.Is(err, exec.ErrDAGRunActive) {
-			status := strings.TrimPrefix(err.Error(), exec.ErrDAGRunActive.Error()+": ")
+		if errors.Is(err, dagrun.ErrDAGRunActive) {
+			status := strings.TrimPrefix(err.Error(), dagrun.ErrDAGRunActive.Error()+": ")
 			if status == err.Error() {
 				return api.DeleteDAGRun400JSONResponse{
 					Code:    api.ErrorCodeBadRequest,
@@ -2179,7 +2128,7 @@ func (a *API) DeleteDAGRun(ctx context.Context, request api.DeleteDAGRunRequestO
 }
 
 func isDAGRunLookupNotFound(err error) bool {
-	return errors.Is(err, exec.ErrDAGRunIDNotFound) || errors.Is(err, exec.ErrNoStatusData)
+	return errors.Is(err, dagrun.ErrDAGRunIDNotFound) || errors.Is(err, dagrun.ErrNoStatusData)
 }
 
 // getDAGRunDetailsData returns DAG run details data. Used by both HTTP handler and SSE fetcher.
@@ -2196,7 +2145,7 @@ func (a *API) getDAGRunDetailsData(ctx context.Context, dagName, dagRunId string
 func (a *API) loadRootDAGRunDetailsAttemptAndStatus(
 	ctx context.Context,
 	dagName, dagRunId string,
-) (exec.DAGRunAttempt, *exec.DAGRunStatus, error) {
+) (dagrun.DAGRunAttempt, *ir.DAGRunStatus, error) {
 	if dagRunId == "latest" {
 		attempt, err := a.dagRunStore.LatestAttempt(ctx, dagName)
 		if err != nil {
@@ -2214,7 +2163,7 @@ func (a *API) loadRootDAGRunDetailsAttemptAndStatus(
 			return nil, nil, err
 		}
 
-		ref := exec.NewDAGRunRef(dagName, status.DAGRunID)
+		ref := ir.NewDAGRunRef(dagName, status.DAGRunID)
 		dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error getting latest status: %w", err)
@@ -2226,7 +2175,7 @@ func (a *API) loadRootDAGRunDetailsAttemptAndStatus(
 		return attempt, a.repairStaleRunOnRead(ctx, dagStatus, attempt.ID()), nil
 	}
 
-	ref := exec.NewDAGRunRef(dagName, dagRunId)
+	ref := ir.NewDAGRunRef(dagName, dagRunId)
 	attempt, err := a.dagRunStore.FindAttempt(ctx, ref)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dag-run ID %s not found for DAG %s", dagRunId, dagName)
@@ -2245,9 +2194,9 @@ func (a *API) loadRootDAGRunDetailsAttemptAndStatus(
 
 func (a *API) repairStaleRunOnRead(
 	ctx context.Context,
-	status *exec.DAGRunStatus,
+	status *ir.DAGRunStatus,
 	fallbackAttemptID string,
-) *exec.DAGRunStatus {
+) *ir.DAGRunStatus {
 	if status == nil || a.dagRunLeaseStore == nil || a.workerHeartbeatStore == nil {
 		return status
 	}
@@ -2284,7 +2233,7 @@ func (a *API) repairStaleRunOnRead(
 
 func (a *API) workerIDFromClaim(
 	ctx context.Context,
-	status *exec.DAGRunStatus,
+	status *ir.DAGRunStatus,
 	fallbackAttemptID string,
 ) string {
 	if status == nil || status.WorkerID != "" || a.dagRunLeaseStore == nil {
@@ -2293,21 +2242,21 @@ func (a *API) workerIDFromClaim(
 
 	claimKey := status.EffectiveClaimKey()
 	if claimKey == "" {
-		claimKey = exec.AttemptKeyForStatus(status, fallbackAttemptID)
+		claimKey = dispatch.AttemptKeyForStatus(status, fallbackAttemptID)
 	}
 	if claimKey == "" {
 		return ""
 	}
 
 	lease, err := a.dagRunLeaseStore.Get(ctx, claimKey)
-	if err != nil || lease == nil || !exec.IsRemoteWorkerID(lease.WorkerID) {
+	if err != nil || lease == nil || !dispatch.IsRemoteWorkerID(lease.WorkerID) {
 		return ""
 	}
 
 	return lease.WorkerID
 }
 
-func (a *API) toDAGRunDetailsWithSpecSource(ctx context.Context, attempt exec.DAGRunAttempt, status exec.DAGRunStatus) api.DAGRunDetails {
+func (a *API) toDAGRunDetailsWithSpecSource(ctx context.Context, attempt dagrun.DAGRunAttempt, status ir.DAGRunStatus) api.DAGRunDetails {
 	details := ToDAGRunDetails(status)
 	specFromFile, sourceFileName := a.dagRunSourceInfo(ctx, attempt)
 	details.SpecFromFile = ptrOf(specFromFile)
@@ -2321,7 +2270,7 @@ func (a *API) toDAGRunDetailsWithSpecSource(ctx context.Context, attempt exec.DA
 // It reads from the DAG-run attempt's YamlData field to ensure we return
 // the exact spec used at execution time, not the current spec.
 func (a *API) GetDAGRunSpec(ctx context.Context, request api.GetDAGRunSpecRequestObject) (api.GetDAGRunSpecResponseObject, error) {
-	var attempt exec.DAGRunAttempt
+	var attempt dagrun.DAGRunAttempt
 	var err error
 	var notFoundMsg string
 
@@ -2329,7 +2278,7 @@ func (a *API) GetDAGRunSpec(ctx context.Context, request api.GetDAGRunSpecReques
 		attempt, err = a.dagRunStore.LatestAttempt(ctx, request.Name)
 		notFoundMsg = fmt.Sprintf("no dag-runs found for DAG %s", request.Name)
 	} else {
-		attempt, err = a.dagRunStore.FindAttempt(ctx, exec.NewDAGRunRef(request.Name, request.DagRunId))
+		attempt, err = a.dagRunStore.FindAttempt(ctx, ir.NewDAGRunRef(request.Name, request.DagRunId))
 		notFoundMsg = fmt.Sprintf("dag-run ID %s not found for DAG %s", request.DagRunId, request.Name)
 	}
 
@@ -2362,13 +2311,13 @@ func (a *API) GetDAGRunSpec(ctx context.Context, request api.GetDAGRunSpecReques
 
 // GetSubDAGRunDetails implements api.StrictServerInterface.
 func (a *API) GetSubDAGRunDetails(ctx context.Context, request api.GetSubDAGRunDetailsRequestObject) (api.GetSubDAGRunDetailsResponseObject, error) {
-	root := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	root := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := withDAGRunReadTimeout(ctx, dagRunReadRequestInfo{
 		endpoint:    "/dag-runs/{name}/{dagRunId}/sub/{subDAGRunId}",
 		dagName:     request.Name,
 		dagRunID:    request.DagRunId,
 		subDAGRunID: request.SubDAGRunId,
-	}, func(readCtx context.Context) (*exec.DAGRunStatus, error) {
+	}, func(readCtx context.Context) (*ir.DAGRunStatus, error) {
 		return a.getReferencedDAGRunStatus(readCtx, root, request.SubDAGRunId, "")
 	})
 	if err != nil {
@@ -2399,7 +2348,7 @@ func (a *API) GetSubDAGRunDetails(ctx context.Context, request api.GetSubDAGRunD
 
 // GetSubDAGRunSpec returns the YAML spec used for a specific sub-DAG run.
 func (a *API) GetSubDAGRunSpec(ctx context.Context, request api.GetSubDAGRunSpecRequestObject) (api.GetSubDAGRunSpecResponseObject, error) {
-	root := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	root := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	attempt, err := a.getReferencedDAGRunAttempt(ctx, root, request.SubDAGRunId, "")
 	if err != nil {
 		return &api.GetSubDAGRunSpec404JSONResponse{
@@ -2430,7 +2379,7 @@ func (a *API) GetSubDAGRunSpec(ctx context.Context, request api.GetSubDAGRunSpec
 
 // getSpecFromAttempt reads YAML spec from DAG run attempt.
 // Returns spec string and nil error on success, or empty string and error on failure.
-func (a *API) getSpecFromAttempt(ctx context.Context, attempt exec.DAGRunAttempt) (string, error) {
+func (a *API) getSpecFromAttempt(ctx context.Context, attempt dagrun.DAGRunAttempt) (string, error) {
 	dag, err := attempt.ReadDAG(ctx)
 	if err != nil || dag == nil || len(dag.YamlData) == 0 {
 		return "", fmt.Errorf("DAG spec not found")
@@ -2439,7 +2388,7 @@ func (a *API) getSpecFromAttempt(ctx context.Context, attempt exec.DAGRunAttempt
 }
 
 func (a *API) GetSubDAGRunLog(ctx context.Context, request api.GetSubDAGRunLogRequestObject) (api.GetSubDAGRunLogResponseObject, error) {
-	root := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	root := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.getReferencedDAGRunStatus(ctx, root, request.SubDAGRunId, "")
 	if err != nil {
 		return &api.GetSubDAGRunLog404JSONResponse{
@@ -2473,7 +2422,7 @@ func (a *API) GetSubDAGRunLog(ctx context.Context, request api.GetSubDAGRunLogRe
 }
 
 func (a *API) DownloadSubDAGRunLog(ctx context.Context, request api.DownloadSubDAGRunLogRequestObject) (api.DownloadSubDAGRunLogResponseObject, error) {
-	root := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	root := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.getReferencedDAGRunStatus(ctx, root, request.SubDAGRunId, "")
 	if err != nil {
 		return &api.DownloadSubDAGRunLog404JSONResponse{
@@ -2601,7 +2550,7 @@ func (a *API) DownloadSubDAGRunArtifact(ctx context.Context, request api.Downloa
 }
 
 func (a *API) GetSubDAGRunStepLog(ctx context.Context, request api.GetSubDAGRunStepLogRequestObject) (api.GetSubDAGRunStepLogResponseObject, error) {
-	root := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	root := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.getReferencedDAGRunStatus(ctx, root, request.SubDAGRunId, "")
 	if err != nil {
 		return &api.GetSubDAGRunStepLog404JSONResponse{
@@ -2645,7 +2594,7 @@ func (a *API) GetSubDAGRunStepLog(ctx context.Context, request api.GetSubDAGRunS
 }
 
 func (a *API) DownloadSubDAGRunStepLog(ctx context.Context, request api.DownloadSubDAGRunStepLogRequestObject) (api.DownloadSubDAGRunStepLogResponseObject, error) {
-	root := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	root := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	dagStatus, err := a.getReferencedDAGRunStatus(ctx, root, request.SubDAGRunId, "")
 	if err != nil {
 		return &api.DownloadSubDAGRunStepLog404JSONResponse{
@@ -2694,7 +2643,7 @@ func (a *API) UpdateSubDAGRunStepStatus(ctx context.Context, request api.UpdateS
 	if err := a.isAllowed(config.PermissionRunDAGs); err != nil {
 		return nil, err
 	}
-	root := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	root := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	mutationRef, dagStatus, err := a.getReferencedDAGRunStatusWithRef(ctx, root, request.SubDAGRunId, "")
 	if err != nil {
 		return &api.UpdateSubDAGRunStepStatus404JSONResponse{
@@ -2705,7 +2654,7 @@ func (a *API) UpdateSubDAGRunStepStatus(ctx context.Context, request api.UpdateS
 	if err := a.requireDAGRunStatusExecute(ctx, dagStatus); err != nil {
 		return nil, err
 	}
-	if dagStatus.Status == core.NotStarted || dagStatus.Status.IsActive() {
+	if dagStatus.Status == ir.NotStarted || dagStatus.Status.IsActive() {
 		return &api.UpdateSubDAGRunStepStatus400JSONResponse{
 			Code:    api.ErrorCodeBadRequest,
 			Message: fmt.Sprintf("dag-run ID %s for DAG %s is still active", request.SubDAGRunId, request.Name),
@@ -2716,7 +2665,7 @@ func (a *API) UpdateSubDAGRunStepStatus(ctx context.Context, request api.UpdateS
 		if err != nil {
 			return nil, fmt.Errorf("error reading root dag-run status: %w", err)
 		}
-		if rootStatus.Status == core.NotStarted || rootStatus.Status.IsActive() {
+		if rootStatus.Status == ir.NotStarted || rootStatus.Status.IsActive() {
 			return &api.UpdateSubDAGRunStepStatus400JSONResponse{
 				Code:    api.ErrorCodeBadRequest,
 				Message: fmt.Sprintf("root dag-run ID %s for DAG %s is still active", request.DagRunId, request.Name),
@@ -2739,7 +2688,7 @@ func (a *API) UpdateSubDAGRunStepStatus(ctx context.Context, request api.UpdateS
 	}
 
 	newStatus := nodeStatusMapping[request.Body.Status]
-	_, swapped, err := a.compareAndSwapManualStatus(ctx, mutationRef, dagStatus, func(latest *exec.DAGRunStatus) error {
+	_, swapped, err := a.compareAndSwapManualStatus(ctx, mutationRef, dagStatus, func(latest *ir.DAGRunStatus) error {
 		latestStepIdx := findStepByName(latest.Nodes, request.StepName)
 		if latestStepIdx < 0 {
 			return fmt.Errorf("step %s not found in sub DAG-run %s", request.StepName, request.SubDAGRunId)
@@ -2778,20 +2727,20 @@ func (a *API) UpdateSubDAGRunStepStatus(ctx context.Context, request api.UpdateS
 	return &api.UpdateSubDAGRunStepStatus200Response{}, nil
 }
 
-var nodeStatusMapping = map[api.NodeStatus]core.NodeStatus{
-	api.NodeStatusNotStarted:     core.NodeNotStarted,
-	api.NodeStatusRunning:        core.NodeRunning,
-	api.NodeStatusFailed:         core.NodeFailed,
-	api.NodeStatusAborted:        core.NodeAborted,
-	api.NodeStatusSuccess:        core.NodeSucceeded,
-	api.NodeStatusSkipped:        core.NodeSkipped,
-	api.NodeStatusPartialSuccess: core.NodePartiallySucceeded,
-	api.NodeStatusWaiting:        core.NodeWaiting,
-	api.NodeStatusRejected:       core.NodeRejected,
-	api.NodeStatusRetrying:       core.NodeRetrying,
+var nodeStatusMapping = map[api.NodeStatus]ir.NodeStatus{
+	api.NodeStatusNotStarted:     ir.NodeNotStarted,
+	api.NodeStatusRunning:        ir.NodeRunning,
+	api.NodeStatusFailed:         ir.NodeFailed,
+	api.NodeStatusAborted:        ir.NodeAborted,
+	api.NodeStatusSuccess:        ir.NodeSucceeded,
+	api.NodeStatusSkipped:        ir.NodeSkipped,
+	api.NodeStatusPartialSuccess: ir.NodePartiallySucceeded,
+	api.NodeStatusWaiting:        ir.NodeWaiting,
+	api.NodeStatusRejected:       ir.NodeRejected,
+	api.NodeStatusRetrying:       ir.NodeRetrying,
 }
 
-func deriveManualDAGRunStatus(nodes []*exec.Node, fallback core.Status) core.Status {
+func deriveManualDAGRunStatus(nodes []*ir.Node, fallback ir.Status) ir.Status {
 	if len(nodes) == 0 {
 		return fallback
 	}
@@ -2815,58 +2764,58 @@ func deriveManualDAGRunStatus(nodes []*exec.Node, fallback core.Status) core.Sta
 			continue
 		}
 		switch node.Status {
-		case core.NodeRunning:
+		case ir.NodeRunning:
 			hasRunning = true
-		case core.NodeRetrying:
+		case ir.NodeRetrying:
 			hasRetrying = true
-		case core.NodeWaiting:
+		case ir.NodeWaiting:
 			hasWaiting = true
-		case core.NodeRejected:
+		case ir.NodeRejected:
 			hasRejected = true
-		case core.NodeFailed:
+		case ir.NodeFailed:
 			hasFailed = true
 			if node.Step.ContinueOn.Failure {
 				hasContinuableFailure = true
 			} else {
 				hasUncontinuableFailure = true
 			}
-		case core.NodeAborted:
+		case ir.NodeAborted:
 			hasAborted = true
-		case core.NodePartiallySucceeded:
+		case ir.NodePartiallySucceeded:
 			hasPartial = true
 			hasSuccess = true
-		case core.NodeSucceeded, core.NodeSkipped:
+		case ir.NodeSucceeded, ir.NodeSkipped:
 			hasSuccess = true
-		case core.NodeNotStarted:
+		case ir.NodeNotStarted:
 			hasNotStarted = true
 		}
 	}
 
 	switch {
 	case hasRunning:
-		return core.Running
+		return ir.Running
 	case hasRetrying:
-		return core.Running
+		return ir.Running
 	case hasWaiting:
-		return core.Waiting
+		return ir.Waiting
 	case hasRejected:
-		return core.Rejected
+		return ir.Rejected
 	case hasFailed && hasUncontinuableFailure:
-		return core.Failed
+		return ir.Failed
 	case hasFailed && hasContinuableFailure && hasSuccess:
-		return core.PartiallySucceeded
+		return ir.PartiallySucceeded
 	case hasFailed:
-		return core.Failed
+		return ir.Failed
 	case hasAborted:
-		return core.Aborted
+		return ir.Aborted
 	case hasPartial:
-		return core.PartiallySucceeded
+		return ir.PartiallySucceeded
 	case hasNotStarted && !hasSuccess:
-		return core.NotStarted
+		return ir.NotStarted
 	case hasNotStarted:
-		return core.PartiallySucceeded
+		return ir.PartiallySucceeded
 	default:
-		return core.Succeeded
+		return ir.Succeeded
 	}
 }
 
@@ -2913,9 +2862,9 @@ type retryDAGRunResult struct {
 func (a *API) resolveAttemptForDAGRun(
 	ctx context.Context,
 	dagName, dagRunID string,
-) (exec.DAGRunAttempt, string, error) {
+) (dagrun.DAGRunAttempt, string, error) {
 	if dagRunID != "latest" {
-		attempt, err := a.dagRunStore.FindAttempt(ctx, exec.NewDAGRunRef(dagName, dagRunID))
+		attempt, err := a.dagRunStore.FindAttempt(ctx, ir.NewDAGRunRef(dagName, dagRunID))
 		if err != nil {
 			return nil, "", &Error{
 				HTTPStatus: http.StatusNotFound,
@@ -2987,7 +2936,7 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 	}
 	if prevStatus.Status.IsActive() {
 		message := fmt.Sprintf("DAG-run %s is active and cannot be retried", prevStatus.DAGRun())
-		if prevStatus.Status == core.Waiting {
+		if prevStatus.Status == ir.Waiting {
 			message = fmt.Sprintf("DAG-run %s is waiting and cannot be retried", prevStatus.DAGRun())
 		}
 		return retryDAGRunResult{}, &Error{
@@ -2998,14 +2947,14 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 	}
 
 	auditStepName := stepName
-	var retryPath exec.RetryPath
+	var retryPath dagrun.RetryPath
 	retryValidationStatus := prevStatus
 	if subDAGRunID != "" {
-		var targetStatus *exec.DAGRunStatus
-		retryPath, targetStatus, err = exec.ResolveRetryPath(
+		var targetStatus *ir.DAGRunStatus
+		retryPath, targetStatus, err = dagrun.ResolveRetryPath(
 			ctx,
 			a.dagRunStore,
-			exec.NewDAGRunRef(dagName, sourceDagRunID),
+			ir.NewDAGRunRef(dagName, sourceDagRunID),
 			subDAGRunID,
 			stepName,
 		)
@@ -3040,6 +2989,9 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 
 	// Check if this DAG should be dispatched to the coordinator for distributed execution
 	if dispatch.ShouldDispatchToCoordinator(dag, a.coordinatorCli != nil, a.defaultExecMode) {
+		if dag.Type == ir.TypeBuild {
+			return retryDAGRunResult{}, buildRequiresLocalAPIError()
+		}
 		// Create and dispatch retry task to coordinator
 		opts := []executor.TaskOption{
 			executor.WithWorkerSelector(dag.WorkerSelector),
@@ -3064,12 +3016,12 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 		task := executor.CreateTask(
 			dag.Name,
 			string(dag.YamlData),
-			exec.DispatchOperationRetry,
+			dispatch.DispatchOperationRetry,
 			retryDagRunID,
 			opts...,
 		)
 
-		if err := a.coordinatorCli.Dispatch(ctx, exec.DispatchRequest{Task: task}); err != nil {
+		if err := a.coordinatorCli.Dispatch(ctx, dispatch.DispatchRequest{Task: task}); err != nil {
 			return retryDAGRunResult{}, fmt.Errorf("error dispatching retry to coordinator: %w", err)
 		}
 
@@ -3104,30 +3056,30 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 
 func retryPathRequestError(err error) error {
 	switch {
-	case errors.Is(err, exec.ErrRetryStepNotFound), errors.Is(err, exec.ErrDAGRunIDNotFound):
+	case errors.Is(err, dagrun.ErrRetryStepNotFound), errors.Is(err, dagrun.ErrDAGRunIDNotFound):
 		return &Error{HTTPStatus: http.StatusNotFound, Code: api.ErrorCodeNotFound, Message: err.Error()}
-	case errors.Is(err, exec.ErrInvalidRetryPath), errors.Is(err, exec.ErrRepeatingStepTarget):
+	case errors.Is(err, dagrun.ErrInvalidRetryPath), errors.Is(err, dagrun.ErrRepeatingStepTarget):
 		return &Error{HTTPStatus: http.StatusConflict, Code: api.ErrorCodeConflict, Message: err.Error()}
 	default:
 		return fmt.Errorf("resolve retry target: %w", err)
 	}
 }
 
-// enqueueRetry enqueues the retry and persists Queued status via exec.EnqueueRetry.
+// enqueueRetry enqueues the retry and persists Queued status via queue.EnqueueRetry.
 // Retries respect global queue capacity because the queue processor picks them up
 // when capacity is available.
-func (a *API) enqueueRetry(ctx context.Context, attempt exec.DAGRunAttempt, dag *core.DAG) error {
+func (a *API) enqueueRetry(ctx context.Context, attempt dagrun.DAGRunAttempt, dag *ir.DAG) error {
 	status, err := attempt.ReadStatus(ctx)
 	if err != nil {
 		return fmt.Errorf("error reading status: %w", err)
 	}
 	eventCtx := a.withEventContext(ctx)
-	opts := exec.EnqueueRetryOptions{}
+	opts := queue.EnqueueRetryOptions{}
 	if actor := triggerActorFromContext(ctx); actor != "" {
 		opts.TriggerActor = &actor
 	}
-	if _, err := exec.EnqueueRetry(eventCtx, a.dagRunStore, a.queueStore, dag, status, opts); err != nil {
-		if errors.Is(err, exec.ErrRetryStaleLatest) {
+	if _, err := queue.EnqueueRetry(eventCtx, a.dagRunStore, a.queueStore, dag, status, opts); err != nil {
+		if errors.Is(err, queue.ErrRetryStaleLatest) {
 			return &Error{
 				HTTPStatus: http.StatusBadRequest,
 				Code:       api.ErrorCodeBadRequest,
@@ -3154,7 +3106,7 @@ func (a *API) logRetryAudit(ctx context.Context, dagName, dagRunID, stepName str
 // waitForRetryStarted polls briefly to confirm the retry subprocess has started.
 // This is best-effort: if the timeout elapses we still return 200 since the
 // subprocess was spawned successfully by launcher.Start.
-func (a *API) waitForRetryStarted(ctx context.Context, dag *core.DAG, dagRunID string) {
+func (a *API) waitForRetryStarted(ctx context.Context, dag *ir.DAG, dagRunID string) {
 	const (
 		timeout      = 3 * time.Second
 		pollInterval = 100 * time.Millisecond
@@ -3166,7 +3118,7 @@ func (a *API) waitForRetryStarted(ctx context.Context, dag *core.DAG, dagRunID s
 			return
 		default:
 			status, _ := a.dagRunMgr.GetCurrentStatus(ctx, dag, dagRunID)
-			if status != nil && (status.Status == core.Running || status.Status == core.Queued) {
+			if status != nil && (status.Status == ir.Running || status.Status == ir.Queued) {
 				return
 			}
 			time.Sleep(pollInterval)
@@ -3174,27 +3126,27 @@ func (a *API) waitForRetryStarted(ctx context.Context, dag *core.DAG, dagRunID s
 	}
 }
 
-func failedAutoRetryCancelError(status *exec.DAGRunStatus) *Error {
-	switch exec.FailedAutoRetryCancelEligibilityOf(status) {
-	case exec.FailedAutoRetryCancelEligible:
+func failedAutoRetryCancelError(status *ir.DAGRunStatus) *Error {
+	switch dagrun.FailedAutoRetryCancelEligibilityOf(status) {
+	case dagrun.FailedAutoRetryCancelEligible:
 		return &Error{
 			HTTPStatus: http.StatusBadRequest,
 			Code:       api.ErrorCodeBadRequest,
 			Message:    "failed DAG run cannot be canceled",
 		}
-	case exec.FailedAutoRetryCancelMissingStatus:
+	case dagrun.FailedAutoRetryCancelMissingStatus:
 		return &Error{
 			HTTPStatus: http.StatusBadRequest,
 			Code:       api.ErrorCodeBadRequest,
 			Message:    "failed DAG run cannot be canceled: missing status",
 		}
-	case exec.FailedAutoRetryCancelNotRoot:
+	case dagrun.FailedAutoRetryCancelNotRoot:
 		return &Error{
 			HTTPStatus: http.StatusBadRequest,
 			Code:       api.ErrorCodeBadRequest,
 			Message:    "only root DAG runs with pending auto-retries can be canceled after failure",
 		}
-	case exec.FailedAutoRetryCancelNotPending:
+	case dagrun.FailedAutoRetryCancelNotPending:
 		return &Error{
 			HTTPStatus: http.StatusBadRequest,
 			Code:       api.ErrorCodeBadRequest,
@@ -3209,7 +3161,7 @@ func failedAutoRetryCancelError(status *exec.DAGRunStatus) *Error {
 	}
 }
 
-func failedAutoRetryCancelStateChangedError(updatedStatus *exec.DAGRunStatus) *Error {
+func failedAutoRetryCancelStateChangedError(updatedStatus *ir.DAGRunStatus) *Error {
 	currentStatus := "unknown"
 	if updatedStatus != nil {
 		currentStatus = updatedStatus.Status.String()
@@ -3228,7 +3180,7 @@ func (a *API) TerminateDAGRun(ctx context.Context, request api.TerminateDAGRunRe
 	if err := a.isAllowed(config.PermissionRunDAGs); err != nil {
 		return nil, err
 	}
-	ref := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	ref := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	attempt, err := a.dagRunStore.FindAttempt(ctx, ref)
 	if err != nil {
 		return nil, &Error{
@@ -3252,12 +3204,12 @@ func (a *API) TerminateDAGRun(ctx context.Context, request api.TerminateDAGRunRe
 	}
 
 	terminateMode := "running_stop"
-	if savedStatus.Status == core.Failed {
-		if !exec.CanCancelFailedAutoRetryPendingRun(savedStatus) {
+	if savedStatus.Status == ir.Failed {
+		if !dagrun.CanCancelFailedAutoRetryPendingRun(savedStatus) {
 			return nil, failedAutoRetryCancelError(savedStatus)
 		}
-		if err := exec.CancelFailedAutoRetryPendingRun(ctx, a.dagRunStore, savedStatus); err != nil {
-			var stateChangedErr *exec.FailedAutoRetryCancelStateChangedError
+		if err := dagrun.CancelFailedAutoRetryPendingRun(ctx, a.dagRunStore, savedStatus); err != nil {
+			var stateChangedErr *dagrun.FailedAutoRetryCancelStateChangedError
 			if errors.As(err, &stateChangedErr) {
 				return nil, failedAutoRetryCancelStateChangedError(stateChangedErr.CurrentStatus)
 			}
@@ -3272,7 +3224,7 @@ func (a *API) TerminateDAGRun(ctx context.Context, request api.TerminateDAGRunRe
 
 		if dispatch.ShouldDispatchToCoordinator(dag, a.coordinatorCli != nil, a.defaultExecMode) {
 			// For distributed DAGs, use saved status for running check
-			if savedStatus.Status != core.Running {
+			if savedStatus.Status != ir.Running {
 				return nil, &Error{
 					HTTPStatus: http.StatusBadRequest,
 					Code:       api.ErrorCodeNotRunning,
@@ -3301,7 +3253,7 @@ func (a *API) TerminateDAGRun(ctx context.Context, request api.TerminateDAGRunRe
 				}
 			}
 
-			if dagStatus.Status != core.Running {
+			if dagStatus.Status != ir.Running {
 				return nil, &Error{
 					HTTPStatus: http.StatusBadRequest,
 					Code:       api.ErrorCodeNotRunning,
@@ -3328,7 +3280,7 @@ func (a *API) DequeueDAGRun(ctx context.Context, request api.DequeueDAGRunReques
 	if err := a.isAllowed(config.PermissionRunDAGs); err != nil {
 		return nil, err
 	}
-	dagRun := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	dagRun := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	workspaceName, err := a.workspaceNameForDAGRun(ctx, dagRun)
 	if err != nil {
 		return nil, mapAbortQueuedDAGRunAPIError(request.Name, request.DagRunId, err)
@@ -3346,10 +3298,10 @@ func (a *API) DequeueDAGRun(ctx context.Context, request api.DequeueDAGRunReques
 	}
 	defer a.procStore.Unlock(ctx, queueName)
 
-	if err := exec.AbortQueuedDAGRun(ctx, a.dagRunStore, dagRun); err != nil {
+	if err := queue.AbortQueuedDAGRun(ctx, a.dagRunStore, dagRun); err != nil {
 		return nil, mapAbortQueuedDAGRunAPIError(request.Name, request.DagRunId, err)
 	}
-	if _, err := a.queueStore.DequeueByDAGRunID(ctx, queueName, dagRun); err != nil && !errors.Is(err, exec.ErrQueueItemNotFound) {
+	if _, err := a.queueStore.DequeueByDAGRunID(ctx, queueName, dagRun); err != nil && !errors.Is(err, queue.ErrQueueItemNotFound) {
 		return nil, fmt.Errorf("error dequeueing dag-run: %w", err)
 	}
 
@@ -3446,7 +3398,7 @@ func (a *API) rescheduleDAGRun(ctx context.Context, dagName, dagRunID string, op
 
 	nameOverride := strings.TrimSpace(opts.nameOverride)
 	if nameOverride != "" {
-		if err := core.ValidateDAGName(nameOverride); err != nil {
+		if err := ir.ValidateDAGName(nameOverride); err != nil {
 			return rescheduleDAGRunResult{}, &Error{
 				HTTPStatus: http.StatusBadRequest,
 				Code:       api.ErrorCodeBadRequest,
@@ -3524,9 +3476,9 @@ func (a *API) rescheduleDAGRun(ctx context.Context, dagName, dagRunID string, op
 	}
 	var enqueueErr error
 	if opts.useCurrentDAGFile {
-		enqueueErr = a.enqueueDAGRun(ctx, dag, paramsToUse, newDagRunID, "", core.TriggerTypeManual, "", profileName)
+		enqueueErr = a.enqueueDAGRun(ctx, dag, paramsToUse, newDagRunID, "", ir.TriggerTypeManual, "", profileName, status.NoReuse)
 	} else {
-		enqueueErr = a.enqueuePreparedDAGRun(ctx, dag, paramsToUse, newDagRunID, core.TriggerTypeManual, profileName)
+		enqueueErr = a.enqueuePreparedDAGRun(ctx, dag, paramsToUse, newDagRunID, ir.TriggerTypeManual, profileName, status.NoReuse)
 	}
 	if enqueueErr != nil {
 		return rescheduleDAGRunResult{}, fmt.Errorf("failed to enqueue dag-run: %w", enqueueErr)
@@ -3553,11 +3505,12 @@ func (a *API) rescheduleDAGRun(ctx context.Context, dagName, dagRunID string, op
 
 func (a *API) enqueuePreparedDAGRun(
 	ctx context.Context,
-	dag *core.DAG,
+	dag *ir.DAG,
 	params string,
 	dagRunID string,
-	triggerType core.TriggerType,
+	triggerType ir.TriggerType,
 	profileName string,
+	noReuse bool,
 ) error {
 	resolvedDAG, err := spec.ResolveRuntimeParams(ctx, dag, params, spec.ResolveRuntimeParamsOptions{
 		BaseConfig: a.config.Paths.BaseConfig,
@@ -3574,7 +3527,7 @@ func (a *API) enqueuePreparedDAGRun(
 	if err := buildErrorsToAPIError(dag.BuildErrors); err != nil {
 		return err
 	}
-	if err := core.ValidateStartParams(dag.DefaultParams, core.StartParamInput{
+	if err := spec.ValidateStartParams(dag.DefaultParams, spec.StartParamInput{
 		RawParams: params,
 	}); err != nil {
 		return &Error{
@@ -3598,6 +3551,7 @@ func (a *API) enqueuePreparedDAGRun(
 		TriggerActor:            triggerActorFromContext(ctx),
 		ProceedOnStatusCloseErr: true,
 		ProfileName:             profileName,
+		NoReuse:                 noReuse,
 	})
 	if err != nil {
 		return err
@@ -3614,10 +3568,10 @@ func (a *API) enqueuePreparedDAGRun(
 // When parentSubDAGRunId is provided, it returns sub-runs of that specific sub DAG run
 // (for multi-level nested DAGs).
 func (a *API) GetSubDAGRuns(ctx context.Context, request api.GetSubDAGRunsRequestObject) (api.GetSubDAGRunsResponseObject, error) {
-	rootRef := exec.NewDAGRunRef(request.Name, request.DagRunId)
+	rootRef := ir.NewDAGRunRef(request.Name, request.DagRunId)
 	parentSubDAGRunId := request.Params.ParentSubDAGRunId
 
-	var dagStatus *exec.DAGRunStatus
+	var dagStatus *ir.DAGRunStatus
 	var err error
 	detailParentRef := rootRef
 
@@ -3670,7 +3624,7 @@ func (a *API) GetSubDAGRuns(ctx context.Context, request api.GetSubDAGRunsReques
 }
 
 // getSubDAGRunDetail fetches timing and status info for a single sub DAG run
-func (a *API) getSubDAGRunDetail(ctx context.Context, parentRef exec.DAGRunRef, subRunID string, params string, dagName string) (api.SubDAGRunDetail, error) {
+func (a *API) getSubDAGRunDetail(ctx context.Context, parentRef ir.DAGRunRef, subRunID string, params string, dagName string) (api.SubDAGRunDetail, error) {
 	status, err := a.getReferencedDAGRunStatus(ctx, parentRef, subRunID, dagName)
 	if err != nil {
 		return api.SubDAGRunDetail{}, err
@@ -3695,12 +3649,12 @@ func (a *API) getSubDAGRunDetail(ctx context.Context, parentRef exec.DAGRunRef, 
 	return detail, nil
 }
 
-func (a *API) getReferencedDAGRunStatus(ctx context.Context, parentRef exec.DAGRunRef, subRunID string, dagName string) (*exec.DAGRunStatus, error) {
+func (a *API) getReferencedDAGRunStatus(ctx context.Context, parentRef ir.DAGRunRef, subRunID string, dagName string) (*ir.DAGRunStatus, error) {
 	_, status, err := a.getReferencedDAGRunStatusWithRef(ctx, parentRef, subRunID, dagName)
 	return status, err
 }
 
-func (a *API) getReferencedDAGRunStatusWithRef(ctx context.Context, parentRef exec.DAGRunRef, subRunID string, dagName string) (exec.DAGRunRef, *exec.DAGRunStatus, error) {
+func (a *API) getReferencedDAGRunStatusWithRef(ctx context.Context, parentRef ir.DAGRunRef, subRunID string, dagName string) (ir.DAGRunRef, *ir.DAGRunStatus, error) {
 	status, err := a.dagRunMgr.FindSubDAGRunStatus(ctx, parentRef, subRunID)
 	if err == nil {
 		return parentRef, status, nil
@@ -3713,18 +3667,18 @@ func (a *API) getReferencedDAGRunStatusWithRef(ctx context.Context, parentRef ex
 		}
 	}
 	if strings.TrimSpace(dagName) == "" {
-		return exec.DAGRunRef{}, nil, subErr
+		return ir.DAGRunRef{}, nil, subErr
 	}
 
-	ref := exec.NewDAGRunRef(dagName, subRunID)
+	ref := ir.NewDAGRunRef(dagName, subRunID)
 	status, err = a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
-		return exec.DAGRunRef{}, nil, subErr
+		return ir.DAGRunRef{}, nil, subErr
 	}
 	return ref, status, nil
 }
 
-func (a *API) getReferencedDAGRunAttempt(ctx context.Context, parentRef exec.DAGRunRef, subRunID string, dagName string) (exec.DAGRunAttempt, error) {
+func (a *API) getReferencedDAGRunAttempt(ctx context.Context, parentRef ir.DAGRunRef, subRunID string, dagName string) (dagrun.DAGRunAttempt, error) {
 	attempt, err := a.dagRunStore.FindSubAttempt(ctx, parentRef, subRunID)
 	if err == nil {
 		return attempt, nil
@@ -3740,14 +3694,14 @@ func (a *API) getReferencedDAGRunAttempt(ctx context.Context, parentRef exec.DAG
 		return nil, subErr
 	}
 
-	attempt, err = a.dagRunStore.FindAttempt(ctx, exec.NewDAGRunRef(dagName, subRunID))
+	attempt, err = a.dagRunStore.FindAttempt(ctx, ir.NewDAGRunRef(dagName, subRunID))
 	if err != nil {
 		return nil, subErr
 	}
 	return attempt, nil
 }
 
-func (a *API) findReferencedDAGName(ctx context.Context, parentRef exec.DAGRunRef, subRunID string) (string, bool) {
+func (a *API) findReferencedDAGName(ctx context.Context, parentRef ir.DAGRunRef, subRunID string) (string, bool) {
 	status, err := a.dagRunMgr.GetSavedStatus(ctx, parentRef)
 	if err != nil || status == nil {
 		return "", false
@@ -3766,7 +3720,7 @@ func (a *API) findReferencedDAGName(ctx context.Context, parentRef exec.DAGRunRe
 	return "", false
 }
 
-func findDAGNameInSubRuns(subRuns []exec.SubDAGRun, subRunID string) (string, bool) {
+func findDAGNameInSubRuns(subRuns []ir.SubDAGRun, subRunID string) (string, bool) {
 	for _, subRun := range subRuns {
 		if subRun.DAGRunID == subRunID && strings.TrimSpace(subRun.DAGName) != "" {
 			return subRun.DAGName, true
@@ -3777,13 +3731,13 @@ func findDAGNameInSubRuns(subRuns []exec.SubDAGRun, subRunID string) (string, bo
 
 func (a *API) waitForManualStepMutationReady(
 	ctx context.Context,
-	attempt exec.DAGRunAttempt,
-	status *exec.DAGRunStatus,
-) (*exec.DAGRunStatus, error) {
+	attempt dagrun.DAGRunAttempt,
+	status *ir.DAGRunStatus,
+) (*ir.DAGRunStatus, error) {
 	if status == nil {
 		return nil, errors.New("manual step status is nil")
 	}
-	if status.Status != core.Waiting || status.AttemptID == "" {
+	if status.Status != ir.Waiting || status.AttemptID == "" {
 		return status, nil
 	}
 	if attempt == nil {
@@ -3795,7 +3749,7 @@ func (a *API) waitForManualStepMutationReady(
 	poll := time.NewTicker(manualStepSettlePollInterval)
 	defer poll.Stop()
 
-	if !exec.IsRemoteWorkerID(status.WorkerID) {
+	if !dispatch.IsRemoteWorkerID(status.WorkerID) {
 		if a.procStore == nil {
 			return nil, errors.New("process store is unavailable")
 		}
@@ -3831,7 +3785,7 @@ func (a *API) waitForManualStepMutationReady(
 		if latest == nil {
 			return nil, errors.New("reloaded manual step status is nil")
 		}
-		if latest.Status != core.Waiting || latest.AttemptID != status.AttemptID || latest.FinishedAt != "" {
+		if latest.Status != ir.Waiting || latest.AttemptID != status.AttemptID || latest.FinishedAt != "" {
 			return latest, nil
 		}
 		select {
@@ -3844,8 +3798,8 @@ func (a *API) waitForManualStepMutationReady(
 	}
 }
 
-func applyApproval(ctx context.Context, node *exec.Node, body *api.ApproveStepRequest) {
-	node.Status = core.NodeSucceeded
+func applyApproval(ctx context.Context, node *ir.Node, body *api.ApproveStepRequest) {
+	node.Status = ir.NodeSucceeded
 	node.ApprovedAt = time.Now().Format(time.RFC3339)
 	node.ApprovedBy, node.ApprovedByID = manualActionSubject(ctx)
 
@@ -3862,8 +3816,8 @@ func applyApproval(ctx context.Context, node *exec.Node, body *api.ApproveStepRe
 	}
 }
 
-func applyRejection(ctx context.Context, node *exec.Node, status *exec.DAGRunStatus, reason *string) {
-	node.Status = core.NodeRejected
+func applyRejection(ctx context.Context, node *ir.Node, status *ir.DAGRunStatus, reason *string) {
+	node.Status = ir.NodeRejected
 	node.RejectedAt = time.Now().Format(time.RFC3339)
 	node.RejectedBy, node.RejectedByID = manualActionSubject(ctx)
 
@@ -3871,11 +3825,11 @@ func applyRejection(ctx context.Context, node *exec.Node, status *exec.DAGRunSta
 		node.RejectionReason = *reason
 	}
 
-	status.Status = core.Rejected
+	status.Status = ir.Rejected
 	status.FinishedAt = time.Now().Format(time.RFC3339)
 }
 
-func (a *API) resumeDAGRun(ctx context.Context, ref exec.DAGRunRef, dagRunID string) error {
+func (a *API) resumeDAGRun(ctx context.Context, ref ir.DAGRunRef, dagRunID string) error {
 	attempt, err := a.dagRunStore.FindAttempt(ctx, ref)
 	if err != nil {
 		return fmt.Errorf("find attempt: %w", err)
@@ -3903,7 +3857,7 @@ func (a *API) resumeDAGRun(ctx context.Context, ref exec.DAGRunRef, dagRunID str
 	return launcher.Start(ctx, retrySpec)
 }
 
-func (a *API) resumeSubDAGRun(ctx context.Context, rootRef exec.DAGRunRef, subDAGRunID string) error {
+func (a *API) resumeSubDAGRun(ctx context.Context, rootRef ir.DAGRunRef, subDAGRunID string) error {
 	attempt, err := a.getReferencedDAGRunAttempt(ctx, rootRef, subDAGRunID, "")
 	if err != nil {
 		return fmt.Errorf("find sub-attempt: %w", err)
@@ -3934,21 +3888,24 @@ func (a *API) resumeSubDAGRun(ctx context.Context, rootRef exec.DAGRunRef, subDA
 	return launcher.Start(ctx, a.subCmdBuilder.Retry(prepared, opts))
 }
 
-func (a *API) prepareRetryDAGForSubprocess(ctx context.Context, dag *core.DAG, status *exec.DAGRunStatus) (*core.DAG, error) {
+func (a *API) prepareRetryDAGForSubprocess(ctx context.Context, dag *ir.DAG, status *ir.DAGRunStatus) (*ir.DAG, error) {
 	if dag == nil || status == nil {
 		return dag, nil
 	}
 
-	result, err := spec.ResolveEnvWithWarnings(ctx, dag, status.ParamsList, spec.ResolveEnvOptions{
+	result, err := runtimeenvtransport.Resolve(ctx, dag, status.ParamsList, runtimeenvtransport.Options{
 		BaseConfig: a.config.Paths.BaseConfig,
 	})
 	if err != nil {
 		return nil, err
 	}
-	dagwarning.Log(ctx, result.BuildWarnings)
+	for _, warning := range result.Warnings {
+		logger.Warn(ctx, warning)
+	}
 
 	prepared := dag.Clone()
 	prepared.Env = result.Env
+	prepared.RuntimeResolved = true
 	return prepared, nil
 }
 
@@ -3992,7 +3949,7 @@ func (a *API) logStepRejection(ctx context.Context, dagName, dagRunID, subDAGRun
 	a.logAudit(ctx, audit.CategoryDAG, action, detailsMap)
 }
 
-func findStepByName(nodes []*exec.Node, stepName string) int {
+func findStepByName(nodes []*ir.Node, stepName string) int {
 	for idx, n := range nodes {
 		if n.Step.Name == stepName {
 			return idx
@@ -4001,9 +3958,9 @@ func findStepByName(nodes []*exec.Node, stepName string) int {
 	return -1
 }
 
-func hasWaitingSteps(nodes []*exec.Node) bool {
+func hasWaitingSteps(nodes []*ir.Node) bool {
 	for _, n := range nodes {
-		if n.Status == core.NodeWaiting {
+		if n.Status == ir.NodeWaiting {
 			return true
 		}
 	}
@@ -4025,14 +3982,14 @@ func checkMissingInputs(required []string, provided map[string]string) error {
 }
 
 // requiredFieldsForStep returns the list of required input field names for a step.
-func requiredFieldsForStep(step core.Step) []string {
+func requiredFieldsForStep(step ir.Step) []string {
 	if step.Approval != nil {
 		return step.Approval.Required
 	}
 	return nil
 }
 
-func validateRequiredInputs(step core.Step, body *api.ApproveStepRequest) error {
+func validateRequiredInputs(step ir.Step, body *api.ApproveStepRequest) error {
 	required := requiredFieldsForStep(step)
 	if len(required) == 0 {
 		return nil
@@ -4044,7 +4001,7 @@ func validateRequiredInputs(step core.Step, body *api.ApproveStepRequest) error 
 	return checkMissingInputs(required, provided)
 }
 
-func validatePushBackInputs(step core.Step, body *api.PushBackStepRequest) error {
+func validatePushBackInputs(step ir.Step, body *api.PushBackStepRequest) error {
 	if step.Approval == nil || len(step.Approval.Required) == 0 {
 		return nil
 	}
@@ -4055,7 +4012,7 @@ func validatePushBackInputs(step core.Step, body *api.PushBackStepRequest) error
 	return checkMissingInputs(step.Approval.Required, provided)
 }
 
-func applyPushBack(ctx context.Context, node *exec.Node, status *exec.DAGRunStatus, body *api.PushBackStepRequest) error {
+func applyPushBack(ctx context.Context, node *ir.Node, status *ir.DAGRunStatus, body *api.PushBackStepRequest) error {
 	targetName := node.Step.Name
 	if node.Step.Approval != nil && strings.TrimSpace(node.Step.Approval.RewindTo) != "" {
 		targetName = strings.TrimSpace(node.Step.Approval.RewindTo)
@@ -4071,11 +4028,11 @@ func applyPushBack(ctx context.Context, node *exec.Node, status *exec.DAGRunStat
 		inputs = cloneStringMap(*body.Inputs)
 	}
 	allowedInputs := pushBackAllowedInputs(node.Step)
-	filteredInputs := exec.FilterPushBackInputs(allowedInputs, inputs)
+	filteredInputs := dagrun.FilterPushBackInputs(allowedInputs, inputs)
 	history := buildPushBackHistory(ctx, node, allowedInputs, nextIteration, filteredInputs)
 
 	// Reset the configured rewind target and everything that depends on it.
-	rewoundNodes := append([]*exec.Node{status.Nodes[targetIdx]}, findDependentNodes(status.Nodes, targetName)...)
+	rewoundNodes := append([]*ir.Node{status.Nodes[targetIdx]}, findDependentNodes(status.Nodes, targetName)...)
 	for _, rewoundNode := range rewoundNodes {
 		previousStdout := rewoundNode.Stdout
 		resetNodeForManualReexecution(rewoundNode)
@@ -4084,10 +4041,10 @@ func applyPushBack(ctx context.Context, node *exec.Node, status *exec.DAGRunStat
 	return nil
 }
 
-func buildPushBackHistory(ctx context.Context, node *exec.Node, allowedInputs []string, nextIteration int, inputs map[string]string) []exec.PushBackEntry {
-	history := exec.NormalizePushBackHistory(allowedInputs, node.ApprovalIteration, node.PushBackInputs, node.PushBackHistory)
+func buildPushBackHistory(ctx context.Context, node *ir.Node, allowedInputs []string, nextIteration int, inputs map[string]string) []ir.PushBackEntry {
+	history := dagrun.NormalizePushBackHistory(allowedInputs, node.ApprovalIteration, node.PushBackInputs, node.PushBackHistory)
 	actor, actorID := manualActionSubject(ctx)
-	history = append(history, exec.PushBackEntry{
+	history = append(history, ir.PushBackEntry{
 		Iteration: nextIteration,
 		By:        actor,
 		ByID:      actorID,
@@ -4097,19 +4054,19 @@ func buildPushBackHistory(ctx context.Context, node *exec.Node, allowedInputs []
 	return history
 }
 
-func resetNodeForManualReexecution(node *exec.Node) {
+func resetNodeForManualReexecution(node *ir.Node) {
 	step := node.Step
-	*node = *exec.NewNodeFromStep(step)
+	*node = *ir.NewNodeFromStep(step)
 }
 
-func setPushBackContext(node *exec.Node, iteration int, inputs map[string]string, history []exec.PushBackEntry, previousStdout string) {
+func setPushBackContext(node *ir.Node, iteration int, inputs map[string]string, history []ir.PushBackEntry, previousStdout string) {
 	node.ApprovalIteration = iteration
 	node.PushBackInputs = cloneStringMap(inputs)
-	node.PushBackHistory = exec.ClonePushBackHistory(history)
+	node.PushBackHistory = dagrun.ClonePushBackHistory(history)
 	node.PushBackPreviousStdout = previousStdout
 }
 
-func pushBackAllowedInputs(step core.Step) []string {
+func pushBackAllowedInputs(step ir.Step) []string {
 	if step.Approval == nil {
 		return nil
 	}
@@ -4117,7 +4074,7 @@ func pushBackAllowedInputs(step core.Step) []string {
 }
 
 // findDependentNodes returns all nodes that directly or transitively depend on the given step.
-func findDependentNodes(nodes []*exec.Node, stepName string) []*exec.Node {
+func findDependentNodes(nodes []*ir.Node, stepName string) []*ir.Node {
 	// Build a set of step names that depend on the given step
 	dependentNames := make(map[string]bool)
 	dependentNames[stepName] = true
@@ -4141,7 +4098,7 @@ func findDependentNodes(nodes []*exec.Node, stepName string) []*exec.Node {
 	}
 
 	// Collect dependent nodes (excluding the source step itself)
-	var result []*exec.Node
+	var result []*ir.Node
 	for _, n := range nodes {
 		if dependentNames[n.Step.Name] && n.Step.Name != stepName {
 			result = append(result, n)
@@ -4233,7 +4190,7 @@ func (a *API) GetSubDAGRunDetailsData(ctx context.Context, identifier string) (a
 		)
 	}
 
-	root := exec.NewDAGRunRef(parts[0], parts[1])
+	root := ir.NewDAGRunRef(parts[0], parts[1])
 	if err := a.requireDAGRunVisible(ctx, root); err != nil {
 		return nil, err
 	}
@@ -4242,7 +4199,7 @@ func (a *API) GetSubDAGRunDetailsData(ctx context.Context, identifier string) (a
 		dagName:     parts[0],
 		dagRunID:    parts[1],
 		subDAGRunID: parts[2],
-	}, func(readCtx context.Context) (*exec.DAGRunStatus, error) {
+	}, func(readCtx context.Context) (*ir.DAGRunStatus, error) {
 		return a.getReferencedDAGRunStatus(readCtx, root, parts[2], "")
 	})
 	if err != nil {
@@ -4293,7 +4250,7 @@ func (a *API) getDAGRunLogsData(ctx context.Context, identifier string) (DAGRunL
 		return DAGRunLogsResponse{}, fmt.Errorf("invalid identifier format: %s (expected 'dagName/dagRunId')", identifier)
 	}
 
-	ref := exec.NewDAGRunRef(dagName, dagRunId)
+	ref := ir.NewDAGRunRef(dagName, dagRunId)
 	dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
 		return DAGRunLogsResponse{}, fmt.Errorf("dag-run ID %s not found for DAG %s", dagRunId, dagName)
@@ -4349,24 +4306,28 @@ func (a *API) getDAGRunLogsData(ctx context.Context, identifier string) (DAGRunL
 // GetStepLogData returns step log for SSE.
 // Identifier format: "dagName/dagRunId/stepName"
 func (a *API) GetStepLogData(ctx context.Context, identifier string) (any, error) {
+	parts := strings.SplitN(identifier, "/", 3)
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid identifier format: %s (expected 'dagName/dagRunId/stepName')", identifier)
+	}
+	return a.GetStepLogDataByRef(ctx, ir.NewDAGRunRef(parts[0], parts[1]), parts[2])
+}
+
+// GetStepLogDataByRef returns log output for a step in a DAG run.
+func (a *API) GetStepLogDataByRef(ctx context.Context, ref ir.DAGRunRef, stepName string) (any, error) {
 	return withDAGRunReadTimeout(ctx, dagRunReadRequestInfo{
 		endpoint: "/dag-runs/{name}/{dagRunId}/logs/steps/{stepName}",
+		dagName:  ref.Name,
+		dagRunID: ref.ID,
 	}, func(readCtx context.Context) (StepLogResponse, error) {
-		return a.getStepLogData(readCtx, identifier)
+		return a.getStepLogData(readCtx, ref, stepName)
 	})
 }
 
-func (a *API) getStepLogData(ctx context.Context, identifier string) (StepLogResponse, error) {
-	parts := strings.SplitN(identifier, "/", 3)
-	if len(parts) != 3 {
-		return StepLogResponse{}, fmt.Errorf("invalid identifier format: %s (expected 'dagName/dagRunId/stepName')", identifier)
-	}
-	dagName, dagRunId, stepName := parts[0], parts[1], parts[2]
-
-	ref := exec.NewDAGRunRef(dagName, dagRunId)
+func (a *API) getStepLogData(ctx context.Context, ref ir.DAGRunRef, stepName string) (StepLogResponse, error) {
 	dagStatus, err := a.dagRunMgr.GetSavedStatus(ctx, ref)
 	if err != nil {
-		return StepLogResponse{}, fmt.Errorf("dag-run ID %s not found for DAG %s", dagRunId, dagName)
+		return StepLogResponse{}, fmt.Errorf("dag-run ID %s not found for DAG %s", ref.ID, ref.Name)
 	}
 	if err := a.requireDAGRunStatusVisible(ctx, dagStatus); err != nil {
 		return StepLogResponse{}, err
@@ -4374,7 +4335,7 @@ func (a *API) getStepLogData(ctx context.Context, identifier string) (StepLogRes
 
 	node, err := dagStatus.NodeByName(stepName)
 	if err != nil {
-		return StepLogResponse{}, fmt.Errorf("step %s not found in DAG %s", stepName, dagName)
+		return StepLogResponse{}, fmt.Errorf("step %s not found in DAG %s", stepName, ref.Name)
 	}
 
 	options := fileutil.LogReadOptions{
@@ -4417,15 +4378,15 @@ func (a *API) getStepLogData(ctx context.Context, identifier string) (StepLogRes
 	}, nil
 }
 
-func (a *API) getDAGRunArtifactStatus(ctx context.Context, dagName, dagRunID string) (*exec.DAGRunStatus, error) {
+func (a *API) getDAGRunArtifactStatus(ctx context.Context, dagName, dagRunID string) (*ir.DAGRunStatus, error) {
 	var (
-		attempt exec.DAGRunAttempt
+		attempt dagrun.DAGRunAttempt
 		err     error
 	)
 	if dagRunID == "latest" {
 		attempt, err = a.dagRunStore.LatestAttempt(ctx, dagName)
 	} else {
-		attempt, err = a.dagRunStore.FindAttempt(ctx, exec.NewDAGRunRef(dagName, dagRunID))
+		attempt, err = a.dagRunStore.FindAttempt(ctx, ir.NewDAGRunRef(dagName, dagRunID))
 	}
 	if err != nil {
 		return nil, err
@@ -4441,8 +4402,8 @@ func (a *API) getDAGRunArtifactStatus(ctx context.Context, dagName, dagRunID str
 	return status, nil
 }
 
-func (a *API) getSubDAGRunArtifactStatus(ctx context.Context, dagName, dagRunID, subDAGRunID string) (*exec.DAGRunStatus, error) {
-	attempt, err := a.getReferencedDAGRunAttempt(ctx, exec.NewDAGRunRef(dagName, dagRunID), subDAGRunID, "")
+func (a *API) getSubDAGRunArtifactStatus(ctx context.Context, dagName, dagRunID, subDAGRunID string) (*ir.DAGRunStatus, error) {
+	attempt, err := a.getReferencedDAGRunAttempt(ctx, ir.NewDAGRunRef(dagName, dagRunID), subDAGRunID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -4458,8 +4419,8 @@ func (a *API) getSubDAGRunArtifactStatus(ctx context.Context, dagName, dagRunID,
 }
 
 func isArtifactStatusNotFound(err error) bool {
-	return errors.Is(err, exec.ErrDAGRunIDNotFound) ||
-		errors.Is(err, exec.ErrNoStatusData) ||
+	return errors.Is(err, dagrun.ErrDAGRunIDNotFound) ||
+		errors.Is(err, dagrun.ErrNoStatusData) ||
 		errors.Is(err, errArtifactUnavailable)
 }
 
@@ -4716,7 +4677,7 @@ func (a *API) GetDAGRunsListData(ctx context.Context, queryString string) (any, 
 
 		page, err := a.dagRunStore.ListStatusesPage(readCtx, opts.query...)
 		if err != nil {
-			if errors.Is(err, exec.ErrInvalidQueryCursor) {
+			if errors.Is(err, dagrun.ErrInvalidQueryCursor) {
 				return nil, err
 			}
 			return nil, fmt.Errorf("error listing dag-runs: %w", err)
@@ -4820,19 +4781,19 @@ func (a *API) dagRunListOptionsFromQueryString(ctx context.Context, queryString 
 	if err != nil {
 		return dagRunListOptions{}, err
 	}
-	opts.query = append(opts.query, exec.WithWorkspaceFilter(workspaceFilter))
+	opts.query = append(opts.query, dagrun.WithWorkspaceFilter(workspaceFilter))
 
 	return opts, nil
 }
 
-func toCoreStatuses(statuses *api.StatusList) []core.Status {
+func toCoreStatuses(statuses *api.StatusList) []ir.Status {
 	if statuses == nil || len(*statuses) == 0 {
 		return nil
 	}
 
-	result := make([]core.Status, 0, len(*statuses))
+	result := make([]ir.Status, 0, len(*statuses))
 	for _, status := range *statuses {
-		result = append(result, core.Status(status))
+		result = append(result, ir.Status(status))
 	}
 	return result
 }
@@ -4897,7 +4858,7 @@ func clampInt(value, minVal, maxVal int) int {
 	return max(minVal, min(value, maxVal))
 }
 
-func (a *API) loadCurrentRescheduleDAG(ctx context.Context, sourceFile, nameOverride string) (*core.DAG, error) {
+func (a *API) loadCurrentRescheduleDAG(ctx context.Context, sourceFile, nameOverride string) (*ir.DAG, error) {
 	if sourceFile == "" || !fileExists(sourceFile) {
 		return nil, &Error{
 			HTTPStatus: http.StatusBadRequest,
@@ -4927,7 +4888,7 @@ func (a *API) loadCurrentRescheduleDAG(ctx context.Context, sourceFile, nameOver
 	return dag, nil
 }
 
-func (a *API) dagRunSourceInfo(ctx context.Context, attempt exec.DAGRunAttempt) (specFromFile bool, sourceFileName string) {
+func (a *API) dagRunSourceInfo(ctx context.Context, attempt dagrun.DAGRunAttempt) (specFromFile bool, sourceFileName string) {
 	if attempt == nil {
 		return false, ""
 	}
@@ -4965,7 +4926,7 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-func selectLogFile(node *exec.Node, stream api.Stream) string {
+func selectLogFile(node *ir.Node, stream api.Stream) string {
 	if stream == api.StreamStderr {
 		return node.Stderr
 	}

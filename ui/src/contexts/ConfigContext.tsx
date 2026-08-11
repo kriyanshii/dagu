@@ -7,6 +7,9 @@ export type PathsConfig = {
   suspendFlagsDir: string;
   adminLogsDir: string;
   baseConfig: string;
+  wikiDir?: string;
+  /** @deprecated Use wikiDir. */
+  docsDir?: string;
   dagRunsDir: string;
   queueDir: string;
   procDir: string;
@@ -28,6 +31,7 @@ export type LicenseStatus = {
   community: boolean;
   source: string;
   warningCode: string;
+  error?: string;
 };
 
 export type WorkspaceResponse = components['schemas']['WorkspaceResponse'];

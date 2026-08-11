@@ -22,7 +22,7 @@ type Definition struct {
 	Debug                  bool     `mapstructure:"debug"`
 	DefaultShell           string   `mapstructure:"default_shell"`
 	LogFormat              string   `mapstructure:"log_format"`      // "json" or "text"
-	AccessLog              *string  `mapstructure:"access_log_mode"` // "all" (default), "non-public", or "none"
+	AccessLog              *string  `mapstructure:"access_log_mode"` // "all", "non-public", or "none" (default)
 	TZ                     string   `mapstructure:"tz"`
 	EnvPassthrough         []string `mapstructure:"env_passthrough"`
 	EnvPassthroughPrefixes []string `mapstructure:"env_passthrough_prefixes"`
@@ -49,6 +49,9 @@ type Definition struct {
 
 	// Paths (structured)
 	Paths *PathsDef `mapstructure:"paths"`
+
+	// DAG discovery
+	DAGDiscovery *DAGDiscoveryDef `mapstructure:"dag_discovery"`
 
 	// Secrets
 	Secrets *SecretsDef `mapstructure:"secrets"`
@@ -91,6 +94,12 @@ type Definition struct {
 	GitSync    *GitSyncDef    `mapstructure:"git_sync"`
 	Tunnel     *TunnelDef     `mapstructure:"tunnel"`
 	License    *LicenseDef    `mapstructure:"license"`
+}
+
+// DAGDiscoveryDef configures DAG definition discovery.
+type DAGDiscoveryDef struct {
+	Recursive *bool `mapstructure:"recursive"`
+	Symlinks  *bool `mapstructure:"symlinks"`
 }
 
 // -----------------------------------------------------------------------------
@@ -210,7 +219,10 @@ type PermissionsDef struct {
 
 // PathsDef configures file system paths.
 type PathsDef struct {
-	DAGsDir            string `mapstructure:"dags_dir"`
+	DAGsDir string `mapstructure:"dags_dir"`
+	WikiDir string `mapstructure:"wiki_dir"`
+	// DocsDir is the deprecated name for WikiDir.
+	DocsDir            string `mapstructure:"docs_dir"`
 	Executable         string `mapstructure:"executable"`
 	LogDir             string `mapstructure:"log_dir"`
 	ArtifactDir        string `mapstructure:"artifact_dir"`
@@ -270,8 +282,11 @@ type AlibabaSecretsDef struct {
 
 // VaultSecretsDef configures global HashiCorp Vault client defaults.
 type VaultSecretsDef struct {
-	Address string `mapstructure:"address"`
-	Token   string `mapstructure:"token"`
+	Address    string `mapstructure:"address"`
+	Token      string `mapstructure:"token"`
+	CACert     string `mapstructure:"ca_cert"`
+	ClientCert string `mapstructure:"client_cert"`
+	ClientKey  string `mapstructure:"client_key"`
 }
 
 // KubernetesSecretsDef configures global Kubernetes client defaults.
@@ -366,9 +381,8 @@ type PostgresPoolDef struct {
 
 // ProcDef configures local proc-file heartbeat behavior.
 type ProcDef struct {
-	HeartbeatInterval     string `mapstructure:"heartbeat_interval"`      // Default: 5s
-	HeartbeatSyncInterval string `mapstructure:"heartbeat_sync_interval"` // Default: 10s
-	StaleThreshold        string `mapstructure:"stale_threshold"`         // Default: 90s
+	HeartbeatInterval string `mapstructure:"heartbeat_interval"` // Default: 5s
+	StaleThreshold    string `mapstructure:"stale_threshold"`    // Default: 90s
 }
 
 // SchedulerDef configures the scheduler.
@@ -379,7 +393,6 @@ type SchedulerDef struct {
 	ZombieDetectionInterval string `mapstructure:"zombie_detection_interval"` // Default: 45s, 0 to disable
 	RetryFailureWindow      string `mapstructure:"retry_failure_window"`      // Default: 24h, 0 to disable retry scanning. Current limitation: the window is evaluated from the original DAG-run timestamp/day bucket, not the latest failed attempt timestamp.
 	HeartbeatInterval       string `mapstructure:"heartbeat_interval"`        // Deprecated: use proc.heartbeat_interval
-	HeartbeatSyncInterval   string `mapstructure:"heartbeat_sync_interval"`   // Deprecated: use proc.heartbeat_sync_interval
 	StaleThreshold          string `mapstructure:"stale_threshold"`           // Deprecated: use proc.stale_threshold
 	FailureThreshold        int    `mapstructure:"failure_threshold"`         // Default: 3
 }

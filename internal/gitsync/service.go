@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dagucloud/dagu/v2/internal/wiki"
 )
 
 // Service defines the interface for Git sync operations.
@@ -22,40 +24,40 @@ type Service interface {
 	// Pull fetches and merges changes from the remote repository.
 	Pull(ctx context.Context) (*SyncResult, error)
 
-	// Publish commits and pushes a single DAG to the remote.
-	Publish(ctx context.Context, dagID, message string, force bool) (*SyncResult, error)
+	// Publish commits and pushes a single sync item to the remote.
+	Publish(ctx context.Context, itemID, message string, force bool) (*SyncResult, error)
 
-	// PublishAll commits and pushes the specified DAGs.
-	PublishAll(ctx context.Context, message string, dagIDs []string) (*SyncResult, error)
+	// PublishAll commits and pushes the specified sync items.
+	PublishAll(ctx context.Context, message string, itemIDs []string) (*SyncResult, error)
 
-	// Discard discards local changes for a DAG.
-	Discard(ctx context.Context, dagID string) error
+	// Discard discards local changes for a sync item.
+	Discard(ctx context.Context, itemID string) error
 
 	// GetStatus returns the overall sync status.
 	GetStatus(ctx context.Context) (*OverallStatus, error)
 
-	// GetDAGStatus returns the sync status for a specific DAG.
-	GetDAGStatus(ctx context.Context, dagID string) (*DAGState, error)
+	// GetSyncItemStatus returns the sync status for a specific item.
+	GetSyncItemStatus(ctx context.Context, itemID string) (*SyncItemState, error)
 
-	// GetDAGDiff returns the diff between local and remote versions of a DAG.
-	GetDAGDiff(ctx context.Context, dagID string) (*DAGDiff, error)
+	// GetSyncItemDiff returns the diff between local and remote versions of an item.
+	GetSyncItemDiff(ctx context.Context, itemID string) (*SyncItemDiff, error)
 
-	// Forget removes state entries for missing, untracked, or conflicting DAGs.
+	// Forget removes state entries for missing, untracked, or conflicting items.
 	Forget(ctx context.Context, itemIDs []string) ([]string, error)
 
 	// Cleanup removes all missing entries from state.
 	Cleanup(ctx context.Context) ([]string, error)
 
-	// Delete removes a DAG from remote, local disk, and state.
+	// Delete removes an item from remote, local disk, and state.
 	Delete(ctx context.Context, itemID, message string, force bool) error
 
-	// DeleteBatch removes multiple DAGs from remote, local disk, and state in a single commit.
+	// DeleteBatch removes multiple items from remote, local disk, and state in a single commit.
 	DeleteBatch(ctx context.Context, itemIDs []string, message string, force bool) ([]string, error)
 
-	// DeleteAllMissing removes all missing DAGs from remote, local, and state.
+	// DeleteAllMissing removes all missing items from remote, local, and state.
 	DeleteAllMissing(ctx context.Context, message string) ([]string, error)
 
-	// Move atomically renames a DAG across local filesystem, remote repository, and sync state.
+	// Move atomically renames an item across local filesystem, remote repository, and sync state.
 	Move(ctx context.Context, oldID, newID, message string, force bool) error
 
 	// GetConfig returns the current configuration.
@@ -87,22 +89,22 @@ type SyncResult struct {
 
 // SyncError represents an error during sync.
 type SyncError struct {
-	DAGID   string `json:"dagId,omitempty"`
+	ItemID  string `json:"dagId,omitempty"`
 	Message string `json:"message"`
 }
 
 // OverallStatus represents the overall sync status.
 type OverallStatus struct {
-	Enabled        bool                 `json:"enabled"`
-	Repository     string               `json:"repository,omitempty"`
-	Branch         string               `json:"branch,omitempty"`
-	Summary        SummaryStatus        `json:"summary"`
-	LastSyncAt     *time.Time           `json:"lastSyncAt,omitempty"`
-	LastSyncCommit string               `json:"lastSyncCommit,omitempty"`
-	LastSyncStatus string               `json:"lastSyncStatus,omitempty"`
-	LastError      *string              `json:"lastError,omitempty"`
-	DAGs           map[string]*DAGState `json:"dags,omitempty"`
-	Counts         StatusCounts         `json:"counts"`
+	Enabled        bool                      `json:"enabled"`
+	Repository     string                    `json:"repository,omitempty"`
+	Branch         string                    `json:"branch,omitempty"`
+	Summary        SummaryStatus             `json:"summary"`
+	LastSyncAt     *time.Time                `json:"lastSyncAt,omitempty"`
+	LastSyncCommit string                    `json:"lastSyncCommit,omitempty"`
+	LastSyncStatus string                    `json:"lastSyncStatus,omitempty"`
+	LastError      *string                   `json:"lastError,omitempty"`
+	Items          map[string]*SyncItemState `json:"dags,omitempty"`
+	Counts         StatusCounts              `json:"counts"`
 }
 
 // SummaryStatus represents the summary status for the header badge.
@@ -132,24 +134,32 @@ type ConnectionResult struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// DAGDiff represents the diff between local and remote versions of a DAG.
-type DAGDiff struct {
-	DAGID         string     `json:"dagId"`
+// SyncItemDiff represents the diff between local and remote versions of an item.
+// Binary items carry sizes instead of content.
+type SyncItemDiff struct {
+	ItemID        string     `json:"dagId"`
 	FileExtension string     `json:"fileExtension"`
 	Status        SyncStatus `json:"status"`
+	Binary        bool       `json:"binary,omitempty"`
 	LocalContent  string     `json:"localContent"`
 	RemoteContent string     `json:"remoteContent,omitempty"`
+	LocalSize     *int64     `json:"localSize,omitempty"`
+	RemoteSize    *int64     `json:"remoteSize,omitempty"`
 	RemoteCommit  string     `json:"remoteCommit,omitempty"`
 	RemoteAuthor  string     `json:"remoteAuthor,omitempty"`
 	RemoteMessage string     `json:"remoteMessage,omitempty"`
 }
 
 const (
-	dagYAMLExtension = ".yaml"
-	dagYMLExtension  = ".yml"
+	dagYAMLExtension  = ".yaml"
+	dagYMLExtension   = ".yml"
+	wikiPageExtension = ".md"
 )
 
 func normalizeDAGFileExtension(extension string) string {
+	if strings.EqualFold(extension, wikiPageExtension) {
+		return wikiPageExtension
+	}
 	if strings.EqualFold(extension, dagYMLExtension) {
 		return dagYMLExtension
 	}
@@ -160,6 +170,8 @@ func normalizeDAGFileExtension(extension string) string {
 type serviceImpl struct {
 	cfg          *Config
 	dagsDir      string
+	wikiDir      string
+	repoWikiDir  string
 	dataDir      string
 	stateManager *StateManager
 	gitClient    *GitClient
@@ -169,11 +181,16 @@ type serviceImpl struct {
 }
 
 // NewService creates a new Git sync service.
-func NewService(cfg *Config, dagsDir, dataDir string) Service {
+func NewService(cfg *Config, dagsDir, wikiPath, dataDir string) Service {
 	repoPath := filepath.Join(dataDir, "gitsync", "repo")
+	if wikiPath == "" {
+		wikiPath = filepath.Join(dagsDir, wikiDir)
+	}
 	return &serviceImpl{
 		cfg:          cfg,
 		dagsDir:      dagsDir,
+		wikiDir:      wikiPath,
+		repoWikiDir:  wikiDir,
 		dataDir:      dataDir,
 		stateManager: NewStateManager(dataDir),
 		gitClient:    NewGitClient(cfg, repoPath),
@@ -213,8 +230,8 @@ func (s *serviceImpl) Pull(ctx context.Context) (*SyncResult, error) {
 	// Get current commit
 	currentCommit, _ := s.gitClient.GetHeadCommit()
 
-	// Sync files to DAGs directory and save state with sync metadata
-	syncedDAGs, conflicts, err := s.syncFilesToDAGsDir(ctx, pullResult, currentCommit)
+	// Sync repository files to local storage and save their metadata.
+	syncedItems, conflicts, err := s.syncFilesToLocal(ctx, pullResult, currentCommit)
 	if err != nil {
 		result.Success = false
 		result.Message = "Failed to sync files"
@@ -223,28 +240,34 @@ func (s *serviceImpl) Pull(ctx context.Context) (*SyncResult, error) {
 		return result, err
 	}
 
-	result.Synced = syncedDAGs
+	result.Synced = syncedItems
 	result.Conflicts = conflicts
 	result.Success = true
-	result.Message = s.buildPullMessage(pullResult.AlreadyUpToDate, syncedDAGs, conflicts)
+	result.Message = s.buildPullMessage(pullResult.AlreadyUpToDate, syncedItems, conflicts)
 
 	return result, nil
 }
 
-// syncFilesToDAGsDir syncs files from the repo to the DAGs directory.
+// syncFilesToLocal syncs repository files to their local storage roots.
 // It updates sync metadata and saves state in a single write.
-func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResult, commitHash string) ([]string, []string, error) {
+func (s *serviceImpl) syncFilesToLocal(_ context.Context, pullResult *PullResult, commitHash string) ([]string, []string, error) {
 	var synced []string
 	var conflicts []string
 
-	extensions := []string{dagYAMLExtension, dagYMLExtension}
+	extensions := []string{dagYAMLExtension, dagYMLExtension, wikiPageExtension}
 	files, err := s.gitClient.ListFiles(extensions)
 	if err != nil {
 		return nil, nil, err
 	}
+	// Page attachments are extension-agnostic; list their subtree separately.
+	assetFiles, err := s.gitClient.ListFilesUnder(path.Join(s.repoWikiDir, wikiPageAssetsDirName))
+	if err != nil {
+		return nil, nil, err
+	}
+	files = append(files, assetFiles...)
 
 	state, _ := s.stateManager.GetState()
-	s.ensureDAGFileExtensions(state)
+	s.ensureSyncItemFileExtensions(state)
 
 	// Reconcile: detect missing/reappeared files before processing
 	s.reconcile(state)
@@ -252,12 +275,18 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 	// Refresh hashes to detect local modifications before checking for conflicts
 	s.refreshLocalHashes(state)
 
-	// Build set of DAG IDs present in remote repo for reconcileAfterPull
+	// Build the set of item IDs present in the remote repository.
 	repoFileSet := make(map[string]struct{}, len(files))
 	repoFileExtensions := make(map[string]string, len(files))
 	for _, file := range files {
 		dagID := s.filePathToDAGID(file)
-		if isBaseConfigID(dagID) {
+		if !isSyncableRepoFile(file, dagID) {
+			continue
+		}
+		repoFileSet[dagID] = struct{}{}
+		if isWikiPageAssetFile(dagID) {
+			// Asset IDs keep their extension, so extension bookkeeping and
+			// the duplicate-extension guard do not apply.
 			continue
 		}
 		fileExtension := normalizeDAGFileExtension(path.Ext(file))
@@ -267,15 +296,17 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 				Message: "DAG exists with both .yaml and .yml extensions",
 			}
 		}
-		repoFileSet[dagID] = struct{}{}
 		repoFileExtensions[dagID] = fileExtension
 	}
 
 	for _, file := range files {
 		dagID := s.filePathToDAGID(file)
-		fileExtension := normalizeDAGFileExtension(path.Ext(file))
+		fileExtension := ""
+		if !isWikiPageAssetFile(dagID) {
+			fileExtension = normalizeDAGFileExtension(path.Ext(file))
+		}
 
-		if isBaseConfigID(dagID) {
+		if !isSyncableRepoFile(file, dagID) {
 			continue
 		}
 		repoFilePath, err := s.safeRepoPathToFilePath(file)
@@ -283,9 +314,21 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 			continue
 		}
 
-		dagState := state.DAGs[dagID]
-		localExtension := s.dagFileExtension(dagID, dagState)
-		if localExtension != fileExtension {
+		dagState := state.Items[dagID]
+		// Unchanged fast path: the item was synced against this exact commit
+		// and refreshLocalHashes above found no local drift, so neither side
+		// needs to be read. This keeps pulls from re-reading every file
+		// (binary attachments in particular) on each auto-sync cycle.
+		if dagState != nil && dagState.Status == StatusSynced && dagState.BaseCommit == pullResult.CurrentCommit {
+			continue
+		}
+		localExtension := s.syncItemFileExtension(dagID, dagState)
+		localFileExtension := fileExtension
+		if isWikiPageAssetFile(dagID) {
+			localFileExtension = ""
+		} else if isWikiPageFile(dagID) && strings.EqualFold(localExtension, fileExtension) {
+			localFileExtension = localExtension
+		} else if localExtension != fileExtension {
 			if err := s.migrateLocalDAGExtension(dagID, localExtension, fileExtension); err != nil {
 				return nil, nil, err
 			}
@@ -294,7 +337,7 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 			}
 		}
 
-		dagFilePath, err := s.safeDAGIDToFilePath(dagID, fileExtension)
+		dagFilePath, err := s.safeDAGIDToFilePath(dagID, localFileExtension)
 		if err != nil {
 			continue
 		}
@@ -310,23 +353,29 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 
 		if err != nil {
 			// Before creating a new local file, check if this content matches
-			// a missing DAG's hash (prevents duplicates after move+pull)
-			for otherID, otherState := range state.DAGs {
-				if otherID != dagID && otherState.Status == StatusMissing && otherState.LastSyncedHash == repoHash {
+			// a missing item's hash (prevents duplicates after move+pull).
+			// Only same-kind entries qualify: identical bytes across kinds
+			// must not forget an unrelated item.
+			for otherID, otherState := range state.Items {
+				if otherID != dagID &&
+					otherState.Status == StatusMissing &&
+					otherState.LastSyncedHash == repoHash &&
+					SyncItemKindForID(otherID) == SyncItemKindForID(dagID) {
 					// Auto-forget the stale missing entry
-					delete(state.DAGs, otherID)
+					delete(state.Items, otherID)
 					break
 				}
 			}
 
 			// Local file doesn't exist, create it
 			if err := s.writeDAGFile(dagID, dagFilePath, repoContent); err != nil {
-				return nil, nil, fmt.Errorf("failed to write synced DAG %q: %w", dagID, err)
+				return nil, nil, fmt.Errorf("failed to write synced item %q: %w", dagID, err)
 			}
 			now := time.Now()
-			newState := &DAGState{
+			newState := &SyncItemState{
 				Status:         StatusSynced,
-				FileExtension:  fileExtension,
+				Kind:           SyncItemKindForID(dagID),
+				FileExtension:  localFileExtension,
 				BaseCommit:     pullResult.CurrentCommit,
 				LastSyncedHash: repoHash,
 				LastSyncedAt:   &now,
@@ -336,7 +385,7 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 			if fi, err := os.Stat(dagFilePath); err == nil {
 				updateStatCache(newState, fi)
 			}
-			state.DAGs[dagID] = newState
+			state.Items[dagID] = newState
 			synced = append(synced, dagID)
 			continue
 		}
@@ -347,9 +396,10 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 		if localHash == repoHash {
 			if dagState == nil || dagState.Status != StatusSynced || dagState.BaseCommit != pullResult.CurrentCommit || dagState.LastSyncedHash != repoHash {
 				now := time.Now()
-				newState := &DAGState{
+				newState := &SyncItemState{
 					Status:         StatusSynced,
-					FileExtension:  fileExtension,
+					Kind:           SyncItemKindForID(dagID),
+					FileExtension:  localFileExtension,
 					BaseCommit:     pullResult.CurrentCommit,
 					LastSyncedHash: repoHash,
 					LastSyncedAt:   &now,
@@ -358,7 +408,7 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 				if fi, err := os.Stat(dagFilePath); err == nil {
 					updateStatCache(newState, fi)
 				}
-				state.DAGs[dagID] = newState
+				state.Items[dagID] = newState
 				synced = append(synced, dagID)
 			}
 			continue
@@ -375,9 +425,10 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 					remoteMessage = commitInfo.Message
 				}
 				now := time.Now()
-				state.DAGs[dagID] = &DAGState{
+				state.Items[dagID] = &SyncItemState{
 					Status:             StatusConflict,
-					FileExtension:      fileExtension,
+					Kind:               SyncItemKindForID(dagID),
+					FileExtension:      localFileExtension,
 					BaseCommit:         dagState.BaseCommit,
 					LastSyncedHash:     dagState.LastSyncedHash,
 					LastSyncedAt:       dagState.LastSyncedAt,
@@ -388,7 +439,7 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 					ConflictDetectedAt: &now,
 				}
 				if fi, err := os.Stat(dagFilePath); err == nil {
-					updateStatCache(state.DAGs[dagID], fi)
+					updateStatCache(state.Items[dagID], fi)
 				}
 				conflicts = append(conflicts, dagID)
 			}
@@ -399,12 +450,13 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 		// Only update local file if remote changed (and local wasn't modified)
 		if localHash != repoHash {
 			if err := s.writeDAGFile(dagID, dagFilePath, repoContent); err != nil {
-				return nil, nil, fmt.Errorf("failed to write synced DAG %q: %w", dagID, err)
+				return nil, nil, fmt.Errorf("failed to write synced item %q: %w", dagID, err)
 			}
 			now := time.Now()
-			newState := &DAGState{
+			newState := &SyncItemState{
 				Status:         StatusSynced,
-				FileExtension:  fileExtension,
+				Kind:           SyncItemKindForID(dagID),
+				FileExtension:  localFileExtension,
 				BaseCommit:     pullResult.CurrentCommit,
 				LastSyncedHash: repoHash,
 				LastSyncedAt:   &now,
@@ -413,16 +465,16 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 			if fi, err := os.Stat(dagFilePath); err == nil {
 				updateStatCache(newState, fi)
 			}
-			state.DAGs[dagID] = newState
+			state.Items[dagID] = newState
 			synced = append(synced, dagID)
 		}
 	}
 
-	// Auto-forget DAGs absent from both remote and local
+	// Auto-forget items absent from both remote and local storage.
 	s.reconcileAfterPull(state, repoFileSet)
 
-	// Scan for local DAGs not in the repo
-	_ = s.scanLocalDAGs(state)
+	// Scan for local items not in the repository.
+	_ = s.scanLocalItems(state)
 
 	// Update sync metadata and save state in a single write
 	s.updateSuccessStateWithCommit(state, commitHash)
@@ -430,17 +482,17 @@ func (s *serviceImpl) syncFilesToDAGsDir(_ context.Context, pullResult *PullResu
 	return synced, conflicts, nil
 }
 
-// reconcileAfterPull removes state entries for DAGs that are absent from both
+// reconcileAfterPull removes state entries for items that are absent from both
 // the remote repository and the local filesystem (auto-forget on pull).
 func (s *serviceImpl) reconcileAfterPull(state *State, repoFileSet map[string]struct{}) {
 	var toDelete []string
-	for dagID, dagState := range state.DAGs {
-		// Skip untracked DAGs — they're local-only by definition
+	for dagID, dagState := range state.Items {
+		// Untracked items are local-only by definition.
 		if dagState.Status == StatusUntracked {
 			continue
 		}
 
-		// Skip DAGs present in remote
+		// Keep items present in the remote repository.
 		if _, inRepo := repoFileSet[dagID]; inRepo {
 			continue
 		}
@@ -454,17 +506,17 @@ func (s *serviceImpl) reconcileAfterPull(state *State, repoFileSet map[string]st
 			continue // file exists locally
 		}
 
-		// DAG not in repo AND not on local disk — auto-forget
+		// Forget items absent from both locations.
 		toDelete = append(toDelete, dagID)
 	}
 
 	for _, dagID := range toDelete {
-		delete(state.DAGs, dagID)
+		delete(state.Items, dagID)
 	}
 }
 
-// scanLocalDAGs scans the local DAGs directory and marks any DAGs not in state as untracked.
-func (s *serviceImpl) scanLocalDAGs(state *State) error {
+// scanLocalItems marks local DAGs and Wiki pages missing from state as untracked.
+func (s *serviceImpl) scanLocalItems(state *State) error {
 	extensions := map[string]bool{dagYAMLExtension: true, dagYMLExtension: true}
 
 	entries, err := os.ReadDir(s.dagsDir)
@@ -491,7 +543,7 @@ func (s *serviceImpl) scanLocalDAGs(state *State) error {
 		}
 
 		// Skip if already tracked
-		if _, exists := state.DAGs[dagID]; exists {
+		if _, exists := state.Items[dagID]; exists {
 			continue
 		}
 
@@ -506,8 +558,9 @@ func (s *serviceImpl) scanLocalDAGs(state *State) error {
 		}
 
 		now := time.Now()
-		ds := &DAGState{
+		ds := &SyncItemState{
 			Status:        StatusUntracked,
+			Kind:          SyncItemKindDAG,
 			FileExtension: normalizeDAGFileExtension(ext),
 			LocalHash:     ComputeContentHash(content),
 			ModifiedAt:    &now,
@@ -515,16 +568,118 @@ func (s *serviceImpl) scanLocalDAGs(state *State) error {
 		if fi, err := os.Stat(filePath); err == nil {
 			updateStatCache(ds, fi)
 		}
-		state.DAGs[dagID] = ds
+		state.Items[dagID] = ds
 	}
+
+	s.scanWikiPageFiles(state)
 
 	return nil
 }
 
-// refreshLocalHashes recalculates hashes for all tracked DAGs and updates status if modified.
+func (s *serviceImpl) scanWikiPageFiles(state *State) {
+	wikiRoot := s.localWikiDir()
+	_ = filepath.WalkDir(wikiRoot, func(filePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr == nil && entry.IsDir() && entry.Name() == wikiPageAssetsDirName {
+			// The attachment subtree belongs to the page-asset scanner.
+			return filepath.SkipDir
+		}
+		ext := filepath.Ext(filePath)
+		if walkErr != nil || entry.IsDir() || !strings.EqualFold(ext, wikiPageExtension) {
+			return nil
+		}
+		relPath, err := filepath.Rel(wikiRoot, filePath)
+		if err != nil {
+			return nil
+		}
+		pageID := strings.TrimSuffix(filepath.ToSlash(relPath), ext)
+		if wiki.ValidatePageID(pageID) != nil {
+			return nil
+		}
+		itemID := path.Join(s.repoWikiDir, pageID)
+		if _, exists := state.Items[itemID]; exists {
+			return nil
+		}
+		content, err := safeReadFileWithinBase(wikiRoot, filePath)
+		if err != nil {
+			return nil
+		}
+		now := time.Now()
+		itemState := &SyncItemState{
+			Status:        StatusUntracked,
+			Kind:          SyncItemKindWikiPage,
+			FileExtension: ext,
+			LocalHash:     ComputeContentHash(content),
+			ModifiedAt:    &now,
+		}
+		if info, err := os.Stat(filePath); err == nil {
+			updateStatCache(itemState, info)
+		}
+		state.Items[itemID] = itemState
+		return nil
+	})
+	s.scanWikiPageAssetFiles(state)
+}
+
+// isValidAssetItemID reports whether an asset item ID names a valid
+// attachment location under the Wiki repository root.
+func isValidAssetItemID(itemID string) bool {
+	normalized := normalizeDAGIDSeparators(itemID)
+	rel := strings.TrimPrefix(normalized, wikiRepoDirForID(normalized)+"/"+wikiPageAssetsDirName+"/")
+	if rel == normalized {
+		return false
+	}
+	idx := strings.LastIndex(rel, "/")
+	if idx <= 0 {
+		return false
+	}
+	wikiPageID, name := rel[:idx], rel[idx+1:]
+	if wiki.ValidatePageID(wikiPageID) != nil {
+		return false
+	}
+	return wiki.ValidateAttachmentName(name) == nil
+}
+
+// scanWikiPageAssetFiles registers untracked Wiki page attachments.
+func (s *serviceImpl) scanWikiPageAssetFiles(state *State) {
+	assetDir := filepath.Join(s.localWikiDir(), wikiPageAssetsDirName)
+	_ = filepath.WalkDir(assetDir, func(filePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return nil
+		}
+		relPath, err := filepath.Rel(s.localWikiDir(), filePath)
+		if err != nil {
+			return nil
+		}
+		itemID := path.Join(s.repoWikiDir, filepath.ToSlash(relPath))
+		if !isValidAssetItemID(itemID) {
+			return nil
+		}
+		if _, exists := state.Items[itemID]; exists {
+			return nil
+		}
+		content, err := safeReadFileWithinBase(s.localWikiDir(), filePath)
+		if err != nil {
+			return nil
+		}
+		now := time.Now()
+		itemState := &SyncItemState{
+			Status:     StatusUntracked,
+			Kind:       SyncItemKindWikiPageAsset,
+			LocalHash:  ComputeContentHash(content),
+			ModifiedAt: &now,
+		}
+		if info, err := os.Stat(filePath); err == nil {
+			updateStatCache(itemState, info)
+		}
+		state.Items[itemID] = itemState
+		return nil
+	})
+}
+
+// refreshLocalHashes recalculates hashes for tracked items and updates modified status.
 func (s *serviceImpl) refreshLocalHashes(state *State) bool {
 	changed := false
-	for dagID, dagState := range state.DAGs {
+	for dagID, dagState := range state.Items {
 		// Skip untracked (no remote to compare), conflict (already detected), and missing (file absent)
 		if dagState.Status == StatusUntracked || dagState.Status == StatusConflict || dagState.Status == StatusMissing {
 			continue
@@ -575,8 +730,8 @@ func (s *serviceImpl) refreshLocalHashes(state *State) bool {
 	return changed
 }
 
-// updateStatCache updates the stat cache fields on a DAGState from file info.
-func updateStatCache(dagState *DAGState, info os.FileInfo) {
+// updateStatCache updates the stat cache fields on a SyncItemState from file info.
+func updateStatCache(dagState *SyncItemState, info os.FileInfo) {
 	modTime := info.ModTime()
 	size := info.Size()
 	dagState.LastStatModTime = &modTime
@@ -584,7 +739,7 @@ func updateStatCache(dagState *DAGState, info os.FileInfo) {
 }
 
 // statMatchesCache returns true if the file info matches the cached stat values.
-func statMatchesCache(dagState *DAGState, info os.FileInfo) bool {
+func statMatchesCache(dagState *SyncItemState, info os.FileInfo) bool {
 	if dagState.LastStatModTime == nil || dagState.LastStatSize == nil {
 		return false
 	}
@@ -597,7 +752,7 @@ func (s *serviceImpl) reconcile(state *State) bool {
 	changed := false
 	var toDelete []string
 
-	for dagID, dagState := range state.DAGs {
+	for dagID, dagState := range state.Items {
 		filePath, err := s.safeDAGIDToFilePath(dagID, dagState.FileExtension)
 		if err != nil {
 			continue
@@ -648,13 +803,13 @@ func (s *serviceImpl) reconcile(state *State) bool {
 	}
 
 	for _, dagID := range toDelete {
-		delete(state.DAGs, dagID)
+		delete(state.Items, dagID)
 	}
 
 	return changed
 }
 
-// Publish commits and pushes a single DAG to the remote.
+// Publish commits and pushes a single sync item to the remote.
 func (s *serviceImpl) Publish(ctx context.Context, dagID, message string, force bool) (*SyncResult, error) {
 	if err := s.validatePushEnabled(); err != nil {
 		return nil, err
@@ -670,7 +825,7 @@ func (s *serviceImpl) Publish(ctx context.Context, dagID, message string, force 
 		return nil, err
 	}
 
-	dagState := state.DAGs[dagID]
+	dagState := state.Items[dagID]
 	if dagState == nil {
 		return nil, &DAGNotFoundError{DAGID: dagID}
 	}
@@ -679,7 +834,7 @@ func (s *serviceImpl) Publish(ctx context.Context, dagID, message string, force 
 		return nil, err
 	}
 
-	fileExtension := s.dagFileExtension(dagID, dagState)
+	fileExtension := s.syncItemFileExtension(dagID, dagState)
 	dagFilePath, err := s.safeDAGIDToFilePath(dagID, fileExtension)
 	if err != nil {
 		return nil, err
@@ -696,7 +851,7 @@ func (s *serviceImpl) Publish(ctx context.Context, dagID, message string, force 
 
 	content, err := os.ReadFile(dagFilePath) //nolint:gosec // path constructed from internal dagsDir
 	if err != nil {
-		return nil, fmt.Errorf("failed to read DAG file: %w", err)
+		return nil, fmt.Errorf("failed to read sync item file: %w", err)
 	}
 
 	if err := safeWriteFileWithinBase(s.gitClient.repoPath, repoAbsPath, content, 0600); err != nil {
@@ -716,13 +871,13 @@ func (s *serviceImpl) Publish(ctx context.Context, dagID, message string, force 
 		return nil, err
 	}
 
-	// Update DAG state to synced
+	// Update the item state to synced.
 	contentHash := ComputeContentHash(content)
-	newState := s.newSyncedDAGState(fileExtension, commitHash, contentHash)
+	newState := s.newSyncedItemState(dagID, fileExtension, commitHash, contentHash)
 	if fi, err := os.Stat(dagFilePath); err == nil {
 		updateStatCache(newState, fi)
 	}
-	state.DAGs[dagID] = newState
+	state.Items[dagID] = newState
 	s.updateSuccessStateWithCommit(state, commitHash)
 
 	result.Success = true
@@ -732,7 +887,7 @@ func (s *serviceImpl) Publish(ctx context.Context, dagID, message string, force 
 	return result, nil
 }
 
-// PublishAll commits and pushes the specified DAGs.
+// PublishAll commits and pushes the specified sync items.
 func (s *serviceImpl) PublishAll(ctx context.Context, message string, dagIDs []string) (*SyncResult, error) {
 	if err := s.validatePushEnabled(); err != nil {
 		return nil, err
@@ -762,8 +917,8 @@ func (s *serviceImpl) PublishAll(ctx context.Context, message string, dagIDs []s
 	stagedFiles := make([]string, 0, len(publishTargets))
 
 	for _, dagID := range publishTargets {
-		dagState := state.DAGs[dagID]
-		fileExtension := s.dagFileExtension(dagID, dagState)
+		dagState := state.Items[dagID]
+		fileExtension := s.syncItemFileExtension(dagID, dagState)
 		dagFilePath, err := s.safeDAGIDToFilePath(dagID, fileExtension)
 		if err != nil {
 			return nil, err
@@ -776,12 +931,12 @@ func (s *serviceImpl) PublishAll(ctx context.Context, message string, dagIDs []s
 
 		content, err := os.ReadFile(dagFilePath) //nolint:gosec // path constructed from internal dagsDir
 		if err != nil {
-			result.Errors = append(result.Errors, SyncError{DAGID: dagID, Message: err.Error()})
+			result.Errors = append(result.Errors, SyncError{ItemID: dagID, Message: err.Error()})
 			continue
 		}
 
 		if err := safeWriteFileWithinBase(s.gitClient.repoPath, repoAbsPath, content, 0600); err != nil {
-			result.Errors = append(result.Errors, SyncError{DAGID: dagID, Message: err.Error()})
+			result.Errors = append(result.Errors, SyncError{ItemID: dagID, Message: err.Error()})
 			continue
 		}
 
@@ -807,7 +962,7 @@ func (s *serviceImpl) PublishAll(ctx context.Context, message string, dagIDs []s
 
 	// Commit staged files only (do not restage ".")
 	if message == "" {
-		message = fmt.Sprintf("Update %d DAG(s)", len(successfulDAGs))
+		message = fmt.Sprintf("Update %d sync item(s)", len(successfulDAGs))
 	}
 	commitHash, err := s.gitClient.CommitStaged(message)
 	if err != nil {
@@ -819,32 +974,32 @@ func (s *serviceImpl) PublishAll(ctx context.Context, message string, dagIDs []s
 		return nil, err
 	}
 
-	// Update state only for successfully published DAGs
+	// Update state only for successfully published items.
 	for _, dagID := range successfulDAGs {
-		fileExtension := s.dagFileExtension(dagID, state.DAGs[dagID])
+		fileExtension := s.syncItemFileExtension(dagID, state.Items[dagID])
 		dagFilePath, err := s.safeDAGIDToFilePath(dagID, fileExtension)
 		if err != nil {
 			return nil, err
 		}
 		content, _ := os.ReadFile(dagFilePath) //nolint:gosec // path constructed from internal dagsDir
 		contentHash := ComputeContentHash(content)
-		newState := s.newSyncedDAGState(fileExtension, commitHash, contentHash)
+		newState := s.newSyncedItemState(dagID, fileExtension, commitHash, contentHash)
 		if fi, err := os.Stat(dagFilePath); err == nil {
 			updateStatCache(newState, fi)
 		}
-		state.DAGs[dagID] = newState
+		state.Items[dagID] = newState
 		result.Synced = append(result.Synced, dagID)
 	}
 
 	s.updateSuccessStateWithCommit(state, commitHash)
 
 	result.Success = true
-	result.Message = fmt.Sprintf("Published %d DAG(s)", len(result.Synced))
+	result.Message = fmt.Sprintf("Published %d sync item(s)", len(result.Synced))
 
 	return result, nil
 }
 
-// Discard discards local changes for a DAG.
+// Discard discards local changes for a sync item.
 func (s *serviceImpl) Discard(_ context.Context, dagID string) error {
 	if err := s.validateEnabled(); err != nil {
 		return err
@@ -858,7 +1013,7 @@ func (s *serviceImpl) Discard(_ context.Context, dagID string) error {
 		return err
 	}
 
-	dagState := state.DAGs[dagID]
+	dagState := state.Items[dagID]
 	if dagState == nil {
 		return &DAGNotFoundError{DAGID: dagID}
 	}
@@ -868,7 +1023,7 @@ func (s *serviceImpl) Discard(_ context.Context, dagID string) error {
 		return err
 	}
 
-	fileExtension := s.dagFileExtension(dagID, dagState)
+	fileExtension := s.syncItemFileExtension(dagID, dagState)
 	repoFilePath, err := s.safeDAGIDToRepoPath(dagID, fileExtension)
 	if err != nil {
 		return err
@@ -887,25 +1042,25 @@ func (s *serviceImpl) Discard(_ context.Context, dagID string) error {
 		return fmt.Errorf("failed to read repo file: %w", err)
 	}
 
-	// Write to DAGs directory
+	// Restore the local item from the repository.
 	if err := s.writeDAGFile(dagID, dagFilePath, repoContent); err != nil {
-		return fmt.Errorf("failed to write DAG file: %w", err)
+		return fmt.Errorf("failed to write sync item file: %w", err)
 	}
 
 	// Update state
 	contentHash := ComputeContentHash(repoContent)
-	newState := s.newSyncedDAGState(fileExtension, dagState.BaseCommit, contentHash)
+	newState := s.newSyncedItemState(dagID, fileExtension, dagState.BaseCommit, contentHash)
 	if fi, err := os.Stat(dagFilePath); err == nil {
 		updateStatCache(newState, fi)
 	}
-	state.DAGs[dagID] = newState
+	state.Items[dagID] = newState
 	_ = s.stateManager.Save(state) // Best effort - discard was successful, state will sync on next operation
 
 	return nil
 }
 
-// Forget removes state entries for missing, untracked, or conflicting DAGs.
-// DAGs in synced or modified status are rejected.
+// Forget removes state entries for missing, untracked, or conflicting items.
+// Items in synced or modified status are rejected.
 func (s *serviceImpl) Forget(_ context.Context, itemIDs []string) ([]string, error) {
 	if err := s.validateEnabled(); err != nil {
 		return nil, err
@@ -922,14 +1077,14 @@ func (s *serviceImpl) Forget(_ context.Context, itemIDs []string) ([]string, err
 	// Phase 1: validate all IDs before mutating state.
 	var toForget []string
 	for _, itemID := range itemIDs {
-		dagState, exists := state.DAGs[itemID]
+		dagState, exists := state.Items[itemID]
 		if !exists {
 			return nil, &DAGNotFoundError{DAGID: itemID}
 		}
 
 		switch dagState.Status {
 		case StatusSynced, StatusModified:
-			return nil, fmt.Errorf("%w: %q is %s — only missing, untracked, or conflicting DAGs can be forgotten",
+			return nil, fmt.Errorf("%w: %q is %s — only missing, untracked, or conflicting sync items can be forgotten",
 				ErrCannotForget, itemID, dagState.Status)
 		case StatusMissing, StatusUntracked, StatusConflict:
 			toForget = append(toForget, itemID)
@@ -939,7 +1094,7 @@ func (s *serviceImpl) Forget(_ context.Context, itemIDs []string) ([]string, err
 	// Phase 2: delete all validated entries.
 	var forgotten []string
 	for _, itemID := range toForget {
-		delete(state.DAGs, itemID)
+		delete(state.Items, itemID)
 		forgotten = append(forgotten, itemID)
 	}
 
@@ -967,9 +1122,9 @@ func (s *serviceImpl) Cleanup(_ context.Context) ([]string, error) {
 	}
 
 	var forgotten []string
-	for dagID, dagState := range state.DAGs {
+	for dagID, dagState := range state.Items {
 		if dagState.Status == StatusMissing {
-			delete(state.DAGs, dagID)
+			delete(state.Items, dagID)
 			forgotten = append(forgotten, dagID)
 		}
 	}
@@ -984,7 +1139,7 @@ func (s *serviceImpl) Cleanup(_ context.Context) ([]string, error) {
 	return forgotten, nil
 }
 
-// Delete removes a DAG from remote, local disk, and state.
+// Delete removes a sync item from remote, local storage, and state.
 func (s *serviceImpl) Delete(ctx context.Context, itemID, message string, force bool) error {
 	if err := s.validatePushEnabled(); err != nil {
 		return err
@@ -998,7 +1153,7 @@ func (s *serviceImpl) Delete(ctx context.Context, itemID, message string, force 
 		return err
 	}
 
-	dagState, exists := state.DAGs[itemID]
+	dagState, exists := state.Items[itemID]
 	if !exists {
 		return &DAGNotFoundError{DAGID: itemID}
 	}
@@ -1012,7 +1167,7 @@ func (s *serviceImpl) Delete(ctx context.Context, itemID, message string, force 
 	if dagState.Status == StatusModified && !force {
 		return &ValidationError{
 			Field:   itemID,
-			Message: "DAG has local modifications — use force to delete anyway",
+			Message: "sync item has local modifications — use force to delete anyway",
 		}
 	}
 
@@ -1022,7 +1177,7 @@ func (s *serviceImpl) Delete(ctx context.Context, itemID, message string, force 
 	}
 
 	// Delete local file if it exists
-	fileExtension := s.dagFileExtension(itemID, dagState)
+	fileExtension := s.syncItemFileExtension(itemID, dagState)
 	localPath, err := s.safeDAGIDToFilePath(itemID, fileExtension)
 	if err != nil {
 		return err
@@ -1037,7 +1192,7 @@ func (s *serviceImpl) Delete(ctx context.Context, itemID, message string, force 
 		return err
 	}
 
-	// For missing DAGs the file won't exist in the repo — ignore that error.
+	// For missing items the file won't exist in the repo — ignore that error.
 	// For other statuses, a real staging failure should be surfaced.
 	if err := s.gitClient.RemoveFile(repoPath); err != nil && dagState.Status != StatusMissing {
 		return fmt.Errorf("failed to stage removal of %q: %w", itemID, err)
@@ -1058,13 +1213,13 @@ func (s *serviceImpl) Delete(ctx context.Context, itemID, message string, force 
 	}
 
 	// On success: delete state entry
-	delete(state.DAGs, itemID)
+	delete(state.Items, itemID)
 	s.updateSuccessStateWithCommit(state, commitHash)
 
 	return nil
 }
 
-// DeleteBatch removes multiple DAGs from remote, local disk, and state in a single commit.
+// DeleteBatch removes multiple items from remote, local disk, and state in a single commit.
 func (s *serviceImpl) DeleteBatch(ctx context.Context, itemIDs []string, message string, force bool) ([]string, error) {
 	if err := s.validatePushEnabled(); err != nil {
 		return nil, err
@@ -1078,7 +1233,7 @@ func (s *serviceImpl) DeleteBatch(ctx context.Context, itemIDs []string, message
 		return nil, err
 	}
 
-	// Phase 1: validate and de-duplicate all DAGs before any mutation.
+	// Phase 1: validate and de-duplicate all items before any mutation.
 	type deleteTarget struct {
 		itemID    string
 		status    SyncStatus
@@ -1094,7 +1249,7 @@ func (s *serviceImpl) DeleteBatch(ctx context.Context, itemIDs []string, message
 		}
 		seen[itemID] = struct{}{}
 
-		dagState, exists := state.DAGs[itemID]
+		dagState, exists := state.Items[itemID]
 		if !exists {
 			return nil, &DAGNotFoundError{DAGID: itemID}
 		}
@@ -1106,11 +1261,11 @@ func (s *serviceImpl) DeleteBatch(ctx context.Context, itemIDs []string, message
 		if (dagState.Status == StatusModified || dagState.Status == StatusConflict) && !force {
 			return nil, &ValidationError{
 				Field:   itemID,
-				Message: "DAG has local modifications — use force to delete anyway",
+				Message: "sync item has local modifications — use force to delete anyway",
 			}
 		}
 
-		fileExtension := s.dagFileExtension(itemID, dagState)
+		fileExtension := s.syncItemFileExtension(itemID, dagState)
 		localPath, err := s.safeDAGIDToFilePath(itemID, fileExtension)
 		if err != nil {
 			return nil, err
@@ -1152,7 +1307,7 @@ func (s *serviceImpl) DeleteBatch(ctx context.Context, itemIDs []string, message
 	}
 
 	if message == "" {
-		message = fmt.Sprintf("Delete %d DAG(s)", len(targets))
+		message = fmt.Sprintf("Delete %d sync item(s)", len(targets))
 	}
 	commitHash, err := s.gitClient.CommitStaged(message)
 	if err != nil {
@@ -1166,7 +1321,7 @@ func (s *serviceImpl) DeleteBatch(ctx context.Context, itemIDs []string, message
 	// On success: delete all state entries.
 	var deleted []string
 	for _, t := range targets {
-		delete(state.DAGs, t.itemID)
+		delete(state.Items, t.itemID)
 		deleted = append(deleted, t.itemID)
 	}
 	sort.Strings(deleted)
@@ -1175,7 +1330,7 @@ func (s *serviceImpl) DeleteBatch(ctx context.Context, itemIDs []string, message
 	return deleted, nil
 }
 
-// DeleteAllMissing removes all missing DAGs from remote, local, and state.
+// DeleteAllMissing removes all missing items from remote, local storage, and state.
 func (s *serviceImpl) DeleteAllMissing(ctx context.Context, message string) ([]string, error) {
 	if err := s.validatePushEnabled(); err != nil {
 		return nil, err
@@ -1189,14 +1344,14 @@ func (s *serviceImpl) DeleteAllMissing(ctx context.Context, message string) ([]s
 		return nil, err
 	}
 
-	// Collect missing DAGs
+	// Collect missing items.
 	var missingIDs []string
 	var repoPaths []string
-	for dagID, dagState := range state.DAGs {
+	for dagID, dagState := range state.Items {
 		if dagState.Status != StatusMissing {
 			continue
 		}
-		repoPath, err := s.safeDAGIDToRepoPath(dagID, s.dagFileExtension(dagID, dagState))
+		repoPath, err := s.safeDAGIDToRepoPath(dagID, s.syncItemFileExtension(dagID, dagState))
 		if err != nil {
 			continue
 		}
@@ -1213,12 +1368,12 @@ func (s *serviceImpl) DeleteAllMissing(ctx context.Context, message string) ([]s
 		return nil, err
 	}
 
-	// Stage all removals — all DAGs here are missing by definition,
+	// Stage all removals — all items here are missing by definition,
 	// so files may not exist in the repo. Ignore errors from RemoveFiles.
 	_ = s.gitClient.RemoveFiles(repoPaths)
 
 	if message == "" {
-		message = fmt.Sprintf("Delete %d missing DAG(s)", len(missingIDs))
+		message = fmt.Sprintf("Delete %d missing sync item(s)", len(missingIDs))
 	}
 	commitHash, err := s.gitClient.CommitStaged(message)
 	if err != nil {
@@ -1231,14 +1386,14 @@ func (s *serviceImpl) DeleteAllMissing(ctx context.Context, message string) ([]s
 
 	// On success: delete all entries
 	for _, dagID := range missingIDs {
-		delete(state.DAGs, dagID)
+		delete(state.Items, dagID)
 	}
 	s.updateSuccessStateWithCommit(state, commitHash)
 
 	return missingIDs, nil
 }
 
-// Move atomically renames a DAG across local filesystem, remote repository, and sync state.
+// Move atomically renames an item across local storage, remote repository, and sync state.
 func (s *serviceImpl) Move(ctx context.Context, oldID, newID, message string, force bool) error {
 	if err := s.validatePushEnabled(); err != nil {
 		return err
@@ -1259,6 +1414,12 @@ func (s *serviceImpl) Move(ctx context.Context, oldID, newID, message string, fo
 	if normalized != newID {
 		return &InvalidDAGIDError{DAGID: newID, Reason: fmt.Sprintf("must be normalized as %q", normalized)}
 	}
+	if SyncItemKindForID(oldID) != SyncItemKindForID(newID) {
+		return &ValidationError{Field: "newItemId", Message: "source and destination must have the same item type"}
+	}
+	if isWikiPageAssetFile(newID) && !isValidAssetItemID(newID) {
+		return &ValidationError{Field: "newItemId", Message: "destination is not a valid attachment path"}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1268,7 +1429,7 @@ func (s *serviceImpl) Move(ctx context.Context, oldID, newID, message string, fo
 		return err
 	}
 
-	oldState, exists := state.DAGs[oldID]
+	oldState, exists := state.Items[oldID]
 	if !exists {
 		return &DAGNotFoundError{DAGID: oldID}
 	}
@@ -1277,7 +1438,7 @@ func (s *serviceImpl) Move(ctx context.Context, oldID, newID, message string, fo
 	if oldState.Status == StatusUntracked {
 		return &ValidationError{
 			Field:   oldID,
-			Message: "untracked DAGs cannot be moved — publish first",
+			Message: "untracked sync items cannot be moved — publish first",
 		}
 	}
 
@@ -1292,7 +1453,7 @@ func (s *serviceImpl) Move(ctx context.Context, oldID, newID, message string, fo
 	}
 
 	// Check destination is not already tracked (except untracked in retroactive mode)
-	if destState, destExists := state.DAGs[newID]; destExists {
+	if destState, destExists := state.Items[newID]; destExists {
 		if destState.Status != StatusUntracked {
 			return &ValidationError{
 				Field:   "newItemId",
@@ -1302,7 +1463,7 @@ func (s *serviceImpl) Move(ctx context.Context, oldID, newID, message string, fo
 	}
 
 	// Resolve file paths
-	fileExtension := s.dagFileExtension(oldID, oldState)
+	fileExtension := s.syncItemFileExtension(oldID, oldState)
 	oldLocalPath, err := s.safeDAGIDToFilePath(oldID, fileExtension)
 	if err != nil {
 		return err
@@ -1389,16 +1550,16 @@ func (s *serviceImpl) Move(ctx context.Context, oldID, newID, message string, fo
 
 	// On success: update state
 	contentHash := ComputeContentHash(content)
-	newDAGState := s.newSyncedDAGState(fileExtension, commitHash, contentHash)
+	newItemState := s.newSyncedItemState(newID, fileExtension, commitHash, contentHash)
 	if fi, err := os.Stat(newLocalPath); err == nil {
-		updateStatCache(newDAGState, fi)
+		updateStatCache(newItemState, fi)
 	}
 
 	// If destination was untracked, remove the old untracked entry
-	delete(state.DAGs, newID)
+	delete(state.Items, newID)
 	// Remove old entry and add new
-	delete(state.DAGs, oldID)
-	state.DAGs[newID] = newDAGState
+	delete(state.Items, oldID)
+	state.Items[newID] = newItemState
 	s.updateSuccessStateWithCommit(state, commitHash)
 
 	return nil
@@ -1419,6 +1580,13 @@ func (s *serviceImpl) GetStatus(_ context.Context) (*OverallStatus, error) {
 
 	status.Repository = s.cfg.Repository
 	status.Branch = s.cfg.Branch
+	repoWikiDir, err := s.selectRepoWikiDir()
+	if err != nil {
+		status.Summary = SummaryError
+		status.LastError = new(err.Error())
+		return status, nil
+	}
+	s.repoWikiDir = repoWikiDir
 
 	state, err := s.stateManager.GetState()
 	if err != nil {
@@ -1426,21 +1594,21 @@ func (s *serviceImpl) GetStatus(_ context.Context) (*OverallStatus, error) {
 		status.LastError = new(err.Error())
 		return status, nil
 	}
-	extensionsChanged := s.ensureDAGFileExtensions(state)
+	extensionsChanged := s.ensureSyncItemFileExtensions(state)
 
-	// Scan for new local DAGs not yet tracked
-	prevCount := len(state.DAGs)
-	_ = s.scanLocalDAGs(state)
-	newDAGs := len(state.DAGs) > prevCount
+	// Scan for new local items not yet tracked.
+	prevCount := len(state.Items)
+	_ = s.scanLocalItems(state)
+	newItems := len(state.Items) > prevCount
 
 	// Reconcile: detect missing/reappeared files
 	reconciled := s.reconcile(state)
 
-	// Refresh hashes for existing DAGs to detect local modifications
+	// Refresh hashes for tracked items to detect local modifications.
 	hashesChanged := s.refreshLocalHashes(state)
 
 	// Save state if anything changed (best effort - read-only operation)
-	if extensionsChanged || newDAGs || hashesChanged || reconciled {
+	if extensionsChanged || newItems || hashesChanged || reconciled {
 		_ = s.stateManager.Save(state)
 	}
 
@@ -1448,9 +1616,9 @@ func (s *serviceImpl) GetStatus(_ context.Context) (*OverallStatus, error) {
 	status.LastSyncCommit = state.LastSyncCommit
 	status.LastSyncStatus = state.LastSyncStatus
 	status.LastError = state.LastError
-	status.DAGs = cloneDAGStates(state.DAGs)
+	status.Items = cloneSyncItemStates(state.Items)
 
-	status.Counts = computeStatusCounts(state.DAGs)
+	status.Counts = computeStatusCounts(state.Items)
 
 	// Determine summary status (priority: error > conflict > missing > pending > synced)
 	if status.Counts.Conflict > 0 {
@@ -1470,8 +1638,8 @@ func (s *serviceImpl) GetStatus(_ context.Context) (*OverallStatus, error) {
 	return status, nil
 }
 
-// GetDAGStatus returns the sync status for a specific DAG.
-func (s *serviceImpl) GetDAGStatus(_ context.Context, dagID string) (*DAGState, error) {
+// GetSyncItemStatus returns the sync status for a specific item.
+func (s *serviceImpl) GetSyncItemStatus(_ context.Context, itemID string) (*SyncItemState, error) {
 	if err := s.validateEnabled(); err != nil {
 		return nil, err
 	}
@@ -1484,23 +1652,23 @@ func (s *serviceImpl) GetDAGStatus(_ context.Context, dagID string) (*DAGState, 
 		return nil, err
 	}
 
-	dagState := state.DAGs[dagID]
-	if dagState == nil {
-		return nil, &DAGNotFoundError{DAGID: dagID}
+	itemState := state.Items[itemID]
+	if itemState == nil {
+		return nil, &DAGNotFoundError{DAGID: itemID}
 	}
 
-	previousExtension := dagState.FileExtension
-	s.dagFileExtension(dagID, dagState)
-	if dagState.FileExtension != previousExtension {
+	previousExtension := itemState.FileExtension
+	s.syncItemFileExtension(itemID, itemState)
+	if itemState.FileExtension != previousExtension {
 		_ = s.stateManager.Save(state)
 	}
 
-	dagStateCopy := *dagState
-	return &dagStateCopy, nil
+	stateCopy := *itemState
+	return &stateCopy, nil
 }
 
-// GetDAGDiff returns the diff between local and remote versions of a DAG.
-func (s *serviceImpl) GetDAGDiff(_ context.Context, dagID string) (*DAGDiff, error) {
+// GetSyncItemDiff returns the diff between local and remote versions of an item.
+func (s *serviceImpl) GetSyncItemDiff(_ context.Context, itemID string) (*SyncItemDiff, error) {
 	if err := s.validateEnabled(); err != nil {
 		return nil, err
 	}
@@ -1513,26 +1681,60 @@ func (s *serviceImpl) GetDAGDiff(_ context.Context, dagID string) (*DAGDiff, err
 		return nil, err
 	}
 
-	dagState := state.DAGs[dagID]
-	if dagState == nil {
-		return nil, &DAGNotFoundError{DAGID: dagID}
+	itemState := state.Items[itemID]
+	if itemState == nil {
+		return nil, &DAGNotFoundError{DAGID: itemID}
 	}
 
-	diff := &DAGDiff{
-		DAGID:         dagID,
-		FileExtension: s.dagFileExtension(dagID, dagState),
-		Status:        dagState.Status,
+	diff := &SyncItemDiff{
+		ItemID:        itemID,
+		FileExtension: s.syncItemFileExtension(itemID, itemState),
+		Status:        itemState.Status,
 	}
 
-	// Missing DAGs have no local file — handle before os.ReadFile below.
-	if dagState.Status == StatusMissing {
-		diff.LocalContent = ""
-		diff.RemoteContent = s.fetchRemoteContent(dagID, diff.FileExtension, dagState.BaseCommit)
-		diff.RemoteCommit = dagState.BaseCommit
+	// Binary attachments never load content: sizes and commit metadata only.
+	// This guard must precede every content-loading branch below.
+	if isWikiPageAssetFile(itemID) {
+		diff.Binary = true
+		if localPath, err := s.safeDAGIDToFilePath(itemID, ""); err == nil {
+			if info, err := os.Stat(localPath); err == nil {
+				size := info.Size()
+				diff.LocalSize = &size
+			}
+		}
+		remoteCommit := itemState.BaseCommit
+		if itemState.Status == StatusConflict {
+			remoteCommit = itemState.RemoteCommit
+			diff.RemoteAuthor = itemState.RemoteAuthor
+			diff.RemoteMessage = itemState.RemoteMessage
+		}
+		if remoteCommit != "" {
+			if err := s.gitClient.Open(); err != nil {
+				return nil, fmt.Errorf("failed to open repository for binary diff: %w", err)
+			}
+			repoPath, err := s.safeDAGIDToRepoPath(itemID, "")
+			if err != nil {
+				return nil, err
+			}
+			size, err := s.gitClient.GetFileSizeAtCommit(repoPath, remoteCommit)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read remote binary metadata: %w", err)
+			}
+			diff.RemoteSize = &size
+			diff.RemoteCommit = remoteCommit
+		}
 		return diff, nil
 	}
 
-	localPath, err := s.safeDAGIDToFilePath(dagID, diff.FileExtension)
+	// Missing items have no local file.
+	if itemState.Status == StatusMissing {
+		diff.LocalContent = ""
+		diff.RemoteContent = s.fetchRemoteContent(itemID, diff.FileExtension, itemState.BaseCommit)
+		diff.RemoteCommit = itemState.BaseCommit
+		return diff, nil
+	}
+
+	localPath, err := s.safeDAGIDToFilePath(itemID, diff.FileExtension)
 	if err != nil {
 		return nil, err
 	}
@@ -1543,20 +1745,20 @@ func (s *serviceImpl) GetDAGDiff(_ context.Context, dagID string) (*DAGDiff, err
 
 	diff.LocalContent = string(localContent)
 
-	switch dagState.Status {
+	switch itemState.Status {
 	case StatusSynced:
 		diff.RemoteContent = string(localContent)
-		diff.RemoteCommit = dagState.BaseCommit
+		diff.RemoteCommit = itemState.BaseCommit
 
 	case StatusModified:
-		diff.RemoteContent = s.fetchRemoteContent(dagID, diff.FileExtension, dagState.BaseCommit)
-		diff.RemoteCommit = dagState.BaseCommit
+		diff.RemoteContent = s.fetchRemoteContent(itemID, diff.FileExtension, itemState.BaseCommit)
+		diff.RemoteCommit = itemState.BaseCommit
 
 	case StatusConflict:
-		diff.RemoteContent = s.fetchRemoteContent(dagID, diff.FileExtension, dagState.RemoteCommit)
-		diff.RemoteCommit = dagState.RemoteCommit
-		diff.RemoteAuthor = dagState.RemoteAuthor
-		diff.RemoteMessage = dagState.RemoteMessage
+		diff.RemoteContent = s.fetchRemoteContent(itemID, diff.FileExtension, itemState.RemoteCommit)
+		diff.RemoteCommit = itemState.RemoteCommit
+		diff.RemoteAuthor = itemState.RemoteAuthor
+		diff.RemoteMessage = itemState.RemoteMessage
 
 	case StatusUntracked:
 		// No remote version for untracked files
@@ -1568,20 +1770,20 @@ func (s *serviceImpl) GetDAGDiff(_ context.Context, dagID string) (*DAGDiff, err
 	return diff, nil
 }
 
-func cloneDAGStates(states map[string]*DAGState) map[string]*DAGState {
-	cloned := make(map[string]*DAGState, len(states))
-	for dagID, dagState := range states {
-		if dagState == nil {
-			cloned[dagID] = nil
+func cloneSyncItemStates(states map[string]*SyncItemState) map[string]*SyncItemState {
+	cloned := make(map[string]*SyncItemState, len(states))
+	for itemID, itemState := range states {
+		if itemState == nil {
+			cloned[itemID] = nil
 			continue
 		}
-		dagStateCopy := *dagState
-		cloned[dagID] = &dagStateCopy
+		stateCopy := *itemState
+		cloned[itemID] = &stateCopy
 	}
 	return cloned
 }
 
-// fetchRemoteContent retrieves the content of a DAG file from a specific commit.
+// fetchRemoteContent retrieves item content from a specific commit.
 func (s *serviceImpl) fetchRemoteContent(dagID, fileExtension, commitHash string) string {
 	if commitHash == "" {
 		return ""
@@ -1726,18 +1928,43 @@ func (s *serviceImpl) filePathToDAGID(filePath string) string {
 		prefix := strings.TrimSuffix(filepath.ToSlash(s.cfg.Path), "/") + "/"
 		filePath = strings.TrimPrefix(filePath, prefix)
 	}
+	// Asset IDs keep the extension: attachment names in one directory may
+	// differ only by extension.
+	if isWikiPageAssetFile(filePath) {
+		return filePath
+	}
 	// Remove extension
 	ext := path.Ext(filePath)
 	dagID := strings.TrimSuffix(filePath, ext)
 	return dagID
 }
 
-// resolvePublishTargets validates and canonicalizes DAG IDs for batch publish.
+func isSyncableRepoFile(filePath, itemID string) bool {
+	if isBaseConfigID(itemID) {
+		return false
+	}
+	// Attachments are classified by location and validated by name; the
+	// extension switch below never applies to them, so a .md file under the
+	// asset subtree can never become a Wiki page item.
+	if isWikiPageAssetFile(itemID) {
+		return isValidAssetItemID(itemID)
+	}
+	switch strings.ToLower(path.Ext(filePath)) {
+	case wikiPageExtension:
+		return isWikiPageFile(itemID)
+	case dagYAMLExtension, dagYMLExtension:
+		return !isWikiPageFile(itemID)
+	default:
+		return false
+	}
+}
+
+// resolvePublishTargets validates and canonicalizes item IDs for batch publish.
 func (s *serviceImpl) resolvePublishTargets(state *State, dagIDs []string) ([]string, error) {
 	if len(dagIDs) == 0 {
 		return nil, &ValidationError{
 			Field:   "dagIds",
-			Message: "at least one DAG ID is required",
+			Message: "at least one sync item ID is required",
 		}
 	}
 
@@ -1747,7 +1974,7 @@ func (s *serviceImpl) resolvePublishTargets(state *State, dagIDs []string) ([]st
 		if strings.TrimSpace(dagID) == "" {
 			return nil, &ValidationError{
 				Field:   fmt.Sprintf("dagIds[%d]", i),
-				Message: "DAG ID cannot be empty",
+				Message: "sync item ID cannot be empty",
 			}
 		}
 
@@ -1767,11 +1994,11 @@ func (s *serviceImpl) resolvePublishTargets(state *State, dagIDs []string) ([]st
 		}
 		seen[dagID] = struct{}{}
 
-		dagState, exists := state.DAGs[dagID]
+		dagState, exists := state.Items[dagID]
 		if !exists {
 			return nil, &ValidationError{
 				Field:   "dagIds",
-				Message: fmt.Sprintf("DAG %q is not tracked by git sync", dagID),
+				Message: fmt.Sprintf("sync item %q is not tracked by git sync", dagID),
 			}
 		}
 
@@ -1781,22 +2008,22 @@ func (s *serviceImpl) resolvePublishTargets(state *State, dagIDs []string) ([]st
 		case StatusConflict:
 			return nil, &ValidationError{
 				Field:   "dagIds",
-				Message: fmt.Sprintf("DAG %q has conflicts and cannot be batch-published", dagID),
+				Message: fmt.Sprintf("sync item %q has conflicts and cannot be batch-published", dagID),
 			}
 		case StatusSynced:
 			return nil, &ValidationError{
 				Field:   "dagIds",
-				Message: fmt.Sprintf("DAG %q has no local changes", dagID),
+				Message: fmt.Sprintf("sync item %q has no local changes", dagID),
 			}
 		case StatusMissing:
 			return nil, &ValidationError{
 				Field:   "dagIds",
-				Message: fmt.Sprintf("DAG %q is missing from disk and cannot be published", dagID),
+				Message: fmt.Sprintf("sync item %q is missing from disk and cannot be published", dagID),
 			}
 		default:
 			return nil, &ValidationError{
 				Field:   "dagIds",
-				Message: fmt.Sprintf("DAG %q is in unsupported status %q", dagID, dagState.Status),
+				Message: fmt.Sprintf("sync item %q is in unsupported status %q", dagID, dagState.Status),
 			}
 		}
 	}
@@ -1804,7 +2031,7 @@ func (s *serviceImpl) resolvePublishTargets(state *State, dagIDs []string) ([]st
 	if len(resolved) == 0 {
 		return nil, &ValidationError{
 			Field:   "dagIds",
-			Message: "no publishable DAG IDs provided",
+			Message: "no publishable sync item IDs provided",
 		}
 	}
 
@@ -1839,13 +2066,13 @@ func normalizeDAGID(dagID string) (string, error) {
 
 	clean := path.Clean(normalized)
 	if clean == "." || clean == ".." {
-		return "", &InvalidDAGIDError{DAGID: dagID, Reason: "must point to a DAG ID, not current/parent directory"}
+		return "", &InvalidDAGIDError{DAGID: dagID, Reason: "must point to a sync item ID, not current/parent directory"}
 	}
 	if strings.HasPrefix(clean, "../") {
 		return "", &InvalidDAGIDError{DAGID: dagID, Reason: "path traversal is not allowed"}
 	}
 	if isBaseConfigID(clean) {
-		return "", &InvalidDAGIDError{DAGID: dagID, Reason: "base configuration paths are not DAG IDs"}
+		return "", &InvalidDAGIDError{DAGID: dagID, Reason: "base configuration paths are not sync item IDs"}
 	}
 
 	return clean, nil
@@ -2136,14 +2363,14 @@ func (s *serviceImpl) writeDAGFile(dagID, filePath string, content []byte) error
 	if _, err := normalizeDAGID(dagID); err != nil {
 		return err
 	}
-	return safeWriteFileWithinBase(s.dagsDir, filePath, content, 0600)
+	return safeWriteFileWithinBase(s.localBaseDir(dagID), filePath, content, 0600)
 }
 
 func (s *serviceImpl) readDAGFile(dagID, filePath string) ([]byte, error) {
 	if _, err := normalizeDAGID(dagID); err != nil {
 		return nil, err
 	}
-	return safeReadFileWithinBase(s.dagsDir, filePath)
+	return safeReadFileWithinBase(s.localBaseDir(dagID), filePath)
 }
 
 func (s *serviceImpl) safeDAGIDToFilePath(dagID, fileExtension string) (string, error) {
@@ -2151,7 +2378,41 @@ func (s *serviceImpl) safeDAGIDToFilePath(dagID, fileExtension string) (string, 
 	if err != nil {
 		return "", err
 	}
-	return safeJoinWithinBase(s.dagsDir, filepath.FromSlash(normalized+normalizeDAGFileExtension(fileExtension)))
+	baseDir := s.dagsDir
+	localID := normalized
+	if isWikiPageFile(normalized) || isWikiPageAssetFile(normalized) {
+		baseDir = s.localWikiDir()
+		localID = strings.TrimPrefix(normalized, wikiRepoDirForID(normalized)+"/")
+	}
+	return safeJoinWithinBase(baseDir, filepath.FromSlash(localID+normalizeLocalFileExtension(normalized, fileExtension)))
+}
+
+func (s *serviceImpl) localWikiDir() string {
+	if s.wikiDir != "" {
+		return s.wikiDir
+	}
+	return filepath.Join(s.dagsDir, wikiDir)
+}
+
+func (s *serviceImpl) localBaseDir(itemID string) string {
+	if isWikiPageFile(itemID) || isWikiPageAssetFile(itemID) {
+		return s.localWikiDir()
+	}
+	return s.dagsDir
+}
+
+func normalizeLocalFileExtension(itemID, extension string) string {
+	// Asset IDs already carry their extension; nothing is appended.
+	if isWikiPageAssetFile(itemID) {
+		return ""
+	}
+	if isWikiPageFile(itemID) {
+		if strings.EqualFold(extension, wikiPageExtension) {
+			return extension
+		}
+		return wikiPageExtension
+	}
+	return normalizeDAGFileExtension(extension)
 }
 
 func (s *serviceImpl) safeRepoPathToFilePath(repoPath string) (string, error) {
@@ -2164,7 +2425,13 @@ func (s *serviceImpl) safeDAGIDToRepoPath(dagID, fileExtension string) (string, 
 		return "", err
 	}
 
-	repoPath := normalized + normalizeDAGFileExtension(fileExtension)
+	extension := normalizeDAGFileExtension(fileExtension)
+	if isWikiPageAssetFile(normalized) {
+		extension = ""
+	} else if isWikiPageFile(normalized) {
+		extension = wikiPageExtension
+	}
+	repoPath := normalized + extension
 	if s.cfg != nil && s.cfg.Path != "" {
 		repoPath = path.Join(filepath.ToSlash(s.cfg.Path), repoPath)
 	}
@@ -2183,8 +2450,26 @@ func (s *serviceImpl) safeDAGIDToRepoPath(dagID, fileExtension string) (string, 
 	return filepath.ToSlash(relPath), nil
 }
 
-func (s *serviceImpl) dagFileExtension(dagID string, dagState *DAGState) string {
+func (s *serviceImpl) syncItemFileExtension(dagID string, dagState *SyncItemState) string {
+	if isWikiPageAssetFile(dagID) {
+		if dagState != nil {
+			dagState.Kind = SyncItemKindWikiPageAsset
+			dagState.FileExtension = ""
+		}
+		return ""
+	}
+	if isWikiPageFile(dagID) {
+		if dagState != nil {
+			dagState.Kind = SyncItemKindWikiPage
+			if strings.EqualFold(dagState.FileExtension, wikiPageExtension) {
+				return dagState.FileExtension
+			}
+			dagState.FileExtension = wikiPageExtension
+		}
+		return wikiPageExtension
+	}
 	if dagState != nil {
+		dagState.Kind = SyncItemKindDAG
 		switch {
 		case strings.EqualFold(dagState.FileExtension, dagYMLExtension):
 			dagState.FileExtension = dagYMLExtension
@@ -2229,15 +2514,16 @@ func (s *serviceImpl) dagFileExtension(dagID string, dagState *DAGState) string 
 	return dagYAMLExtension
 }
 
-func (s *serviceImpl) ensureDAGFileExtensions(state *State) bool {
+func (s *serviceImpl) ensureSyncItemFileExtensions(state *State) bool {
 	changed := false
-	for dagID, dagState := range state.DAGs {
+	for dagID, dagState := range state.Items {
 		if dagState == nil {
 			continue
 		}
 		previousExtension := dagState.FileExtension
-		s.dagFileExtension(dagID, dagState)
-		if dagState.FileExtension != previousExtension {
+		previousKind := dagState.Kind
+		s.syncItemFileExtension(dagID, dagState)
+		if dagState.FileExtension != previousExtension || dagState.Kind != previousKind {
 			changed = true
 		}
 	}
@@ -2306,23 +2592,23 @@ func (s *serviceImpl) validatePushEnabled() error {
 	return nil
 }
 
-// validatePublishable checks if a DAG can be published.
-func (s *serviceImpl) validatePublishable(dagState *DAGState, dagID string, force bool) error {
-	if dagState.Status == StatusMissing {
+// validatePublishable checks if an item can be published.
+func (s *serviceImpl) validatePublishable(itemState *SyncItemState, itemID string, force bool) error {
+	if itemState.Status == StatusMissing {
 		return &ValidationError{
-			Field:   dagID,
-			Message: "DAG is missing from disk and cannot be published",
+			Field:   itemID,
+			Message: "sync item is missing from disk and cannot be published",
 		}
 	}
-	if dagState.Status == StatusConflict && !force {
+	if itemState.Status == StatusConflict && !force {
 		return &ConflictError{
-			DAGID:         dagID,
-			RemoteCommit:  dagState.RemoteCommit,
-			RemoteAuthor:  dagState.RemoteAuthor,
-			RemoteMessage: dagState.RemoteMessage,
+			DAGID:         itemID,
+			RemoteCommit:  itemState.RemoteCommit,
+			RemoteAuthor:  itemState.RemoteAuthor,
+			RemoteMessage: itemState.RemoteMessage,
 		}
 	}
-	if dagState.Status == StatusSynced {
+	if itemState.Status == StatusSynced {
 		return ErrNoChanges
 	}
 	return nil
@@ -2331,17 +2617,49 @@ func (s *serviceImpl) validatePublishable(dagState *DAGState, dagID string, forc
 // ensureRepoReady ensures the repository is cloned and opened.
 func (s *serviceImpl) ensureRepoReady(ctx context.Context) error {
 	if !s.gitClient.IsCloned() {
-		return s.gitClient.Clone(ctx)
+		if err := s.gitClient.Clone(ctx); err != nil {
+			return err
+		}
+	} else if err := s.gitClient.Open(); err != nil {
+		return err
 	}
-	return s.gitClient.Open()
+
+	repoWikiDir, err := s.selectRepoWikiDir()
+	if err != nil {
+		return err
+	}
+	s.repoWikiDir = repoWikiDir
+	return nil
 }
 
-// newSyncedDAGState creates a new DAGState in synced status.
-func (s *serviceImpl) newSyncedDAGState(fileExtension, commitHash, contentHash string) *DAGState {
+func (s *serviceImpl) selectRepoWikiDir() (string, error) {
+	root := s.gitClient.repoPath
+	if s.cfg != nil && s.cfg.Path != "" {
+		root = filepath.Join(root, s.cfg.Path)
+	}
+	wikiExists := pathExists(filepath.Join(root, wikiDir))
+	docsExists := pathExists(filepath.Join(root, legacyDocsDir))
+	if wikiExists && docsExists {
+		return "", fmt.Errorf("git sync repository contains both %q and legacy %q Wiki directories", wikiDir, legacyDocsDir)
+	}
+	if docsExists {
+		return legacyDocsDir, nil
+	}
+	return wikiDir, nil
+}
+
+func pathExists(filePath string) bool {
+	_, err := os.Stat(filePath)
+	return err == nil
+}
+
+// newSyncedItemState creates a new SyncItemState in synced status.
+func (s *serviceImpl) newSyncedItemState(itemID, fileExtension, commitHash, contentHash string) *SyncItemState {
 	now := time.Now()
-	return &DAGState{
+	return &SyncItemState{
 		Status:         StatusSynced,
-		FileExtension:  normalizeDAGFileExtension(fileExtension),
+		Kind:           SyncItemKindForID(itemID),
+		FileExtension:  normalizeLocalFileExtension(itemID, fileExtension),
 		BaseCommit:     commitHash,
 		LastSyncedHash: contentHash,
 		LastSyncedAt:   &now,
@@ -2368,14 +2686,14 @@ func (s *serviceImpl) buildPullMessage(alreadyUpToDate bool, synced, conflicts [
 	if alreadyUpToDate {
 		return "Already up to date"
 	}
-	return fmt.Sprintf("Synced %d DAG(s)", len(synced))
+	return fmt.Sprintf("Synced %d sync item(s)", len(synced))
 }
 
-// computeStatusCounts computes the counts for each DAG status.
-func computeStatusCounts(dags map[string]*DAGState) StatusCounts {
+// computeStatusCounts computes the counts for each item status.
+func computeStatusCounts(items map[string]*SyncItemState) StatusCounts {
 	var counts StatusCounts
-	for _, dagState := range dags {
-		switch dagState.Status {
+	for _, itemState := range items {
+		switch itemState.Status {
 		case StatusSynced:
 			counts.Synced++
 		case StatusModified:

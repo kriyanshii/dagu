@@ -9,38 +9,37 @@ import (
 	"os"
 	"path/filepath"
 
-	authmodel "github.com/dagucloud/dagu/internal/auth"
-	"github.com/dagucloud/dagu/internal/clicontext"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core/baseconfig"
-	"github.com/dagucloud/dagu/internal/dagsettings"
-	"github.com/dagucloud/dagu/internal/incident"
-	"github.com/dagucloud/dagu/internal/license"
-	"github.com/dagucloud/dagu/internal/notification"
-	fileaudit "github.com/dagucloud/dagu/internal/persis/file/audit"
-	filebaseconfig "github.com/dagucloud/dagu/internal/persis/file/baseconfig"
-	fileeventstore "github.com/dagucloud/dagu/internal/persis/file/eventstore"
-	fileincident "github.com/dagucloud/dagu/internal/persis/file/incident"
-	filenotification "github.com/dagucloud/dagu/internal/persis/file/notification"
-	"github.com/dagucloud/dagu/internal/persis/file/tokensecret"
-	"github.com/dagucloud/dagu/internal/persis/store"
-	"github.com/dagucloud/dagu/internal/profile"
-	"github.com/dagucloud/dagu/internal/remotenode"
-	"github.com/dagucloud/dagu/internal/secret"
-	"github.com/dagucloud/dagu/internal/service/audit"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
-	"github.com/dagucloud/dagu/internal/upgrade"
-	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/dagucloud/dagu/v2/internal/audit"
+	"github.com/dagucloud/dagu/v2/internal/clicontext"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/crypto"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/dagsettings"
+	"github.com/dagucloud/dagu/v2/internal/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/incident"
+	"github.com/dagucloud/dagu/v2/internal/license"
+	"github.com/dagucloud/dagu/v2/internal/notification"
+	fileaudit "github.com/dagucloud/dagu/v2/internal/persis/file/audit"
+	filebaseconfig "github.com/dagucloud/dagu/v2/internal/persis/file/baseconfig"
+	fileeventstore "github.com/dagucloud/dagu/v2/internal/persis/file/eventstore"
+	fileincident "github.com/dagucloud/dagu/v2/internal/persis/file/incident"
+	filenotification "github.com/dagucloud/dagu/v2/internal/persis/file/notification"
+	filewiki "github.com/dagucloud/dagu/v2/internal/persis/file/wiki"
+	"github.com/dagucloud/dagu/v2/internal/persis/store"
+	"github.com/dagucloud/dagu/v2/internal/profile"
+	"github.com/dagucloud/dagu/v2/internal/remotenode"
+	"github.com/dagucloud/dagu/v2/internal/secret"
+	"github.com/dagucloud/dagu/v2/internal/upgrade"
+	"github.com/dagucloud/dagu/v2/internal/wiki"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 )
 
 type BaseConfigStoreOption = filebaseconfig.Option
 
 // BaseConfigStore is a file-backed base DAG configuration store.
 type BaseConfigStore interface {
-	baseconfig.Store
+	dagsettings.BaseConfigStore
 	Initialize() error
 }
 
@@ -52,7 +51,7 @@ func NewBaseConfigStore(filePath string, opts ...BaseConfigStoreOption) (BaseCon
 	return filebaseconfig.New(filePath, opts...)
 }
 
-func NewWorkspaceBaseConfigStore(dagsDir, workspaceName string) (baseconfig.Store, error) {
+func NewWorkspaceBaseConfigStore(dagsDir, workspaceName string) (dagsettings.BaseConfigStore, error) {
 	return NewBaseConfigStore(
 		workspace.BaseConfigPath(dagsDir, workspaceName),
 		WithBaseConfigSkipDefault(true),
@@ -152,6 +151,61 @@ func NewDAGSettingsStore(cfg *config.Config) (dagsettings.Store, error) {
 	return store.NewDAGSettingsStore(NewCollection(dir, WithIndentedJSON()))
 }
 
+func NewWikiStore(cfg *config.Config) (wiki.PageStore, error) {
+	if cfg == nil || cfg.Paths.WikiDir == "" {
+		return nil, nil
+	}
+	opts := []filewiki.Option{filewiki.WithLegacyLayout(cfg.Paths.WikiDirLegacy)}
+	if cfg.Paths.DataDir != "" {
+		dataDir, err := selectWikiStoragePath(
+			filepath.Join(cfg.Paths.DataDir, "wiki"),
+			filepath.Join(cfg.Paths.DataDir, "docs"),
+			cfg.Paths.WikiDirLegacy,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("wiki store: %w", err)
+		}
+		opts = append(opts, filewiki.WithDataDir(dataDir))
+	}
+	wikiStore, err := filewiki.New(cfg.Paths.WikiDir, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("wiki store: %w", err)
+	}
+	return wikiStore, nil
+}
+
+func selectWikiStoragePath(canonical, legacy string, preferLegacy bool) (string, error) {
+	canonicalExists, err := storePathExists(canonical)
+	if err != nil {
+		return "", err
+	}
+	legacyExists, err := storePathExists(legacy)
+	if err != nil {
+		return "", err
+	}
+	if canonicalExists && legacyExists {
+		return "", fmt.Errorf("both %s and %s exist; reconcile them before starting Dagu", canonical, legacy)
+	}
+	if legacyExists || (!canonicalExists && preferLegacy) {
+		return legacy, nil
+	}
+	return canonical, nil
+}
+
+func storePathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if parent, parentErr := os.Stat(filepath.Dir(path)); parentErr == nil && !parent.IsDir() {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect %s: %w", path, err)
+}
+
 func NewIncidentStore(cfg *config.Config, enc *crypto.Encryptor) (incident.Store, error) {
 	return fileincident.New(
 		filepath.Join(cfg.Paths.DataDir, "incidents"),
@@ -196,10 +250,6 @@ func NewRemoteNodeStore(cfg *config.Config, enc *crypto.Encryptor) (remotenode.S
 		return nil, fmt.Errorf("remote-node store: create directory %s: %w", dir, err)
 	}
 	return store.NewRemoteNodeStore(NewCollection(dir, WithIndentedJSON()), enc)
-}
-
-func NewTokenSecretProvider(cfg *config.Config) authmodel.TokenSecretProvider {
-	return tokensecret.New(filepath.Join(cfg.Paths.DataDir, "auth"))
 }
 
 func NewUpgradeCheckStore(cfg *config.Config) (upgrade.CacheStore, error) {

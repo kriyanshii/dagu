@@ -9,25 +9,25 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/dispatch"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	coordinatorv1 "github.com/dagucloud/dagu/v2/proto/coordinator/v1"
 )
 
 type attemptOwnershipConfig struct {
-	Owner               exec.CoordinatorEndpoint
-	LeaseStore          exec.DAGRunLeaseStore
-	ActiveRunStore      exec.ActiveDistributedRunStore
+	Owner               dispatch.CoordinatorEndpoint
+	LeaseStore          dispatch.DAGRunLeaseStore
+	ActiveRunStore      dispatch.ActiveDistributedRunStore
 	StaleLeaseThreshold time.Duration
 	Now                 func() time.Time
 }
 
 type attemptOwnership struct {
-	owner               exec.CoordinatorEndpoint
-	leaseStore          exec.DAGRunLeaseStore
-	activeRunStore      exec.ActiveDistributedRunStore
+	owner               dispatch.CoordinatorEndpoint
+	leaseStore          dispatch.DAGRunLeaseStore
+	activeRunStore      dispatch.ActiveDistributedRunStore
 	staleLeaseThreshold time.Duration
 	now                 func() time.Time
 }
@@ -57,8 +57,8 @@ func (h *Handler) attemptOwnership() *attemptOwnership {
 
 func (o *attemptOwnership) statusDecision(
 	ctx context.Context,
-	latest *exec.DAGRunStatus,
-	incoming *exec.DAGRunStatus,
+	latest *ir.DAGRunStatus,
+	incoming *ir.DAGRunStatus,
 	opts statusDecisionOptions,
 ) (accepted bool, rejectionReason string) {
 	if latest == nil || incoming == nil {
@@ -74,13 +74,13 @@ func (o *attemptOwnership) statusDecision(
 	if claimKey == "" {
 		claimKey = latest.EffectiveClaimKey()
 	}
-	if o.leaseInactive(ctx, claimKey) && (incoming.Status.IsActive() || incoming.Status == core.NotStarted) {
+	if o.leaseInactive(ctx, claimKey) && (incoming.Status.IsActive() || incoming.Status == ir.NotStarted) {
 		return false, remoteAttemptRejectedLeaseInactive
 	}
 	if latest.Status == incoming.Status {
 		return true, ""
 	}
-	if opts.CancellationRequested && latest.Status == core.Failed && incoming.Status == core.Aborted {
+	if opts.CancellationRequested && latest.Status == ir.Failed && incoming.Status == ir.Aborted {
 		return true, ""
 	}
 	return false, remoteAttemptRejectedTerminal
@@ -99,7 +99,7 @@ func (o *attemptOwnership) leaseInactive(ctx context.Context, attemptKey string)
 	switch {
 	case err == nil:
 		return !lease.IsFresh(o.now(), o.staleLeaseThreshold)
-	case errors.Is(err, exec.ErrDAGRunLeaseNotFound):
+	case errors.Is(err, dispatch.ErrDAGRunLeaseNotFound):
 		return true
 	default:
 		logger.Warn(ctx, "Failed to read distributed lease for status validation",
@@ -113,7 +113,7 @@ func (o *attemptOwnership) leaseInactive(ctx context.Context, attemptKey string)
 func (o *attemptOwnership) syncFromStatus(
 	ctx context.Context,
 	workerID string,
-	status *exec.DAGRunStatus,
+	status *ir.DAGRunStatus,
 	fallbackAttemptID string,
 ) {
 	o.syncLeaseFromStatus(ctx, workerID, status, fallbackAttemptID)
@@ -123,7 +123,7 @@ func (o *attemptOwnership) syncFromStatus(
 func (o *attemptOwnership) syncLeaseFromStatus(
 	ctx context.Context,
 	workerID string,
-	status *exec.DAGRunStatus,
+	status *ir.DAGRunStatus,
 	fallbackAttemptID string,
 ) {
 	if o.leaseStore == nil || status == nil {
@@ -131,11 +131,11 @@ func (o *attemptOwnership) syncLeaseFromStatus(
 	}
 
 	switch status.Status {
-	case core.Running, core.NotStarted, core.Queued:
+	case ir.Running, ir.NotStarted, ir.Queued:
 		o.upsertLeaseFromStatus(ctx, workerID, status, fallbackAttemptID)
-	case core.Failed, core.Aborted, core.Succeeded,
-		core.PartiallySucceeded, core.Waiting, core.Rejected:
-		attemptKey := exec.AttemptKeyForStatus(status, fallbackAttemptID)
+	case ir.Failed, ir.Aborted, ir.Succeeded,
+		ir.PartiallySucceeded, ir.Waiting, ir.Rejected:
+		attemptKey := dispatch.AttemptKeyForStatus(status, fallbackAttemptID)
 		if attemptKey == "" {
 			return
 		}
@@ -151,14 +151,14 @@ func (o *attemptOwnership) syncLeaseFromStatus(
 func (o *attemptOwnership) upsertLeaseFromStatus(
 	ctx context.Context,
 	workerID string,
-	status *exec.DAGRunStatus,
+	status *ir.DAGRunStatus,
 	fallbackAttemptID string,
 ) {
 	if o.leaseStore == nil || status == nil {
 		return
 	}
 
-	attemptKey := exec.AttemptKeyForStatus(status, fallbackAttemptID)
+	attemptKey := dispatch.AttemptKeyForStatus(status, fallbackAttemptID)
 	if attemptKey == "" {
 		return
 	}
@@ -181,15 +181,15 @@ func (o *attemptOwnership) upsertLeaseFromStatus(
 	if workerID == "" {
 		workerID = status.WorkerID
 	}
-	if !exec.IsRemoteWorkerID(workerID) {
+	if !dispatch.IsRemoteWorkerID(workerID) {
 		return
 	}
 
 	queueName := queueNameForStatus(status)
 	now := o.now()
-	lease := exec.DAGRunLease{
+	lease := dispatch.DAGRunLease{
 		AttemptKey: attemptKey,
-		DAGRun: exec.DAGRunRef{
+		DAGRun: ir.DAGRunRef{
 			Name: status.Name,
 			ID:   status.DAGRunID,
 		},
@@ -203,6 +203,9 @@ func (o *attemptOwnership) upsertLeaseFromStatus(
 	}
 	if existing, err := o.leaseStore.Get(ctx, attemptKey); err == nil && existing != nil {
 		lease.ClaimedAt = existing.ClaimedAt
+		if existing.Owner != (dispatch.CoordinatorEndpoint{}) {
+			lease.Owner = existing.Owner
+		}
 		if status.ProcGroup == "" && existing.QueueName != "" {
 			lease.QueueName = existing.QueueName
 		}
@@ -218,7 +221,7 @@ func (o *attemptOwnership) upsertLeaseFromStatus(
 func (o *attemptOwnership) restoreConfirmedFromStatus(
 	ctx context.Context,
 	workerID string,
-	status *exec.DAGRunStatus,
+	status *ir.DAGRunStatus,
 	fallbackAttemptID string,
 ) {
 	if status == nil {
@@ -226,34 +229,34 @@ func (o *attemptOwnership) restoreConfirmedFromStatus(
 	}
 
 	switch status.Status {
-	case core.Running, core.NotStarted, core.Queued:
+	case ir.Running, ir.NotStarted, ir.Queued:
 		o.upsertLeaseFromStatus(ctx, workerID, status, fallbackAttemptID)
 		o.upsertActiveFromStatus(ctx, status, workerID, fallbackAttemptID)
-	case core.Failed, core.Aborted, core.Succeeded,
-		core.PartiallySucceeded, core.Waiting, core.Rejected:
+	case ir.Failed, ir.Aborted, ir.Succeeded,
+		ir.PartiallySucceeded, ir.Waiting, ir.Rejected:
 	}
 }
 
 func (o *attemptOwnership) syncActiveRunFromStatus(
 	ctx context.Context,
 	workerID string,
-	status *exec.DAGRunStatus,
+	status *ir.DAGRunStatus,
 	fallbackAttemptID string,
 ) {
 	if o.activeRunStore == nil || status == nil {
 		return
 	}
 
-	attemptKey := exec.AttemptKeyForStatus(status, fallbackAttemptID)
+	attemptKey := dispatch.AttemptKeyForStatus(status, fallbackAttemptID)
 	if attemptKey == "" {
 		return
 	}
 
 	switch status.Status {
-	case core.Running, core.NotStarted, core.Queued:
+	case ir.Running, ir.NotStarted, ir.Queued:
 		o.upsertActiveFromStatus(ctx, status, workerID, fallbackAttemptID)
-	case core.Failed, core.Aborted, core.Succeeded,
-		core.PartiallySucceeded, core.Waiting, core.Rejected:
+	case ir.Failed, ir.Aborted, ir.Succeeded,
+		ir.PartiallySucceeded, ir.Waiting, ir.Rejected:
 		if err := o.activeRunStore.Delete(ctx, attemptKey); err != nil {
 			logger.Warn(ctx, "Failed to delete active distributed run",
 				tag.RunID(status.DAGRunID),
@@ -266,7 +269,7 @@ func (o *attemptOwnership) syncActiveRunFromStatus(
 
 func (o *attemptOwnership) upsertActiveFromStatus(
 	ctx context.Context,
-	runStatus *exec.DAGRunStatus,
+	runStatus *ir.DAGRunStatus,
 	workerID string,
 	fallbackAttemptID string,
 ) {
@@ -274,7 +277,7 @@ func (o *attemptOwnership) upsertActiveFromStatus(
 		return
 	}
 
-	attemptKey := exec.AttemptKeyForStatus(runStatus, fallbackAttemptID)
+	attemptKey := dispatch.AttemptKeyForStatus(runStatus, fallbackAttemptID)
 	if attemptKey == "" {
 		return
 	}
@@ -286,11 +289,11 @@ func (o *attemptOwnership) upsertActiveFromStatus(
 	if workerID == "" {
 		workerID = runStatus.WorkerID
 	}
-	if !exec.IsRemoteWorkerID(workerID) {
+	if !dispatch.IsRemoteWorkerID(workerID) {
 		return
 	}
 
-	record := exec.ActiveDistributedRun{
+	record := dispatch.ActiveDistributedRun{
 		AttemptKey: attemptKey,
 		DAGRun:     runStatus.DAGRun(),
 		Root:       runStatus.Root,
@@ -330,25 +333,25 @@ func (o *attemptOwnership) upsertActiveFromTask(
 	if o.activeRunStore == nil || task == nil || task.AttemptKey == "" {
 		return
 	}
-	if !exec.IsRemoteWorkerID(workerID) {
+	if !dispatch.IsRemoteWorkerID(workerID) {
 		return
 	}
 
-	root := exec.DAGRunRef{Name: task.RootDagRunName, ID: task.RootDagRunId}
+	root := ir.DAGRunRef{Name: task.RootDagRunName, ID: task.RootDagRunId}
 	if root.Zero() {
-		root = exec.DAGRunRef{Name: task.Target, ID: task.DagRunId}
+		root = ir.DAGRunRef{Name: task.Target, ID: task.DagRunId}
 	}
 
-	record := exec.ActiveDistributedRun{
+	record := dispatch.ActiveDistributedRun{
 		AttemptKey: task.AttemptKey,
-		DAGRun: exec.DAGRunRef{
+		DAGRun: ir.DAGRunRef{
 			Name: task.Target,
 			ID:   task.DagRunId,
 		},
 		Root:      root,
 		AttemptID: task.AttemptId,
 		WorkerID:  workerID,
-		Status:    core.Queued,
+		Status:    ir.Queued,
 		UpdatedAt: now.UnixMilli(),
 	}
 	if err := o.activeRunStore.Upsert(ctx, record); err != nil {
@@ -364,18 +367,26 @@ func (o *attemptOwnership) leaseFromTask(
 	task *coordinatorv1.Task,
 	workerID string,
 	now time.Time,
-) exec.DAGRunLease {
-	root := exec.DAGRunRef{Name: task.RootDagRunName, ID: task.RootDagRunId}
+) dispatch.DAGRunLease {
+	owner := dispatch.CoordinatorEndpoint{
+		ID:   task.OwnerCoordinatorId,
+		Host: task.OwnerCoordinatorHost,
+		Port: int(task.OwnerCoordinatorPort),
+	}
+	if owner.ID == "" || owner.Host == "" || owner.Port <= 0 {
+		owner = o.owner
+	}
+	root := ir.DAGRunRef{Name: task.RootDagRunName, ID: task.RootDagRunId}
 	if root.Zero() {
-		root = exec.DAGRunRef{Name: task.Target, ID: task.DagRunId}
+		root = ir.DAGRunRef{Name: task.Target, ID: task.DagRunId}
 	}
 	queueName := task.QueueName
 	if queueName == "" {
 		queueName = task.Target
 	}
-	return exec.DAGRunLease{
+	return dispatch.DAGRunLease{
 		AttemptKey: task.AttemptKey,
-		DAGRun: exec.DAGRunRef{
+		DAGRun: ir.DAGRunRef{
 			Name: task.Target,
 			ID:   task.DagRunId,
 		},
@@ -383,7 +394,8 @@ func (o *attemptOwnership) leaseFromTask(
 		AttemptID:       task.AttemptId,
 		QueueName:       queueName,
 		WorkerID:        workerID,
-		Owner:           o.owner,
+		Owner:           owner,
+		ClaimToken:      task.ClaimToken,
 		ClaimedAt:       now.UnixMilli(),
 		LastHeartbeatAt: now.UnixMilli(),
 	}
@@ -392,7 +404,7 @@ func (o *attemptOwnership) leaseFromTask(
 func (o *attemptOwnership) deleteTracking(
 	ctx context.Context,
 	storeCtx context.Context,
-	dagRun exec.DAGRunRef,
+	dagRun ir.DAGRunRef,
 	attemptKey string,
 	leaseMessage string,
 	activeRunMessage string,
@@ -404,7 +416,7 @@ func (o *attemptOwnership) deleteTracking(
 func (o *attemptOwnership) deleteLease(
 	ctx context.Context,
 	storeCtx context.Context,
-	dagRun exec.DAGRunRef,
+	dagRun ir.DAGRunRef,
 	attemptKey string,
 	message string,
 ) {
@@ -412,7 +424,7 @@ func (o *attemptOwnership) deleteLease(
 		return
 	}
 	if err := o.leaseStore.Delete(storeCtx, attemptKey); err != nil &&
-		!errors.Is(err, exec.ErrDAGRunLeaseNotFound) {
+		!errors.Is(err, dispatch.ErrDAGRunLeaseNotFound) {
 		logger.Warn(ctx, message,
 			tag.RunID(dagRun.ID),
 			tag.Error(err),
@@ -423,7 +435,7 @@ func (o *attemptOwnership) deleteLease(
 func (o *attemptOwnership) deleteActiveRun(
 	ctx context.Context,
 	storeCtx context.Context,
-	dagRun exec.DAGRunRef,
+	dagRun ir.DAGRunRef,
 	attemptKey string,
 	message string,
 ) {
@@ -431,7 +443,7 @@ func (o *attemptOwnership) deleteActiveRun(
 		return
 	}
 	if err := o.activeRunStore.Delete(storeCtx, attemptKey); err != nil &&
-		!errors.Is(err, exec.ErrActiveRunNotFound) {
+		!errors.Is(err, dispatch.ErrActiveRunNotFound) {
 		logger.Warn(ctx, message,
 			tag.RunID(dagRun.ID),
 			tag.AttemptKey(attemptKey),
@@ -441,19 +453,19 @@ func (o *attemptOwnership) deleteActiveRun(
 }
 
 func (o *attemptOwnership) indexedRunMatchesStatus(
-	record exec.ActiveDistributedRun,
-	runStatus *exec.DAGRunStatus,
+	record dispatch.ActiveDistributedRun,
+	runStatus *ir.DAGRunStatus,
 ) bool {
 	if _, ok := remoteWorkerID(runStatus, record.WorkerID); !ok {
 		return false
 	}
-	if runStatus.Status != core.Running &&
-		runStatus.Status != core.NotStarted &&
-		runStatus.Status != core.Queued {
+	if runStatus.Status != ir.Running &&
+		runStatus.Status != ir.NotStarted &&
+		runStatus.Status != ir.Queued {
 		return false
 	}
 
-	attemptKey := exec.AttemptKeyForStatus(runStatus, record.AttemptID)
+	attemptKey := dispatch.AttemptKeyForStatus(runStatus, record.AttemptID)
 	if attemptKey == "" || attemptKey != record.AttemptKey {
 		return false
 	}
@@ -469,15 +481,15 @@ func (o *attemptOwnership) indexedRunMatchesStatus(
 	return true
 }
 
-func isTerminalRunStatus(status core.Status) bool {
-	return status != core.NotStarted && !status.IsActive()
+func isTerminalRunStatus(status ir.Status) bool {
+	return status != ir.NotStarted && !status.IsActive()
 }
 
-func isCancellableTerminalRunStatus(status core.Status) bool {
+func isCancellableTerminalRunStatus(status ir.Status) bool {
 	return isTerminalRunStatus(status) && !status.IsSuccess()
 }
 
-func sameAttemptStatus(current, incoming *exec.DAGRunStatus) bool {
+func sameAttemptStatus(current, incoming *ir.DAGRunStatus) bool {
 	if current == nil || incoming == nil {
 		return false
 	}
@@ -496,26 +508,26 @@ func sameAttemptStatus(current, incoming *exec.DAGRunStatus) bool {
 	return current.AttemptKey != "" && current.AttemptKey == incoming.AttemptKey
 }
 
-func remoteWorkerID(status *exec.DAGRunStatus, fallbackWorkerID string) (string, bool) {
+func remoteWorkerID(status *ir.DAGRunStatus, fallbackWorkerID string) (string, bool) {
 	if status == nil {
 		return "", false
 	}
-	if exec.IsRemoteWorkerID(status.WorkerID) {
+	if dispatch.IsRemoteWorkerID(status.WorkerID) {
 		return status.WorkerID, true
 	}
 	if status.WorkerID != "" {
 		return "", false
 	}
-	if status.Status != core.Queued && status.Status != core.NotStarted {
+	if status.Status != ir.Queued && status.Status != ir.NotStarted {
 		return "", false
 	}
-	if !exec.IsRemoteWorkerID(fallbackWorkerID) {
+	if !dispatch.IsRemoteWorkerID(fallbackWorkerID) {
 		return "", false
 	}
 	return fallbackWorkerID, true
 }
 
-func queueNameForStatus(status *exec.DAGRunStatus) string {
+func queueNameForStatus(status *ir.DAGRunStatus) string {
 	if status == nil || status.ProcGroup == "" {
 		if status == nil {
 			return ""
@@ -528,8 +540,8 @@ func queueNameForStatus(status *exec.DAGRunStatus) string {
 func logRejectedRemoteStatusUpdate(
 	ctx context.Context,
 	workerID string,
-	incoming *exec.DAGRunStatus,
-	latest *exec.DAGRunStatus,
+	incoming *ir.DAGRunStatus,
+	latest *ir.DAGRunStatus,
 	reason string,
 ) {
 	attrs := []slog.Attr{

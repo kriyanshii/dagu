@@ -6,12 +6,12 @@ package file
 import (
 	"fmt"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	filedag "github.com/dagucloud/dagu/internal/persis/file/dag"
-	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/dagstore"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	filedag "github.com/dagucloud/dagu/v2/internal/persis/file/dag"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 )
 
 // DAGStoreOption configures the file-backed DAG definition store.
@@ -19,14 +19,15 @@ type DAGStoreOption func(*DAGStoreOptions)
 
 // DAGStoreOptions contains file-backed DAG definition store settings.
 type DAGStoreOptions struct {
-	Cache                 *fileutil.Cache[*core.DAG]
+	Cache                 *fileutil.Cache[*ir.DAG]
 	SearchPaths           []string
 	SkipExamples          *bool
+	Symlinks              bool
 	SkipDirectoryCreation bool
 }
 
 // WithDAGFileCache sets the cache used for loading DAG definitions.
-func WithDAGFileCache(cache *fileutil.Cache[*core.DAG]) DAGStoreOption {
+func WithDAGFileCache(cache *fileutil.Cache[*ir.DAG]) DAGStoreOption {
 	return func(o *DAGStoreOptions) {
 		o.Cache = cache
 	}
@@ -46,6 +47,13 @@ func WithDAGSkipExamples(skip bool) DAGStoreOption {
 	}
 }
 
+// WithDAGSymlinks includes file symlinks in recursive discovery and permits external targets.
+func WithDAGSymlinks(enabled bool) DAGStoreOption {
+	return func(o *DAGStoreOptions) {
+		o.Symlinks = enabled
+	}
+}
+
 // WithDAGSkipDirectoryCreation controls whether the DAG directory is created on startup.
 func WithDAGSkipDirectoryCreation(skip bool) DAGStoreOption {
 	return func(o *DAGStoreOptions) {
@@ -54,8 +62,8 @@ func WithDAGSkipDirectoryCreation(skip bool) DAGStoreOption {
 }
 
 // NewDAGStore wires the file-backed DAG definition store from application config.
-func NewDAGStore(cfg *config.Config, opts ...DAGStoreOption) (exec.DAGStore, error) {
-	options := DAGStoreOptions{}
+func NewDAGStore(cfg *config.Config, opts ...DAGStoreOption) (dagstore.DAGStore, error) {
+	options := DAGStoreOptions{Symlinks: cfg.DAGDiscovery.Symlinks}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&options)
@@ -74,6 +82,8 @@ func NewDAGStore(cfg *config.Config, opts ...DAGStoreOption) (exec.DAGStore, err
 		filedag.WithWorkspaceBaseConfigDir(workspace.BaseConfigDir(cfg.Paths.DAGsDir)),
 		filedag.WithFileCache(options.Cache),
 		filedag.WithSkipExamples(skipExamples),
+		filedag.WithRecursiveDiscovery(cfg.DAGDiscovery.Recursive),
+		filedag.WithSymlinks(options.Symlinks),
 		filedag.WithSkipDirectoryCreation(options.SkipDirectoryCreation),
 	)
 	if s, ok := store.(*filedag.Storage); ok {

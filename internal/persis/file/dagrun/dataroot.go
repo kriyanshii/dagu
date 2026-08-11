@@ -22,12 +22,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/dirlock"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis/file/dagrun/dagrunindex"
+	"github.com/dagucloud/dagu/v2/internal/cmn/dirlock"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/persis/file/dagrun/dagrunindex"
 )
 
 // DataRoot manages the directory structure for run history data.
@@ -148,7 +148,7 @@ func (dr *DataRoot) FindByDAGRunID(ctx context.Context, dagRunID string) (*DAGRu
 		}
 	}
 
-	return nil, fmt.Errorf("%w: %s", exec.ErrDAGRunIDNotFound, dagRunID)
+	return nil, fmt.Errorf("%w: %s", dagrun.ErrDAGRunIDNotFound, dagRunID)
 }
 
 func findDAGRunInDay(ctx context.Context, dayPath, dagRunID, artifactDir string) (*DAGRun, error) {
@@ -221,23 +221,23 @@ func (dr *DataRoot) Latest(ctx context.Context, itemLimit int) []*DAGRun {
 
 // LatestAfter returns the most recent dag-run that occurred after the specified cutoff time.
 // Returns ErrNoStatusData if no dag-run is found or if the latest run is before the cutoff.
-func (dr *DataRoot) LatestAfter(ctx context.Context, cutoff exec.TimeInUTC) (*DAGRun, error) {
+func (dr *DataRoot) LatestAfter(ctx context.Context, cutoff dagrun.TimeInUTC) (*DAGRun, error) {
 	runs, err := dr.listRecentDAGRuns(ctx, 1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list recent runs: %w", err)
 	}
 	if len(runs) == 0 {
-		return nil, exec.ErrNoStatusData
+		return nil, dagrun.ErrNoStatusData
 	}
 	if runs[0].timestamp.Before(cutoff.Time) {
-		return nil, exec.ErrNoStatusData
+		return nil, dagrun.ErrNoStatusData
 	}
 	return runs[0], nil
 }
 
 // CreateDAGRun creates a new dag-run directory with the specified timestamp and ID.
 // The directory structure follows the pattern: year/month/day/run-YYYYMMDD_HHMMSS_dagRunID
-func (dr *DataRoot) CreateDAGRun(ts exec.TimeInUTC, dagRunID string) (*DAGRun, error) {
+func (dr *DataRoot) CreateDAGRun(ts dagrun.TimeInUTC, dagRunID string) (*DAGRun, error) {
 	dirName := DAGRunDirPrefix + formatDAGRunTimestamp(ts) + "_" + dagRunID
 	dir := filepath.Join(dr.dagRunsDir, ts.Format("2006"), ts.Format("01"), ts.Format("02"), dirName)
 
@@ -252,18 +252,6 @@ func (dr *DataRoot) CreateDAGRun(ts exec.TimeInUTC, dagRunID string) (*DAGRun, e
 func (dr DataRoot) Exists() bool {
 	_, err := os.Stat(dr.dagRunsDir)
 	return !os.IsNotExist(err)
-}
-
-// Create creates the dag-runs directory if it doesn't already exist.
-// Returns nil if the directory already exists or is successfully created.
-func (dr DataRoot) Create() error {
-	if dr.Exists() {
-		return nil
-	}
-	if err := os.MkdirAll(dr.dagRunsDir, 0750); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dr.dagRunsDir, err)
-	}
-	return nil
 }
 
 // IsEmpty checks if the dag-runs directory exists and contains no dag-run directories.
@@ -292,70 +280,6 @@ func (dr DataRoot) Remove() error {
 	return nil
 }
 
-// Rename moves all dag-run directories from this DataRoot to a new DataRoot location.
-// This operation preserves the hierarchical structure and removes empty directories.
-// Both DataRoots must share the same base directory.
-func (dr DataRoot) Rename(ctx context.Context, newRoot DataRoot) error {
-	if !dr.Exists() {
-		return nil
-	}
-	if dr.baseDir != newRoot.baseDir {
-		return fmt.Errorf("cannot rename to a different base directory: %s -> %s", dr.baseDir, newRoot.baseDir)
-	}
-	if !newRoot.Exists() {
-		if err := newRoot.Create(); err != nil {
-			return err
-		}
-	}
-
-	matches, err := filepath.Glob(dr.globPattern)
-	if err != nil {
-		return fmt.Errorf("failed to glob pattern: %w", err)
-	}
-
-	// Process files in parallel
-	errs := processFilesParallel(matches, func(targetDir string) error {
-		// Construct the new directory path
-		day := filepath.Base(filepath.Dir(targetDir))
-		month := filepath.Base(filepath.Dir(filepath.Dir(targetDir)))
-		year := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(targetDir))))
-		newDir := filepath.Join(newRoot.dagRunsDir, year, month, day, filepath.Base(targetDir))
-
-		// Enrich context with directory information for error logging
-		dirCtx := logger.WithValues(ctx,
-			slog.String("oldDir", targetDir),
-			slog.String("newDir", newDir))
-
-		// Make sure the new directory exists
-		if err := os.MkdirAll(filepath.Dir(newDir), 0750); err != nil {
-			logger.Error(dirCtx, "Failed to create new directory",
-				tag.Error(err))
-			return fmt.Errorf("failed to create directory %s: %w", newDir, err)
-		}
-
-		// Rename the file
-		if err := fileutil.Rename(targetDir, newDir); err != nil {
-			logger.Error(dirCtx, "Failed to rename directory", tag.Error(err))
-			return fmt.Errorf("failed to rename %s to %s: %w", targetDir, newDir, err)
-		}
-
-		dr.removeEmptyDir(ctx, filepath.Dir(targetDir))
-
-		return nil
-	})
-
-	if len(errs) > 0 {
-		return fmt.Errorf("failed to rename files: %w", errors.Join(errs...))
-	}
-
-	if dr.IsEmpty() {
-		if err := dr.Remove(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // RemoveOld removes old dag-runs older than the specified retention days.
 // It only removes records older than the specified retention days.
 // If retentionDays is negative, no files will be removed.
@@ -365,8 +289,22 @@ func (dr DataRoot) Rename(ctx context.Context, newRoot DataRoot) error {
 // If dryRun is true, it returns the run IDs that would be removed without actually deleting them.
 // Returns a list of dag-run IDs that were removed (or would be removed in dry-run mode).
 func (dr DataRoot) RemoveOld(ctx context.Context, retentionDays int, dryRun bool) ([]string, error) {
-	keepTime := exec.NewUTC(time.Now().AddDate(0, 0, -retentionDays))
-	dagRuns := dr.listDAGRunsInRange(ctx, exec.TimeInUTC{}, keepTime, &listDAGRunsInRangeOpts{})
+	if retentionDays < 0 {
+		return nil, nil
+	}
+	keepTime := dagrun.NewUTC(time.Now().AddDate(0, 0, -retentionDays))
+	return dr.removeOldBefore(ctx, keepTime, dryRun)
+}
+
+// removeOldBefore removes dag-runs whose recorded time is strictly before keepTime.
+// Active (non-final) runs are never removed. If dryRun is true, it returns the run
+// IDs that would be removed without actually deleting them.
+func (dr DataRoot) removeOldBefore(ctx context.Context, keepTime dagrun.TimeInUTC, dryRun bool) ([]string, error) {
+	if keepTime.IsZero() {
+		return nil, nil
+	}
+
+	dagRuns := dr.listDAGRunsInRange(ctx, dagrun.TimeInUTC{}, keepTime, &listDAGRunsInRangeOpts{})
 
 	var removedRunIDs []string
 
@@ -388,7 +326,7 @@ func (dr DataRoot) RemoveOldByRuns(ctx context.Context, retentionRuns int, dryRu
 		return nil, nil
 	}
 
-	dagRuns := dr.listDAGRunsInRange(ctx, exec.TimeInUTC{}, exec.TimeInUTC{}, &listDAGRunsInRangeOpts{})
+	dagRuns := dr.listDAGRunsInRange(ctx, dagrun.TimeInUTC{}, dagrun.TimeInUTC{}, &listDAGRunsInRangeOpts{})
 	if len(dagRuns) <= retentionRuns {
 		return nil, nil
 	}
@@ -517,7 +455,7 @@ type listDAGRunsInRangeOpts struct {
 	limit int
 }
 
-func (dr DataRoot) listDAGRunsInRange(ctx context.Context, start, end exec.TimeInUTC, opts *listDAGRunsInRangeOpts) []*DAGRun {
+func (dr DataRoot) listDAGRunsInRange(ctx context.Context, start, end dagrun.TimeInUTC, opts *listDAGRunsInRangeOpts) []*DAGRun {
 	var result []*DAGRun
 	var lock sync.Mutex
 
@@ -594,7 +532,7 @@ SCAN:
 					continue
 				}
 
-				indexEntries, _, indexErr := dagrunindex.TryLoadForDay(dayPath, dayEntries)
+				indexEntries, _, indexErr := dagrunindex.TryLoadForDay(ctx, dayPath, dayEntries)
 				if indexErr != nil {
 					logger.Debug(ctx, "Failed to load day index, falling back to filesystem scan",
 						tag.Dir(dayPath),

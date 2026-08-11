@@ -16,10 +16,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/notification"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/cmn/crypto"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/mailer/oauthconfig"
+	"github.com/dagucloud/dagu/v2/internal/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/notification"
 )
 
 const (
@@ -472,6 +473,7 @@ type channelForStorage struct {
 	Webhook   *webhookTargetForStorage  `json:"webhook,omitempty"`
 	Slack     *slackTargetForStorage    `json:"slack,omitempty"`
 	Telegram  *telegramTargetForStorage `json:"telegram,omitempty"`
+	Teams     *teamsTargetForStorage    `json:"teams,omitempty"`
 	CreatedAt string                    `json:"createdAt"`
 	UpdatedAt string                    `json:"updatedAt"`
 	UpdatedBy string                    `json:"updatedBy,omitempty"`
@@ -504,11 +506,21 @@ type routeForStorage struct {
 }
 
 type smtpConfigForStorage struct {
-	Host        string `json:"host,omitempty"`
-	Port        string `json:"port,omitempty"`
-	Username    string `json:"username,omitempty"`
-	PasswordEnc string `json:"passwordEnc,omitempty"`
-	From        string `json:"from,omitempty"`
+	Host        string                     `json:"host,omitempty"`
+	Port        string                     `json:"port,omitempty"`
+	Username    string                     `json:"username,omitempty"`
+	PasswordEnc string                     `json:"passwordEnc,omitempty"`
+	OAuth       *smtpOAuthConfigForStorage `json:"oauth,omitempty"`
+	From        string                     `json:"from,omitempty"`
+}
+
+type smtpOAuthConfigForStorage struct {
+	Provider              oauthconfig.Provider `json:"provider"`
+	TenantID              string               `json:"tenantId,omitempty"`
+	ClientID              string               `json:"clientId,omitempty"`
+	ClientSecretEnc       string               `json:"clientSecretEnc,omitempty"`
+	RefreshTokenEnc       string               `json:"refreshTokenEnc,omitempty"`
+	ServiceAccountJSONEnc string               `json:"serviceAccountJsonEnc,omitempty"`
 }
 
 type subscriptionForStorage struct {
@@ -528,6 +540,7 @@ type targetForStorage struct {
 	Webhook  *webhookTargetForStorage  `json:"webhook,omitempty"`
 	Slack    *slackTargetForStorage    `json:"slack,omitempty"`
 	Telegram *telegramTargetForStorage `json:"telegram,omitempty"`
+	Teams    *teamsTargetForStorage    `json:"teams,omitempty"`
 }
 
 type webhookTargetForStorage struct {
@@ -535,11 +548,17 @@ type webhookTargetForStorage struct {
 	HeadersEnc          map[string]string `json:"headersEnc,omitempty"`
 	HMACSecretEnc       string            `json:"hmacSecretEnc,omitempty"`
 	MessageTemplate     string            `json:"messageTemplate,omitempty"`
+	BodyTemplate        string            `json:"bodyTemplate,omitempty"`
 	AllowInsecureHTTP   bool              `json:"allowInsecureHttp,omitempty"`
 	AllowPrivateNetwork bool              `json:"allowPrivateNetwork,omitempty"`
 }
 
 type slackTargetForStorage struct {
+	WebhookURLEnc   string `json:"webhookUrlEnc,omitempty"`
+	MessageTemplate string `json:"messageTemplate,omitempty"`
+}
+
+type teamsTargetForStorage struct {
 	WebhookURLEnc   string `json:"webhookUrlEnc,omitempty"`
 	MessageTemplate string `json:"messageTemplate,omitempty"`
 }
@@ -600,6 +619,7 @@ func (s *Store) channelToStorage(channel *notification.Channel) (*channelForStor
 		Webhook:   target.Webhook,
 		Slack:     target.Slack,
 		Telegram:  target.Telegram,
+		Teams:     target.Teams,
 		CreatedAt: channel.CreatedAt.Format(timeFormat),
 		UpdatedAt: channel.UpdatedAt.Format(timeFormat),
 		UpdatedBy: channel.UpdatedBy,
@@ -622,6 +642,22 @@ func (s *Store) workspaceSettingsToStorage(settings *notification.WorkspaceSetti
 		var err error
 		if stored.SMTP.PasswordEnc, err = s.encryptOptional(settings.SMTP.Password); err != nil {
 			return nil, err
+		}
+		if settings.SMTP.OAuth != nil {
+			stored.SMTP.OAuth = &smtpOAuthConfigForStorage{
+				Provider: settings.SMTP.OAuth.Provider,
+				TenantID: settings.SMTP.OAuth.TenantID,
+				ClientID: settings.SMTP.OAuth.ClientID,
+			}
+			if stored.SMTP.OAuth.ClientSecretEnc, err = s.encryptOptional(settings.SMTP.OAuth.ClientSecret); err != nil {
+				return nil, err
+			}
+			if stored.SMTP.OAuth.RefreshTokenEnc, err = s.encryptOptional(settings.SMTP.OAuth.RefreshToken); err != nil {
+				return nil, err
+			}
+			if stored.SMTP.OAuth.ServiceAccountJSONEnc, err = s.encryptOptional(settings.SMTP.OAuth.ServiceAccountJSON); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return stored, nil
@@ -667,6 +703,7 @@ func (s *Store) targetToStorage(target notification.Target) (targetForStorage, e
 			AllowInsecureHTTP:   target.Webhook.AllowInsecureHTTP,
 			AllowPrivateNetwork: target.Webhook.AllowPrivateNetwork,
 			MessageTemplate:     target.Webhook.MessageTemplate,
+			BodyTemplate:        target.Webhook.BodyTemplate,
 		}
 		if stored.Webhook.URLEnc, err = s.encryptRequired(target.Webhook.URL); err != nil {
 			return stored, err
@@ -698,6 +735,12 @@ func (s *Store) targetToStorage(target notification.Target) (targetForStorage, e
 			MessageTemplate: target.Telegram.MessageTemplate,
 		}
 		if stored.Telegram.BotTokenEnc, err = s.encryptRequired(target.Telegram.BotToken); err != nil {
+			return stored, err
+		}
+	}
+	if target.Teams != nil {
+		stored.Teams = &teamsTargetForStorage{MessageTemplate: target.Teams.MessageTemplate}
+		if stored.Teams.WebhookURLEnc, err = s.encryptRequired(target.Teams.WebhookURL); err != nil {
 			return stored, err
 		}
 	}
@@ -767,6 +810,7 @@ func (s *Store) channelFromStorage(stored *channelForStorage) (*notification.Cha
 		Webhook:  stored.Webhook,
 		Slack:    stored.Slack,
 		Telegram: stored.Telegram,
+		Teams:    stored.Teams,
 	})
 	if err != nil {
 		return nil, err
@@ -786,6 +830,7 @@ func (s *Store) channelFromStorage(stored *channelForStorage) (*notification.Cha
 	channel.Webhook = target.Webhook
 	channel.Slack = target.Slack
 	channel.Telegram = target.Telegram
+	channel.Teams = target.Teams
 	return channel, nil
 }
 
@@ -808,6 +853,28 @@ func (s *Store) workspaceSettingsFromStorage(stored *workspaceSettingsForStorage
 			Username: stored.SMTP.Username,
 			Password: password,
 			From:     stored.SMTP.From,
+		}
+		if stored.SMTP.OAuth != nil {
+			clientSecret, err := s.decryptOptional(stored.SMTP.OAuth.ClientSecretEnc)
+			if err != nil {
+				return nil, err
+			}
+			refreshToken, err := s.decryptOptional(stored.SMTP.OAuth.RefreshTokenEnc)
+			if err != nil {
+				return nil, err
+			}
+			serviceAccountJSON, err := s.decryptOptional(stored.SMTP.OAuth.ServiceAccountJSONEnc)
+			if err != nil {
+				return nil, err
+			}
+			settings.SMTP.OAuth = &oauthconfig.Config{
+				Provider:           stored.SMTP.OAuth.Provider,
+				TenantID:           stored.SMTP.OAuth.TenantID,
+				ClientID:           stored.SMTP.OAuth.ClientID,
+				ClientSecret:       clientSecret,
+				RefreshToken:       refreshToken,
+				ServiceAccountJSON: serviceAccountJSON,
+			}
 		}
 	}
 	return settings, nil
@@ -853,6 +920,7 @@ func (s *Store) targetFromStorage(stored targetForStorage) (notification.Target,
 			AllowInsecureHTTP:   stored.Webhook.AllowInsecureHTTP,
 			AllowPrivateNetwork: stored.Webhook.AllowPrivateNetwork,
 			MessageTemplate:     stored.Webhook.MessageTemplate,
+			BodyTemplate:        stored.Webhook.BodyTemplate,
 		}
 		if target.Webhook.URL, err = s.decryptOptional(stored.Webhook.URLEnc); err != nil {
 			return target, err
@@ -884,6 +952,12 @@ func (s *Store) targetFromStorage(stored targetForStorage) (notification.Target,
 			MessageTemplate: stored.Telegram.MessageTemplate,
 		}
 		if target.Telegram.BotToken, err = s.decryptOptional(stored.Telegram.BotTokenEnc); err != nil {
+			return target, err
+		}
+	}
+	if stored.Teams != nil {
+		target.Teams = &notification.TeamsTarget{MessageTemplate: stored.Teams.MessageTemplate}
+		if target.Teams.WebhookURL, err = s.decryptOptional(stored.Teams.WebhookURLEnc); err != nil {
 			return target, err
 		}
 	}

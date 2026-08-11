@@ -13,13 +13,14 @@ import (
 	"net/http"
 	"strings"
 
-	api "github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/humantask"
-	"github.com/dagucloud/dagu/internal/service/audit"
+	api "github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/audit"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/humantask"
+	"github.com/dagucloud/dagu/v2/internal/ir"
 )
 
 type humanTaskInputContextKey struct{}
@@ -159,10 +160,10 @@ func (a *API) authorizeHumanTaskMutation(
 	ctx context.Context,
 	dagName string,
 	dagRunID string,
-) (*exec.DAGRunStatus, error) {
-	attempt, err := a.dagRunStore.FindAttempt(ctx, exec.NewDAGRunRef(dagName, dagRunID))
+) (*ir.DAGRunStatus, error) {
+	attempt, err := a.dagRunStore.FindAttempt(ctx, ir.NewDAGRunRef(dagName, dagRunID))
 	if err != nil {
-		if errors.Is(err, exec.ErrDAGRunIDNotFound) {
+		if errors.Is(err, dagrun.ErrDAGRunIDNotFound) {
 			return nil, &Error{
 				HTTPStatus: http.StatusNotFound,
 				Code:       api.ErrorCodeNotFound,
@@ -197,8 +198,8 @@ func completeHumanTaskErrorResponse(ctx context.Context, err error) (api.Complet
 	if errors.As(err, &resumeErr) {
 		logger.Error(ctx, "Failed to queue DAG-run after human-task completion",
 			tag.Error(resumeErr.Err),
-			slog.String("dag", resumeErr.Result.DAGName),
-			slog.String("dagRunId", resumeErr.Result.DAGRunID),
+			tag.DAG(resumeErr.Result.DAGName),
+			tag.RunID(resumeErr.Result.DAGRunID),
 			slog.String("step", resumeErr.Result.StepID),
 		)
 		details := map[string]any{
@@ -231,8 +232,8 @@ func resumeHumanTaskErrorResponse(ctx context.Context, err error) (api.ResumeHum
 	if errors.As(err, &resumeErr) {
 		logger.Error(ctx, "Failed to queue human-task DAG-run resume",
 			tag.Error(resumeErr.Err),
-			slog.String("dag", resumeErr.Result.DAGName),
-			slog.String("dagRunId", resumeErr.Result.DAGRunID),
+			tag.DAG(resumeErr.Result.DAGName),
+			tag.RunID(resumeErr.Result.DAGRunID),
 		)
 		details := map[string]any{
 			"completionStored": true,

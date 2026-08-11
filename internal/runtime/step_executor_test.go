@@ -12,24 +12,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/runtime"
-	runtimeexec "github.com/dagucloud/dagu/internal/runtime/executor"
+	"github.com/dagucloud/dagu/v2/internal/executor/registry"
+	"github.com/dagucloud/dagu/v2/internal/runctx"
+
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	runtimeexec "github.com/dagucloud/dagu/v2/internal/runtime/executor"
 	"github.com/stretchr/testify/require"
 )
 
 const periodicFlushExecutorType = "test-step-executor-periodic-flush"
 
 type sideChannelExecutor struct {
-	inputMessages     []exec.LLMMessage
+	inputMessages     []ir.LLMMessage
 	pushBackInputs    map[string]string
 	pushBackIteration int
 	previousStdout    string
 	closed            bool
-	toolDefinitions   []exec.ToolDefinition
-	messages          []exec.LLMMessage
-	subRuns           []exec.SubDAGRun
+	toolDefinitions   []ir.ToolDefinition
+	messages          []ir.LLMMessage
+	subRuns           []ir.SubDAGRun
+	statusDetails     []ir.NodeStatusDetail
 	outputs           map[string]any
 	stdout            io.Writer
 	stderr            io.Writer
@@ -45,11 +48,11 @@ func (e *sideChannelExecutor) Close() error {
 	e.closed = true
 	return nil
 }
-func (e *sideChannelExecutor) SetContext(messages []exec.LLMMessage) {
-	e.inputMessages = append([]exec.LLMMessage(nil), messages...)
+func (e *sideChannelExecutor) SetContext(messages []ir.LLMMessage) {
+	e.inputMessages = append([]ir.LLMMessage(nil), messages...)
 }
-func (e *sideChannelExecutor) GetMessages() []exec.LLMMessage {
-	return append([]exec.LLMMessage(nil), e.messages...)
+func (e *sideChannelExecutor) GetMessages() []ir.LLMMessage {
+	return append([]ir.LLMMessage(nil), e.messages...)
 }
 func (e *sideChannelExecutor) SetPushBackContext(inputs map[string]string, iteration int) {
 	e.pushBackInputs = inputs
@@ -58,11 +61,14 @@ func (e *sideChannelExecutor) SetPushBackContext(inputs map[string]string, itera
 func (e *sideChannelExecutor) SetPushBackPreviousStdout(path string) {
 	e.previousStdout = path
 }
-func (e *sideChannelExecutor) GetSubRuns() []exec.SubDAGRun {
-	return append([]exec.SubDAGRun(nil), e.subRuns...)
+func (e *sideChannelExecutor) GetSubRuns() []ir.SubDAGRun {
+	return append([]ir.SubDAGRun(nil), e.subRuns...)
 }
-func (e *sideChannelExecutor) GetToolDefinitions() []exec.ToolDefinition {
-	return append([]exec.ToolDefinition(nil), e.toolDefinitions...)
+func (e *sideChannelExecutor) GetStatusDetails() []ir.NodeStatusDetail {
+	return append([]ir.NodeStatusDetail(nil), e.statusDetails...)
+}
+func (e *sideChannelExecutor) GetToolDefinitions() []ir.ToolDefinition {
+	return append([]ir.ToolDefinition(nil), e.toolDefinitions...)
 }
 func (e *sideChannelExecutor) GetOutputs() map[string]any {
 	return e.outputs
@@ -122,7 +128,7 @@ type flushObservingLogWriterFactory struct {
 }
 
 func (f *flushObservingLogWriterFactory) NewStepWriter(_ context.Context, _ string, streamType int) io.WriteCloser {
-	if streamType == exec.StreamTypeStdout {
+	if streamType == runctx.StreamTypeStdout {
 		return f.stdout
 	}
 	return &flushObservingWriter{}
@@ -137,12 +143,12 @@ func TestStepExecutorPeriodicallyFlushesRemoteOutputWhileExecutorRuns(t *testing
 	}
 	defer releaseExecutor()
 
-	runtimeexec.RegisterExecutor(periodicFlushExecutorType, func(context.Context, core.Step) (runtimeexec.Executor, error) {
+	runtimeexec.RegisterExecutor(periodicFlushExecutorType, func(context.Context, ir.Step) (runtimeexec.Executor, error) {
 		return &periodicFlushExecutor{
 			started: started,
 			release: release,
 		}, nil
-	}, nil, core.ExecutorCapabilities{})
+	}, nil, registry.ExecutorCapabilities{})
 	t.Cleanup(func() { runtimeexec.UnregisterExecutor(periodicFlushExecutorType) })
 
 	writer := &flushObservingWriter{
@@ -150,7 +156,7 @@ func TestStepExecutorPeriodicallyFlushesRemoteOutputWhileExecutorRuns(t *testing
 		observed: make(chan struct{}, 1),
 	}
 	factory := &flushObservingLogWriterFactory{stdout: writer}
-	dag := &core.DAG{Name: "periodic-flush-dag"}
+	dag := &ir.DAG{Name: "periodic-flush-dag"}
 	ctx := runtime.NewContext(
 		context.Background(),
 		dag,
@@ -158,9 +164,9 @@ func TestStepExecutorPeriodicallyFlushesRemoteOutputWhileExecutorRuns(t *testing
 		"dag.log",
 		runtime.WithLogWriterFactory(factory),
 	)
-	node := runtime.NewNode(core.Step{
+	node := runtime.NewNode(ir.Step{
 		Name: "periodic-flush-step",
-		ExecutorConfig: core.ExecutorConfig{
+		ExecutorConfig: ir.ExecutorConfig{
 			Type: periodicFlushExecutorType,
 		},
 	}, runtime.NodeState{})
@@ -201,35 +207,38 @@ func TestStepExecutorPeriodicallyFlushesRemoteOutputWhileExecutorRuns(t *testing
 func TestStepExecutorCapturesExecutorSideChannels(t *testing.T) {
 	executorType := "test-step-executor-side-channels"
 	execCh := make(chan *sideChannelExecutor, 1)
-	runtimeexec.RegisterExecutor(executorType, func(context.Context, core.Step) (runtimeexec.Executor, error) {
+	runtimeexec.RegisterExecutor(executorType, func(context.Context, ir.Step) (runtimeexec.Executor, error) {
 		exec := &sideChannelExecutor{
-			messages: []exec.LLMMessage{
-				{Role: exec.RoleAssistant, Content: "new message"},
+			messages: []ir.LLMMessage{
+				{Role: ir.LLMRoleAssistant, Content: "new message"},
 			},
-			subRuns: []exec.SubDAGRun{
+			subRuns: []ir.SubDAGRun{
 				{DAGRunID: "new-run", DAGName: "new-dag", Params: "NEW=1"},
 			},
-			toolDefinitions: []exec.ToolDefinition{
+			statusDetails: []ir.NodeStatusDetail{
+				{Label: "customer-a", Status: ir.NodeFailed},
+			},
+			toolDefinitions: []ir.ToolDefinition{
 				{Name: "lookup", Description: "look up data"},
 			},
 			outputs: map[string]any{"answer": float64(42)},
 		}
 		execCh <- exec
 		return exec, nil
-	}, nil, core.ExecutorCapabilities{})
+	}, nil, registry.ExecutorCapabilities{})
 	t.Cleanup(func() { runtimeexec.UnregisterExecutor(executorType) })
 
-	node := runtime.NewNode(core.Step{
+	node := runtime.NewNode(ir.Step{
 		Name: "side-channel-step",
-		ExecutorConfig: core.ExecutorConfig{
+		ExecutorConfig: ir.ExecutorConfig{
 			Type: executorType,
 		},
 	}, runtime.NodeState{
 		ApprovalIteration:      2,
 		PushBackInputs:         map[string]string{"reason": "try again"},
 		PushBackPreviousStdout: "/tmp/previous.out",
-		ChatMessages: []exec.LLMMessage{
-			{Role: exec.RoleUser, Content: "previous message"},
+		ChatMessages: []ir.LLMMessage{
+			{Role: ir.LLMRoleUser, Content: "previous message"},
 		},
 	})
 	node.SetRepeated(true)
@@ -238,21 +247,22 @@ func TestStepExecutorCapturesExecutorSideChannels(t *testing.T) {
 	})
 
 	stepExecutor := runtime.NewStepExecutor()
-	ctx := runtime.NewContext(context.Background(), &core.DAG{}, "run-1", "dag.log")
+	ctx := runtime.NewContext(context.Background(), &ir.DAG{}, "run-1", "dag.log")
 	require.NoError(t, stepExecutor.Execute(ctx, node))
 
 	fakeExec := <-execCh
 	require.True(t, fakeExec.closed)
-	require.Equal(t, []exec.LLMMessage{{Role: exec.RoleUser, Content: "previous message"}}, fakeExec.inputMessages)
+	require.Equal(t, []ir.LLMMessage{{Role: ir.LLMRoleUser, Content: "previous message"}}, fakeExec.inputMessages)
 	require.Equal(t, map[string]string{"reason": "try again"}, fakeExec.pushBackInputs)
 	require.Equal(t, 2, fakeExec.pushBackIteration)
 	require.Equal(t, "/tmp/previous.out", fakeExec.previousStdout)
 
-	require.Equal(t, []exec.LLMMessage{{Role: exec.RoleAssistant, Content: "new message"}}, node.GetChatMessages())
+	require.Equal(t, []ir.LLMMessage{{Role: ir.LLMRoleAssistant, Content: "new message"}}, node.GetChatMessages())
 	state := node.State()
 	require.Equal(t, []runtime.SubDAGRun{{DAGRunID: "new-run", DAGName: "new-dag", Params: "NEW=1"}}, state.SubRuns)
 	require.Equal(t, []runtime.SubDAGRun{{DAGRunID: "old-run", DAGName: "old-dag", Params: "OLD=1"}}, state.SubRunsRepeated)
-	require.Equal(t, []exec.ToolDefinition{{Name: "lookup", Description: "look up data"}}, node.GetToolDefinitions())
+	require.Equal(t, []ir.NodeStatusDetail{{Label: "customer-a", Status: ir.NodeFailed}}, state.StatusDetails)
+	require.Equal(t, []ir.ToolDefinition{{Name: "lookup", Description: "look up data"}}, node.GetToolDefinitions())
 	require.NotNil(t, state.OutputsValue)
 	require.JSONEq(t, `{"answer":42}`, *state.OutputsValue)
 }

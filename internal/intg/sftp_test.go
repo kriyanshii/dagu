@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/test"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/test"
 )
 
 // TestSFTPExecutorIntegration tests SFTP executor with a real SSH server in Docker
@@ -28,7 +28,7 @@ func TestSFTPExecutorIntegration(t *testing.T) {
 
 	// Start SSH server container (reuses helpers from ssh_test.go)
 	sshServer := startSSHServer(t, th, dockerClient)
-	defer stopSSHServer(t, th, dockerClient, sshServer)
+	defer stopSSHServer(t, dockerClient, sshServer)
 
 	// Wait for SSH server to be ready
 	waitForSSHReady(t, sshServer)
@@ -74,7 +74,7 @@ steps:
 
 		dag := th.DAG(t, dagConfig)
 		dag.Agent().RunSuccess(t)
-		dag.AssertLatestStatus(t, core.Succeeded)
+		dag.AssertLatestStatus(t, ir.Succeeded)
 		dag.AssertOutputs(t, map[string]any{
 			"UPLOAD_VERIFY": "sftp upload test content",
 		})
@@ -118,7 +118,7 @@ steps:
 
 		dag := th.DAG(t, dagConfig)
 		dag.Agent().RunSuccess(t)
-		dag.AssertLatestStatus(t, core.Succeeded)
+		dag.AssertLatestStatus(t, ir.Succeeded)
 
 		// Verify downloaded file contents
 		content, err := os.ReadFile(downloadPath)
@@ -173,7 +173,7 @@ steps:
 
 		dag := th.DAG(t, dagConfig)
 		dag.Agent().RunSuccess(t)
-		dag.AssertLatestStatus(t, core.Succeeded)
+		dag.AssertLatestStatus(t, ir.Succeeded)
 		dag.AssertOutputs(t, map[string]any{
 			"DIR_UPLOAD_VERIFY": "content1\nnested content",
 		})
@@ -219,7 +219,7 @@ steps:
 
 		dag := th.DAG(t, dagConfig)
 		dag.Agent().RunSuccess(t)
-		dag.AssertLatestStatus(t, core.Succeeded)
+		dag.AssertLatestStatus(t, ir.Succeeded)
 
 		// Verify downloaded directory contents
 		content1, err := os.ReadFile(filepath.Join(downloadPath, "file1.txt"))

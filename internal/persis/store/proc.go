@@ -10,8 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/persis"
+	"github.com/dagucloud/dagu/v2/internal/proc"
 )
 
 const (
@@ -20,7 +21,7 @@ const (
 	defaultProcHeartbeatInterval = 5 * time.Second
 )
 
-var _ exec.ProcStore = (*ProcStore)(nil)
+var _ proc.ProcStore = (*ProcStore)(nil)
 
 // ProcStoreOption configures a ProcStore.
 type ProcStoreOption func(*ProcStore)
@@ -43,23 +44,14 @@ func WithProcHeartbeatInterval(d time.Duration) ProcStoreOption {
 	}
 }
 
-// WithProcHeartbeatSyncInterval keeps configuration parity with the legacy
-// proc store option.
-// Collection-backed proc heartbeats are complete writes, so there is no
-// separate sync loop to configure.
-func WithProcHeartbeatSyncInterval(_ time.Duration) ProcStoreOption {
-	return func(_ *ProcStore) {
-	}
-}
-
-// ProcStore implements [exec.ProcStore] on top of a [persis.Collection].
+// ProcStore implements [proc.ProcStore] on top of a [persis.Collection].
 //
 // This is the backend-neutral proc store, intended for non-file backends
 // (SQL/etcd) and tests. It serializes each entry as a JSON record and derives
 // liveness from the entry's heartbeat timestamp plus the record's UpdatedAt.
 //
 // It is NOT layout-compatible with the file backend's proc store
-// ([github.com/dagucloud/dagu/internal/persis/file/proc]), which writes the
+// ([github.com/dagucloud/dagu/v2/internal/persis/file/proc]), which writes the
 // released binary ".proc" files. The file backend must use file.NewProcStore;
 // do not point this store at a file backend's ProcDir. See [NewProcStore].
 type ProcStore struct {
@@ -93,7 +85,7 @@ func NewProcStore(col persis.Collection, opts ...ProcStoreOption) *ProcStore {
 }
 
 // Acquire creates and starts a proc heartbeat.
-func (s *ProcStore) Acquire(ctx context.Context, groupName string, meta exec.ProcMeta) (exec.ProcHandle, error) {
+func (s *ProcStore) Acquire(ctx context.Context, groupName string, meta proc.ProcMeta) (proc.ProcHandle, error) {
 	if meta.StartedAt <= 0 {
 		meta.StartedAt = time.Now().UTC().Unix()
 	}
@@ -147,7 +139,7 @@ func (s *ProcStore) CountAliveByDAGName(ctx context.Context, groupName, dagName 
 }
 
 // ListAlive returns fresh DAG runs in a group.
-func (s *ProcStore) ListAlive(ctx context.Context, groupName string) ([]exec.DAGRunRef, error) {
+func (s *ProcStore) ListAlive(ctx context.Context, groupName string) ([]ir.DAGRunRef, error) {
 	entries, err := s.ListEntries(ctx, groupName)
 	if err != nil {
 		return nil, err
@@ -156,7 +148,7 @@ func (s *ProcStore) ListAlive(ctx context.Context, groupName string) ([]exec.DAG
 }
 
 // IsRunAlive reports whether dagRun has a fresh proc entry in groupName.
-func (s *ProcStore) IsRunAlive(ctx context.Context, groupName string, dagRun exec.DAGRunRef) (bool, error) {
+func (s *ProcStore) IsRunAlive(ctx context.Context, groupName string, dagRun ir.DAGRunRef) (bool, error) {
 	entries, err := s.ListEntries(ctx, groupName)
 	if err != nil {
 		return false, err
@@ -170,7 +162,7 @@ func (s *ProcStore) IsRunAlive(ctx context.Context, groupName string, dagRun exe
 }
 
 // IsAttemptAlive reports whether a specific attempt has a fresh proc entry.
-func (s *ProcStore) IsAttemptAlive(ctx context.Context, groupName string, dagRun exec.DAGRunRef, attemptID string) (bool, error) {
+func (s *ProcStore) IsAttemptAlive(ctx context.Context, groupName string, dagRun ir.DAGRunRef, attemptID string) (bool, error) {
 	entries, err := s.ListEntries(ctx, groupName)
 	if err != nil {
 		return false, err
@@ -187,7 +179,7 @@ func (s *ProcStore) IsAttemptAlive(ctx context.Context, groupName string, dagRun
 }
 
 // ListEntries returns all proc entries for groupName, including stale entries.
-func (s *ProcStore) ListEntries(ctx context.Context, groupName string) ([]exec.ProcEntry, error) {
+func (s *ProcStore) ListEntries(ctx context.Context, groupName string) ([]proc.ProcEntry, error) {
 	entries, err := s.listCollectionEntries(ctx, groupName)
 	if err != nil {
 		return nil, err
@@ -196,12 +188,12 @@ func (s *ProcStore) ListEntries(ctx context.Context, groupName string) ([]exec.P
 }
 
 // LatestFreshEntryByDAGName returns the newest fresh proc entry for dagName.
-func (s *ProcStore) LatestFreshEntryByDAGName(ctx context.Context, groupName, dagName string) (*exec.ProcEntry, error) {
+func (s *ProcStore) LatestFreshEntryByDAGName(ctx context.Context, groupName, dagName string) (*proc.ProcEntry, error) {
 	entries, err := s.ListEntries(ctx, groupName)
 	if err != nil {
 		return nil, err
 	}
-	var freshest *exec.ProcEntry
+	var freshest *proc.ProcEntry
 	for i := range entries {
 		entry := entries[i]
 		if !entry.Fresh || entry.Meta.Name != dagName {
@@ -218,17 +210,17 @@ func (s *ProcStore) LatestFreshEntryByDAGName(ctx context.Context, groupName, da
 }
 
 // LatestHeartbeat returns the latest heartbeat observation for dagRun.
-func (s *ProcStore) LatestHeartbeat(ctx context.Context, groupName string, dagRun exec.DAGRunRef) (*exec.ProcHeartbeat, error) {
+func (s *ProcStore) LatestHeartbeat(ctx context.Context, groupName string, dagRun ir.DAGRunRef) (*proc.ProcHeartbeat, error) {
 	return s.latestCollectionHeartbeat(ctx, groupName, dagRun)
 }
 
 // ListAllAlive returns all fresh DAG runs grouped by process group.
-func (s *ProcStore) ListAllAlive(ctx context.Context) (map[string][]exec.DAGRunRef, error) {
+func (s *ProcStore) ListAllAlive(ctx context.Context) (map[string][]ir.DAGRunRef, error) {
 	entries, err := s.ListAllEntries(ctx)
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[string][]exec.DAGRunRef)
+	result := make(map[string][]ir.DAGRunRef)
 	seen := make(map[string]map[string]struct{})
 	for _, entry := range entries {
 		if !entry.Fresh {
@@ -257,7 +249,7 @@ func (s *ProcStore) ListAllAlive(ctx context.Context) (map[string][]exec.DAGRunR
 }
 
 // ListAllEntries returns all proc entries across all groups.
-func (s *ProcStore) ListAllEntries(ctx context.Context) ([]exec.ProcEntry, error) {
+func (s *ProcStore) ListAllEntries(ctx context.Context) ([]proc.ProcEntry, error) {
 	entries, err := s.listCollectionEntries(ctx, "")
 	if err != nil {
 		return nil, err
@@ -266,7 +258,7 @@ func (s *ProcStore) ListAllEntries(ctx context.Context) ([]exec.ProcEntry, error
 }
 
 // RemoveIfStale removes entry if it is still stale and unchanged.
-func (s *ProcStore) RemoveIfStale(ctx context.Context, entry exec.ProcEntry) error {
+func (s *ProcStore) RemoveIfStale(ctx context.Context, entry proc.ProcEntry) error {
 	if entry.GroupName == "" || entry.Fresh {
 		return nil
 	}

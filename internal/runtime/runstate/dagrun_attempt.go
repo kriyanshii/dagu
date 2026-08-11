@@ -6,15 +6,16 @@ package runstate
 import (
 	"context"
 
-	"github.com/dagucloud/dagu/internal/core/exec"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/ir"
 )
 
-func wrapDAGRunAttempt(attempt exec.DAGRunAttempt) Attempt {
+func wrapDAGRunAttempt(attempt dagrun.DAGRunAttempt) Attempt {
 	return dagRunAttempt{attempt: attempt}
 }
 
 type dagRunAttempt struct {
-	attempt exec.DAGRunAttempt
+	attempt dagrun.DAGRunAttempt
 }
 
 func (a dagRunAttempt) ID() string {
@@ -25,19 +26,19 @@ func (a dagRunAttempt) Open(ctx context.Context) error {
 	return a.attempt.Open(ctx)
 }
 
-func (a dagRunAttempt) RecordStatus(ctx context.Context, status exec.DAGRunStatus) error {
+func (a dagRunAttempt) RecordStatus(ctx context.Context, status ir.DAGRunStatus) error {
 	return a.attempt.Write(ctx, status)
 }
 
-func (a dagRunAttempt) RecordOutputs(ctx context.Context, outputs *exec.DAGRunOutputs) error {
+func (a dagRunAttempt) RecordOutputs(ctx context.Context, outputs *ir.DAGRunOutputs) error {
 	return a.attempt.WriteOutputs(ctx, outputs)
 }
 
-func (a dagRunAttempt) ReadStatus(ctx context.Context) (*exec.DAGRunStatus, error) {
+func (a dagRunAttempt) ReadStatus(ctx context.Context) (*ir.DAGRunStatus, error) {
 	return a.attempt.ReadStatus(ctx)
 }
 
-func (a dagRunAttempt) ReadOutputs(ctx context.Context) (*exec.DAGRunOutputs, error) {
+func (a dagRunAttempt) ReadOutputs(ctx context.Context) (*ir.DAGRunOutputs, error) {
 	return a.attempt.ReadOutputs(ctx)
 }
 
@@ -49,11 +50,11 @@ func (a dagRunAttempt) CancelRequested(ctx context.Context) (bool, error) {
 	return a.attempt.IsAborting(ctx)
 }
 
-func (a dagRunAttempt) ReadStepMessages(ctx context.Context, stepName string) ([]exec.LLMMessage, error) {
+func (a dagRunAttempt) ReadStepMessages(ctx context.Context, stepName string) ([]ir.LLMMessage, error) {
 	return a.attempt.ReadStepMessages(ctx, stepName)
 }
 
-func (a dagRunAttempt) WriteStepMessages(ctx context.Context, stepName string, messages []exec.LLMMessage) error {
+func (a dagRunAttempt) WriteStepMessages(ctx context.Context, stepName string, messages []ir.LLMMessage) error {
 	return a.attempt.WriteStepMessages(ctx, stepName, messages)
 }
 

@@ -11,19 +11,18 @@ import (
 	"testing"
 	"time"
 
-	apigen "github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	persiststore "github.com/dagucloud/dagu/internal/persis/store"
-	"github.com/dagucloud/dagu/internal/persis/testutil"
-	"github.com/dagucloud/dagu/internal/profile"
-	"github.com/dagucloud/dagu/internal/runtime"
-	secretpkg "github.com/dagucloud/dagu/internal/secret"
-	apiv1 "github.com/dagucloud/dagu/internal/service/frontend/api/v1"
-	testhelper "github.com/dagucloud/dagu/internal/test"
-	workspacepkg "github.com/dagucloud/dagu/internal/workspace"
+	apigen "github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/crypto"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	persiststore "github.com/dagucloud/dagu/v2/internal/persis/store"
+	"github.com/dagucloud/dagu/v2/internal/persis/testutil"
+	"github.com/dagucloud/dagu/v2/internal/profile"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	secretpkg "github.com/dagucloud/dagu/v2/internal/secret"
+	apiv1 "github.com/dagucloud/dagu/v2/internal/service/frontend/api/v1"
+	testhelper "github.com/dagucloud/dagu/v2/internal/test"
+	workspacepkg "github.com/dagucloud/dagu/v2/internal/workspace"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -478,7 +477,7 @@ steps:
 	server.Client().Post(fmt.Sprintf("/api/v1/dags/%s/start", dagName), apigen.ExecuteDAGJSONRequestBody{
 		DagRunId: &defaultRunID,
 	}).WithBearerToken(operatorToken).ExpectStatus(http.StatusOK).Send(t)
-	defaultStatus := waitForStoredDAGRunStatus(t, server, dagName, defaultRunID, 10*time.Second, func(status *exec.DAGRunStatus) bool {
+	defaultStatus := waitForStoredDAGRunStatus(t, server, dagName, defaultRunID, 10*time.Second, func(status *ir.DAGRunStatus) bool {
 		return status.ProfileName == "prod"
 	})
 	assert.Equal(t, "prod", defaultStatus.ProfileName)
@@ -489,7 +488,7 @@ steps:
 		DagRunId: &noProfileRunID,
 		Profile:  &noProfile,
 	}).WithBearerToken(operatorToken).ExpectStatus(http.StatusOK).Send(t)
-	noProfileStatus := waitForStoredDAGRunStatus(t, server, dagName, noProfileRunID, 10*time.Second, func(status *exec.DAGRunStatus) bool {
+	noProfileStatus := waitForStoredDAGRunStatus(t, server, dagName, noProfileRunID, 10*time.Second, func(status *ir.DAGRunStatus) bool {
 		return status.DAGRunID == noProfileRunID
 	})
 	assert.Empty(t, noProfileStatus.ProfileName)
@@ -545,7 +544,7 @@ steps:
 		DagRunId: &runID,
 	}).WithBearerToken(operatorToken).ExpectStatus(http.StatusOK).Send(t)
 
-	status := waitForStoredDAGRunStatus(t, server, dagName, runID, 10*time.Second, func(status *exec.DAGRunStatus) bool {
+	status := waitForStoredDAGRunStatus(t, server, dagName, runID, 10*time.Second, func(status *ir.DAGRunStatus) bool {
 		return status.ProfileName == "local"
 	})
 	assert.Equal(t, "local", status.ProfileName)
@@ -644,7 +643,7 @@ steps:
 	dag, err := server.DAGStore.GetMetadata(server.Context, dagName)
 	require.NoError(t, err)
 
-	seedLatestDAGRunStatus(t, server, dag, "protected-profile-source-run", core.Failed, seedDAGRunStatusOptions{
+	seedLatestDAGRunStatus(t, server, dag, "protected-profile-source-run", ir.Failed, seedDAGRunStatusOptions{
 		errorText:   "source run failed",
 		profileName: "prod",
 	})
@@ -654,12 +653,12 @@ steps:
 		apigen.RetryDAGRunJSONRequestBody{DagRunId: "protected-profile-source-run"},
 	).WithBearerToken(operatorToken).ExpectStatus(http.StatusOK).Send(t)
 
-	attempt, err := server.DAGRunStore.FindAttempt(server.Context, exec.NewDAGRunRef(dagName, "protected-profile-source-run"))
+	attempt, err := server.DAGRunStore.FindAttempt(server.Context, ir.NewDAGRunRef(dagName, "protected-profile-source-run"))
 	require.NoError(t, err)
 
 	status, err := attempt.ReadStatus(server.Context)
 	require.NoError(t, err)
-	require.Equal(t, core.Queued, status.Status)
+	require.Equal(t, ir.Queued, status.Status)
 	assert.Equal(t, "prod", status.ProfileName)
 }
 

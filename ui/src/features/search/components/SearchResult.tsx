@@ -4,6 +4,11 @@
 import { Button } from '@/components/ui/button';
 import { useClient } from '@/hooks/api';
 import { cn } from '@/lib/utils';
+import { encodeWikiPagePathForURL } from '@/pages/wiki/lib/wiki-page-path';
+import {
+  visibleWikiPagePathForWorkspace,
+  workspaceWikiQueryForWorkspace,
+} from '@/lib/workspace';
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { components } from '../../../api/v1/schema';
@@ -11,6 +16,7 @@ import { AppBarContext } from '../../../contexts/AppBarContext';
 
 type SearchMatch = components['schemas']['SearchMatchItem'];
 type DagResult = components['schemas']['DAGSearchPageItem'];
+type WikiPageResult = components['schemas']['WikiPageSearchPageItem'];
 type DAGWorkspaceQuery = {
   workspace?: string;
 };
@@ -22,14 +28,23 @@ type LoadMoreResponse = {
   nextCursor?: string;
 };
 
-type Props = {
-  query: string;
-  results: DagResult[];
-  workspaceQuery?: DAGWorkspaceQuery;
-};
+type SearchMatchesResponse = components['schemas']['SearchMatchesResponse'];
+type SearchMatchesRequest = () => Promise<{
+  data?: SearchMatchesResponse;
+  error?: { message?: string };
+}>;
+
+type Props =
+  | {
+      type: 'dag';
+      query: string;
+      results: DagResult[];
+      workspaceQuery?: DAGWorkspaceQuery;
+    }
+  | { type: 'wiki'; query: string; results: WikiPageResult[] };
 
 type SearchResultItemProps = {
-  kind: 'DAG';
+  kind: 'DAG' | 'Wiki';
   title: string;
   link: string;
   query: string;
@@ -38,6 +53,27 @@ type SearchResultItemProps = {
   initialNextCursor?: string;
   loadMore: (cursor?: string) => Promise<LoadMoreResponse>;
 };
+
+async function fetchSearchMatches(
+  request: SearchMatchesRequest
+): Promise<LoadMoreResponse> {
+  try {
+    const response = await request();
+    return {
+      error: response.error?.message || undefined,
+      matches: response.data?.matches ?? [],
+      hasMore: response.data?.hasMore ?? false,
+      nextCursor: response.data?.nextCursor,
+    };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error ? error.message : 'Failed to load more matches',
+      matches: [],
+      hasMore: false,
+    };
+  }
+}
 
 function SearchSnippet({ match }: { match: SearchMatch }) {
   const lines = match.line.split('\n');
@@ -168,57 +204,77 @@ function SearchResultItem({
 }
 
 function SearchResult(props: Props) {
-  const { query, results } = props;
+  const { type, query, results } = props;
   const client = useClient();
   const appBarContext = React.useContext(AppBarContext);
   const remoteNode = appBarContext.selectedRemoteNode || 'local';
-  const dagWorkspaceQuery = props.workspaceQuery ?? {};
+  const dagWorkspaceQuery = type === 'dag' ? (props.workspaceQuery ?? {}) : {};
 
-  const items = results.map((result) => {
-    const linkSearch = result.workspace
-      ? `?workspace=${encodeURIComponent(result.workspace)}`
-      : '';
-    return {
-      key: `dag-${result.fileName}-${result.workspace ?? ''}-${query}`,
-      kind: 'DAG' as const,
-      title: result.name,
-      link: `/dags/${encodeURI(result.fileName)}/spec${linkSearch}`,
-      initialMatches: result.matches ?? [],
-      initialHasMoreMatches: result.hasMoreMatches,
-      initialNextCursor: result.nextMatchesCursor,
-      loadMore: async (cursor?: string): Promise<LoadMoreResponse> => {
-        try {
-          const response = await client.GET('/search/dags/{fileName}/matches', {
-            params: {
-              path: { fileName: result.fileName },
-              query: {
-                remoteNode,
-                q: query,
-                cursor,
-                ...dagWorkspaceQuery,
-              },
-            },
-          });
-
+  const items =
+    type === 'dag'
+      ? results.map((result) => {
+          const linkSearch = result.workspace
+            ? `?workspace=${encodeURIComponent(result.workspace)}`
+            : '';
           return {
-            error: response.error?.message || undefined,
-            matches: response.data?.matches ?? [],
-            hasMore: response.data?.hasMore ?? false,
-            nextCursor: response.data?.nextCursor,
+            key: `dag-${result.fileName}-${result.workspace ?? ''}-${query}`,
+            kind: 'DAG' as const,
+            title: result.name,
+            link: `/dags/${encodeURI(result.fileName)}/spec${linkSearch}`,
+            initialMatches: result.matches ?? [],
+            initialHasMoreMatches: result.hasMoreMatches,
+            initialNextCursor: result.nextMatchesCursor,
+            loadMore: (cursor?: string) =>
+              fetchSearchMatches(() =>
+                client.GET('/search/dags/{fileName}/matches', {
+                  params: {
+                    path: { fileName: result.fileName },
+                    query: {
+                      remoteNode,
+                      q: query,
+                      cursor,
+                      ...dagWorkspaceQuery,
+                    },
+                  },
+                })
+              ),
           };
-        } catch (error) {
+        })
+      : results.map((result) => {
+          const wikiPagePath = visibleWikiPagePathForWorkspace(
+            result.id,
+            result.workspace
+          );
+          const wikiWorkspaceQuery = workspaceWikiQueryForWorkspace(
+            result.workspace
+          );
+          const linkSearch = result.workspace
+            ? `?workspace=${encodeURIComponent(result.workspace)}`
+            : '';
           return {
-            error:
-              error instanceof Error
-                ? error.message
-                : 'Failed to load more matches',
-            matches: [],
-            hasMore: false,
+            key: `wiki-${result.id}-${result.workspace ?? ''}-${query}`,
+            kind: 'Wiki' as const,
+            title: result.title,
+            link: `/wiki/${encodeWikiPagePathForURL(wikiPagePath)}${linkSearch}`,
+            initialMatches: result.matches ?? [],
+            initialHasMoreMatches: result.hasMoreMatches,
+            initialNextCursor: result.nextMatchesCursor,
+            loadMore: (cursor?: string) =>
+              fetchSearchMatches(() =>
+                client.GET('/search/wiki/matches', {
+                  params: {
+                    query: {
+                      remoteNode,
+                      path: wikiPagePath,
+                      q: query,
+                      cursor,
+                      ...wikiWorkspaceQuery,
+                    },
+                  },
+                })
+              ),
           };
-        }
-      },
-    };
-  });
+        });
 
   return (
     <ul className="divide-y rounded-md border">

@@ -277,7 +277,7 @@ export interface paths {
         };
         /**
          * List all available DAGs
-         * @description Retrieves DAG definitions with optional filtering by name and labels
+         * @description Retrieves DAG definitions with optional filtering by name, labels, and active status (scheduled and not suspended).
          */
         get: operations["listDAGs"];
         put?: never;
@@ -572,6 +572,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/search/wiki": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search Wiki pages
+         * @description Returns cursor-based Wiki page search results in stable path order. Use nextCursor only with the same query, workspace, and prefix.
+         */
+        get: operations["searchWikiPageFeed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search/dags/{fileName}/matches": {
         parameters: {
             query?: never;
@@ -584,6 +604,26 @@ export interface paths {
          * @description Returns cursor-based snippets for one matching DAG definition.
          */
         get: operations["searchDagMatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/search/wiki/matches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search Wiki page match snippets
+         * @description Returns cursor-based snippets for one matching Wiki page.
+         */
+        get: operations["searchWikiPageMatches"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2025,6 +2065,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/dags/{fileName}/webhook/profile-selection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Configure webhook profile selection
+         * @description Replaces the runtime profiles that callers may select through the
+         *     `X-Dagu-Profile` header. An empty list disables caller selection.
+         *     Admin only.
+         *
+         */
+        put: operations["configureDAGWebhookProfileSelection"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/dags/{fileName}/webhook/toggle": {
         parameters: {
             query?: never;
@@ -2292,7 +2355,7 @@ export interface paths {
         };
         /**
          * Get Git sync status
-         * @description Returns the overall Git sync status including status of all DAGs
+         * @description Returns the overall Git sync status including all supported sync items
          */
         get: operations["getSyncStatus"];
         put?: never;
@@ -2333,8 +2396,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Publish selected DAGs
-         * @description Commits and pushes the specified DAG IDs. If itemIds is omitted, publishes all modified or untracked DAGs.
+         * Publish selected sync items
+         * @description Commits and pushes the specified sync item IDs. If itemIds is omitted, publishes all modified or untracked items.
          */
         post: operations["syncPublishAll"];
         delete?: never;
@@ -2395,8 +2458,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get diff for a DAG
-         * @description Returns the diff between local and remote versions of a DAG
+         * Get diff for a sync item
+         * @description Returns the diff between local and remote versions of a sync item
          */
         get: operations["getSyncItemDiff"];
         put?: never;
@@ -2417,8 +2480,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Publish a single DAG
-         * @description Commits and pushes a single DAG to the remote repository
+         * Publish a single sync item
+         * @description Commits and pushes a single sync item to the remote repository
          */
         post: operations["publishSyncItem"];
         delete?: never;
@@ -2437,7 +2500,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Discard local changes for a DAG
+         * Discard local changes for a sync item
          * @description Discards local changes and reverts to the version in the remote repository
          */
         post: operations["discardSyncItemChanges"];
@@ -2457,8 +2520,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Forget a DAG
-         * @description Removes the state entry for a missing, untracked, or conflicting DAG. Synced and modified DAGs are rejected.
+         * Forget a sync item
+         * @description Removes the state entry for a missing, untracked, or conflicting sync item. Synced and modified items are rejected.
          */
         post: operations["forgetSyncItem"];
         delete?: never;
@@ -2477,8 +2540,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Delete a DAG
-         * @description Removes a DAG from the remote repository (git rm + commit + push), local disk, and sync state
+         * Delete a sync item
+         * @description Removes a sync item from the remote repository (git rm + commit + push), local disk, and sync state
          */
         post: operations["deleteSyncItem"];
         delete?: never;
@@ -2497,8 +2560,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Move a DAG
-         * @description Atomically renames a DAG across local filesystem, remote repository, and sync state
+         * Move a sync item
+         * @description Atomically renames a sync item across local filesystem, remote repository, and sync state
          */
         post: operations["moveSyncItem"];
         delete?: never;
@@ -2517,8 +2580,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Delete all missing DAGs
-         * @description Removes all missing DAGs from the remote repository, local disk, and sync state
+         * Delete all missing sync items
+         * @description Removes all missing sync items from the remote repository, local disk, and sync state
          */
         post: operations["syncDeleteMissing"];
         delete?: never;
@@ -2537,8 +2600,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Delete selected DAGs
-         * @description Removes the specified DAGs from the remote repository, local disk, and sync state in a single commit.
+         * Delete selected sync items
+         * @description Removes the specified sync items from the remote repository, local disk, and sync state in a single commit.
          */
         post: operations["syncDeleteBatch"];
         delete?: never;
@@ -2557,7 +2620,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Cleanup missing DAGs
+         * Cleanup missing sync items
          * @description Removes all missing entries from sync state
          */
         post: operations["syncCleanup"];
@@ -2615,6 +2678,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/license/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get license status
+         * @description Returns the current public license status without exposing license credentials.
+         */
+        get: operations["getLicenseStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/license/activate": {
         parameters: {
             query?: never;
@@ -2649,6 +2732,208 @@ export interface paths {
          * @description Removes local activation data and returns to community mode. Admin only.
          */
         post: operations["deactivateLicense"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/wiki": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Wiki pages
+         * @description Returns Wiki pages as a tree structure or flat list. All authenticated users can browse.
+         *     In tree mode, page and perPage apply to direct children of the selected workspace or prefix;
+         *     each returned directory includes its descendants. In flat mode, they apply to individual Wiki pages.
+         *
+         */
+        get: operations["listWikiPages"];
+        put?: never;
+        /**
+         * Create Wiki page
+         * @description Creates a new Wiki page. Requires DAG write permission.
+         */
+        post: operations["createWikiPage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/wiki/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search Wiki pages
+         * @description Searches Wiki page content for the given query.
+         */
+        get: operations["searchWikiPages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/wiki/backlinks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Wiki page backlinks
+         * @description Returns Wiki pages whose wiki links resolve to the given target.
+         *     The target is a Wiki page path, or a scheme-prefixed wiki-link target
+         *     such as dag:name.
+         *
+         */
+        get: operations["listWikiPageBacklinks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/wiki/page/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Wiki page revisions
+         * @description Returns stored prior versions of a Wiki page, newest first, without content.
+         */
+        get: operations["listWikiPageRevisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/wiki/page/revision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Wiki page revision
+         * @description Returns one stored revision including its content.
+         */
+        get: operations["getWikiPageRevision"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/wiki/page/attachment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Wiki page attachment
+         * @description Streams a stored Wiki page attachment.
+         */
+        get: operations["downloadWikiPageAttachment"];
+        /**
+         * Upload Wiki page attachment
+         * @description Stores a binary attachment for an existing Wiki page, replacing any attachment with the same name. Requires DAG write permission.
+         */
+        put: operations["uploadWikiPageAttachment"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/wiki/page": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Wiki page
+         * @description Returns a single Wiki page by path.
+         */
+        get: operations["getWikiPage"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Wiki page
+         * @description Deletes a Wiki page. Requires DAG write permission.
+         */
+        delete: operations["deleteWikiPage"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Wiki page
+         * @description Updates an existing Wiki page's content. Requires DAG write permission.
+         */
+        patch: operations["updateWikiPage"];
+        trace?: never;
+    };
+    "/wiki/page/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rename Wiki page or directory
+         * @description Renames/moves a Wiki page or directory to a new path. When a directory path is given, all Wiki pages under it are moved atomically. Requires DAG write permission.
+         */
+        post: operations["renameWikiPage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/wiki/delete-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete multiple Wiki pages or directories
+         * @description Deletes multiple Wiki pages and/or directories in a single operation. Supports recursive directory deletion. Not-found items are treated as successful deletes for idempotency. Requires DAG write permission.
+         */
+        post: operations["deleteWikiPageBatch"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2992,13 +3277,13 @@ export interface paths {
         };
         /**
          * List saved views
-         * @description Lists all saved Overview view configurations, ordered by creation time.
+         * @description Lists all shared saved view configurations visible to the caller, ordered by creation time.
          */
         get: operations["listViews"];
         put?: never;
         /**
          * Create a view
-         * @description Creates a saved Overview view configuration. Views are global and shared across users.
+         * @description Creates a saved view configuration. Views are shared across users with access to their workspace scope.
          */
         post: operations["createView"];
         delete?: never;
@@ -3500,6 +3785,7 @@ export interface components {
             enabled: boolean;
             authMode: components["schemas"]["WebhookAuthMode"];
             hmac: components["schemas"]["WebhookHMACDetails"];
+            profileSelection: components["schemas"]["WebhookProfileSelectionDetails"];
             /**
              * Format: date-time
              * @description When the webhook was created
@@ -3533,6 +3819,15 @@ export interface components {
             /** @description Whether to enable or disable the webhook */
             enabled: boolean;
         };
+        /** @description Runtime profiles that webhook callers may select */
+        WebhookProfileSelectionDetails: {
+            /** @description Runtime profile names accepted through X-Dagu-Profile. An empty list disables caller selection. */
+            allowedProfiles: components["schemas"]["RuntimeProfileName"][];
+        };
+        /** @description Replacement runtime-profile allowlist for a webhook */
+        WebhookProfileSelectionRequest: {
+            allowedProfiles: components["schemas"]["RuntimeProfileName"][];
+        };
         /** @description Request to configure webhook HMAC auth mode and enforcement.
          *     If enforcementMode is omitted when enabling HMAC, it defaults to strict.
          *     If omitted when configuring an existing webhook, the current enforcement
@@ -3557,7 +3852,7 @@ export interface components {
          */
         NotificationProviderType: NotificationProviderType;
         /**
-         * @description DAG run event that can trigger server-side notifications
+         * @description DAG run event that can trigger server-side notifications. Rules configured for dag.run.succeeded also match dag.run.partially_succeeded; rules configured only for dag.run.partially_succeeded do not match clean successes.
          * @enum {string}
          */
         NotificationEventType: NotificationEventType;
@@ -3580,6 +3875,34 @@ export interface components {
             /** @description Attach DAG and step logs when available */
             attachLogs?: boolean;
         };
+        /**
+         * @description SMTP OAuth token provider
+         * @enum {string}
+         */
+        NotificationSMTPOAuthProvider: NotificationSMTPOAuthProvider;
+        /** @description SMTP OAuth credentials. Secret values are encrypted at rest and omitted from responses. */
+        NotificationSMTPOAuthSettingsInput: {
+            provider: components["schemas"]["NotificationSMTPOAuthProvider"];
+            /** @description Microsoft Entra tenant ID */
+            tenantId?: string;
+            /** @description OAuth client ID */
+            clientId?: string;
+            /** @description OAuth client secret. Omit on updates to preserve the existing value when the OAuth identity is unchanged. */
+            clientSecret?: string;
+            /** @description Google refresh token. Omit on updates to preserve the existing value when the OAuth identity is unchanged. */
+            refreshToken?: string;
+            /** @description Google service-account JSON. Omit on updates to preserve the existing value when the OAuth identity is unchanged. */
+            serviceAccountJson?: string;
+        };
+        /** @description Public SMTP OAuth settings. Secret values are never returned. */
+        NotificationSMTPOAuthSettings: {
+            provider: components["schemas"]["NotificationSMTPOAuthProvider"];
+            tenantId?: string;
+            clientId?: string;
+            clientSecretConfigured: boolean;
+            refreshTokenConfigured: boolean;
+            serviceAccountJsonConfigured: boolean;
+        };
         /** @description Workspace SMTP transport input for notification email delivery. Values are encrypted at rest where applicable. */
         NotificationSMTPSettingsInput: {
             /** @description SMTP server host */
@@ -3592,6 +3915,7 @@ export interface components {
             password?: string;
             /** @description Clear the stored SMTP password. */
             clearPassword?: boolean;
+            oauth?: components["schemas"]["NotificationSMTPOAuthSettingsInput"] | null;
             /** @description Default sender address for notification email channels */
             from?: string;
         };
@@ -3603,6 +3927,7 @@ export interface components {
             port?: string;
             /** @description SMTP username */
             username?: string;
+            oauth?: components["schemas"]["NotificationSMTPOAuthSettings"];
             /** @description Default sender address for notification email channels */
             from?: string;
             /** @description Whether an SMTP password is configured */
@@ -3699,6 +4024,8 @@ export interface components {
             clearHmacSecret?: boolean;
             /** @description Optional rendered message added to the webhook JSON payload as message. */
             messageTemplate?: string;
+            /** @description Optional request body template. When set, it replaces the default Dagu payload and must render to valid JSON. One request is sent per event. Supports the same tokens as messageTemplate plus {{message}}. */
+            bodyTemplate?: string;
             /** @description Allow plain HTTP webhook URLs. Disabled by default. */
             allowInsecureHttp?: boolean;
             /** @description Allow loopback or private network webhook targets. Disabled by default. */
@@ -3718,6 +4045,8 @@ export interface components {
             hmacSecretConfigured: boolean;
             /** @description Optional rendered message added to the webhook JSON payload as message. */
             messageTemplate?: string;
+            /** @description Optional request body template that replaces the default Dagu payload. */
+            bodyTemplate?: string;
             /** @description Whether this target allows plain HTTP webhook URLs */
             allowInsecureHttp?: boolean;
             /** @description Whether this target allows loopback or private network webhook targets */
@@ -3766,6 +4095,25 @@ export interface components {
             /** @description Optional Telegram message template. When omitted, Dagu sends the default notification text. */
             messageTemplate?: string;
         };
+        /** @description Microsoft Teams incoming webhook target input. Values are encrypted at rest. */
+        NotificationTeamsTargetInput: {
+            /**
+             * Format: uri
+             * @description Microsoft Teams incoming webhook URL, from a Teams Workflows (Power Automate) trigger or a legacy connector. Must use HTTPS. Omit on updates to preserve the existing URL.
+             */
+            webhookUrl?: string;
+            /** @description Optional Teams message template. When omitted, Dagu sends the default notification text. */
+            messageTemplate?: string;
+        };
+        /** @description Public Microsoft Teams target details */
+        NotificationTeamsTarget: {
+            /** @description Whether a Microsoft Teams incoming webhook URL is configured */
+            webhookUrlConfigured: boolean;
+            /** @description Redacted Microsoft Teams webhook URL preview */
+            webhookUrlPreview?: string;
+            /** @description Optional Teams message template. When omitted, Dagu sends the default notification text. */
+            messageTemplate?: string;
+        };
         /** @description Notification target input */
         NotificationTargetInput: {
             /** @description Stable target ID. Omit when creating a new target. */
@@ -3781,6 +4129,7 @@ export interface components {
             webhook?: components["schemas"]["NotificationWebhookTargetInput"];
             slack?: components["schemas"]["NotificationSlackTargetInput"];
             telegram?: components["schemas"]["NotificationTelegramTargetInput"];
+            teams?: components["schemas"]["NotificationTeamsTargetInput"];
         };
         /** @description Public notification target details. Secrets are never returned. */
         NotificationTarget: {
@@ -3797,6 +4146,7 @@ export interface components {
             webhook?: components["schemas"]["NotificationWebhookTarget"];
             slack?: components["schemas"]["NotificationSlackTarget"];
             telegram?: components["schemas"]["NotificationTelegramTarget"];
+            teams?: components["schemas"]["NotificationTeamsTarget"];
         };
         /** @description Notification channel input */
         NotificationChannelInput: {
@@ -3809,6 +4159,7 @@ export interface components {
             webhook?: components["schemas"]["NotificationWebhookTargetInput"];
             slack?: components["schemas"]["NotificationSlackTargetInput"];
             telegram?: components["schemas"]["NotificationTelegramTargetInput"];
+            teams?: components["schemas"]["NotificationTeamsTargetInput"];
         };
         /** @description Notification channel. Secrets are never returned. */
         NotificationChannel: {
@@ -3823,6 +4174,7 @@ export interface components {
             webhook?: components["schemas"]["NotificationWebhookTarget"];
             slack?: components["schemas"]["NotificationSlackTarget"];
             telegram?: components["schemas"]["NotificationTelegramTarget"];
+            teams?: components["schemas"]["NotificationTeamsTarget"];
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
@@ -4165,8 +4517,6 @@ export interface components {
         DAGFile: {
             /** @description File ID of the DAG file */
             fileName: string;
-            /** @description Absolute file path of the DAG file on disk */
-            filePath?: string;
             dag: components["schemas"]["DAG"];
             latestDAGRun: components["schemas"]["DAGRunSummary"];
             /**
@@ -4354,7 +4704,7 @@ export interface components {
         /** @description Detailed DAG configuration information */
         DAGDetails: {
             /**
-             * @description Execution type. 'graph' resolves dependencies, 'chain' runs steps in order, 'controller' lets an LLM choose each step.
+             * @description Execution type. 'graph' resolves dependencies, 'chain' runs steps in order, 'controller' lets an LLM choose each step, and 'build' adds file-derived dependencies and materialization reuse.
              * @enum {string}
              */
             type?: DAGDetailsType;
@@ -4586,6 +4936,8 @@ export interface components {
             finishedAt: string;
             /** @description Whether artifact files are available for this DAG-run */
             artifactsAvailable: boolean;
+            /** @description Whether reuse of prior build materializations was disabled for this DAG-run */
+            noReuse?: boolean;
             /** @description Runtime parameters passed to the DAG-run in JSON format */
             params?: string;
             /** @description Runtime profile selected for this DAG-run. */
@@ -4756,6 +5108,26 @@ export interface components {
             /** @description Justification the controller gave for the current status */
             reason?: string;
         };
+        /** @description DAG-run that produced a reused materialization */
+        BuildProducer: {
+            name?: string;
+            id?: string;
+        };
+        /** @description Build execution decision and its explanation */
+        BuildExecution: {
+            /** @enum {string} */
+            decision: BuildExecutionDecision;
+            /** @enum {string} */
+            phase: BuildExecutionPhase;
+            /** @description Stable machine-readable reason for the decision */
+            reason: string;
+            /** @description Human-readable explanation of the decision */
+            detail?: string;
+            fingerprint?: string;
+            materializationKey?: string;
+            producerRun?: components["schemas"]["BuildProducer"];
+            producerAttemptId?: string;
+        };
         /** @description Status of an individual step within a DAG-run */
         Node: {
             step: components["schemas"]["Step"];
@@ -4779,6 +5151,7 @@ export interface components {
             subRunsRepeated?: components["schemas"]["SubDAGRun"][];
             /** @description Error message if the step failed */
             error?: string;
+            build?: components["schemas"]["BuildExecution"];
             /** @description Name of the subject that completed the human task */
             humanTaskCompletedBy?: string;
             /** @description ID of the subject that completed the human task; local CLI IDs use the os:<uid> form */
@@ -4850,7 +5223,7 @@ export interface components {
             /** @description RFC 3339 timestamp when the sub DAG-run finished */
             finishedAt?: string;
         };
-        /** @description One file-based step output declaration published through DAGU_OUTPUT_FILE */
+        /** @description One named value output or build file output */
         StepOutputDeclaration: {
             /** @description Published output name scoped to the declaring step */
             name: string;
@@ -4859,6 +5232,13 @@ export interface components {
              * @enum {string}
              */
             type?: StepOutputDeclarationType;
+            /** @description Regular-file path published atomically by a build step */
+            path?: string;
+        };
+        /** @description One named regular-file input for build execution */
+        StepInputDeclaration: {
+            name: string;
+            path: string;
         };
         /** @description Individual task definition that performs a specific operation in a DAG-run */
         Step: {
@@ -4880,8 +5260,10 @@ export interface components {
             stderr?: string;
             /** @description Variable name to store the step's output */
             output?: string;
-            /** @description Declared file-based step outputs published through DAGU_OUTPUT_FILE for ${steps.<id>.outputs.<name>} references. Steps that declare outputs must also define id. */
+            /** @description Declared named outputs. Value outputs are published through DAGU_OUTPUT_FILE; path outputs publish a verified materialized file. Steps that declare outputs must also define id. */
             outputs?: components["schemas"]["StepOutputDeclaration"][];
+            /** @description Named regular-file inputs used for build fingerprints and inferred dependencies. Steps that declare inputs must also define id. */
+            inputs?: components["schemas"]["StepInputDeclaration"][];
             /** @description The name of the DAG to execute as a sub DAG-run */
             call?: string;
             /** @description Parameters to pass to the sub DAG-run in JSON format */
@@ -4954,6 +5336,34 @@ export interface components {
             hasMore: boolean;
             nextCursor?: string;
         };
+        /** @description Lightweight cursor-based search result item for a Wiki page */
+        WikiPageSearchPageItem: {
+            id: string;
+            title: string;
+            /** @description Short Wiki page description from YAML frontmatter */
+            description: string;
+            /** @description Wiki page tags from YAML frontmatter */
+            tags?: string[];
+            /** @description Workspace that owns this Wiki page. Omitted for default Wiki pages. */
+            workspace?: string;
+            /**
+             * Format: date-time
+             * @description Last modification time of the Wiki page file
+             */
+            modifiedAt?: string;
+            /** @description Whether additional snippets are available beyond the preview */
+            hasMoreMatches: boolean;
+            /** @description Opaque cursor for loading more snippets for this Wiki page result */
+            nextMatchesCursor?: string;
+            /** @description Preview snippets for the result */
+            matches: components["schemas"]["SearchMatchItem"][];
+        };
+        /** @description Cursor-based Wiki page search results */
+        WikiPageSearchFeedResponse: {
+            results: components["schemas"]["WikiPageSearchPageItem"][];
+            hasMore: boolean;
+            nextCursor?: string;
+        };
         /** @description Details of a search match within a search result */
         SearchMatchItem: {
             /** @description Matching line content */
@@ -4968,6 +5378,161 @@ export interface components {
             matches: components["schemas"]["SearchMatchItem"][];
             hasMore: boolean;
             nextCursor?: string;
+        };
+        /** @description Full Wiki page with content */
+        WikiPageResponse: {
+            id: string;
+            title: string;
+            /** @description Short Wiki page description from YAML frontmatter */
+            description: string;
+            /** @description Wiki page tags from YAML frontmatter */
+            tags?: string[];
+            /** @description Workspace that owns this Wiki page. Omitted for default Wiki pages. */
+            workspace?: string;
+            /** @description Full file content including YAML frontmatter */
+            content: string;
+            /**
+             * Format: date-time
+             * @description RFC3339 timestamp when the Wiki page was created
+             */
+            createdAt?: string;
+            /**
+             * Format: date-time
+             * @description RFC3339 timestamp when the Wiki page was last updated
+             */
+            updatedAt?: string;
+        };
+        /** @description Lightweight Wiki page metadata */
+        WikiPageMetadataResponse: {
+            id: string;
+            title: string;
+            /** @description Short Wiki page description from YAML frontmatter */
+            description: string;
+            /** @description Wiki page tags from YAML frontmatter */
+            tags?: string[];
+            /** @description Workspace that owns this Wiki page. Omitted for default Wiki pages. */
+            workspace?: string;
+            /**
+             * Format: date-time
+             * @description Last modification time of the Wiki page file
+             */
+            modifiedAt?: string;
+        };
+        /** @description A file or directory node in the Wiki page tree */
+        WikiPageTreeNodeResponse: {
+            id: string;
+            name: string;
+            title?: string;
+            /** @description Wiki page tags from YAML frontmatter. Only present on file nodes. */
+            tags?: string[];
+            /** @description Workspace that owns this node. Omitted for default nodes. */
+            workspace?: string;
+            /** @enum {string} */
+            type: WikiPageTreeNodeResponseType;
+            children?: components["schemas"]["WikiPageTreeNodeResponse"][];
+            /**
+             * Format: date-time
+             * @description Last modification time. For files: file mtime. For directories: most recent descendant mtime.
+             */
+            modifiedAt?: string;
+        };
+        /** @description Paginated Wiki page list (tree or flat) */
+        WikiPageListResponse: {
+            tree?: components["schemas"]["WikiPageTreeNodeResponse"][];
+            items?: components["schemas"]["WikiPageMetadataResponse"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        /** @description A search result for a single Wiki page */
+        WikiPageSearchResultItem: {
+            id: string;
+            title: string;
+            /** @description Short Wiki page description from YAML frontmatter */
+            description: string;
+            /** @description Wiki page tags from YAML frontmatter */
+            tags?: string[];
+            /** @description Workspace that owns this Wiki page. Omitted for default Wiki pages. */
+            workspace?: string;
+            /**
+             * Format: date-time
+             * @description Last modification time of the Wiki page file
+             */
+            modifiedAt?: string;
+            /** @description Total number of query matches in the Wiki page */
+            matchCount?: number;
+            matches?: components["schemas"]["SearchMatchItem"][];
+        };
+        /** @description Search results */
+        WikiPageSearchResponse: {
+            results: components["schemas"]["WikiPageSearchResultItem"][];
+        };
+        /** @description Wiki pages linking to a wiki-link target */
+        WikiPageBacklinksResponse: {
+            items: components["schemas"]["WikiPageMetadataResponse"][];
+        };
+        /** @description A stored prior version of a Wiki page */
+        WikiPageRevisionResponse: {
+            /** @description Opaque revision identifier */
+            rev: string;
+            /**
+             * Format: date-time
+             * @description When the revision was stored
+             */
+            savedAt: string;
+            /**
+             * Format: int64
+             * @description Revision content size in bytes
+             */
+            size: number;
+            /** @description Revision content. Present only when fetching a single revision. */
+            content?: string;
+        };
+        /** @description Stored revisions of a Wiki page, newest first */
+        WikiPageRevisionsResponse: {
+            revisions: components["schemas"]["WikiPageRevisionResponse"][];
+        };
+        /** @description A stored Wiki page attachment */
+        WikiPageAttachmentResponse: {
+            /** @description Attachment file name */
+            name: string;
+            /**
+             * Format: int64
+             * @description Attachment size in bytes
+             */
+            size: number;
+        };
+        /** @description Relative Wiki page path without extension, for example runbooks/deploy-guide. Must not start with / or contain .. */
+        WikiPagePath: string;
+        /** @description Request to create a new Wiki page */
+        CreateWikiPageRequest: {
+            id: components["schemas"]["WikiPagePath"];
+            /** @description Full file content including optional YAML frontmatter */
+            content: string;
+        };
+        /** @description Request to update Wiki page content */
+        UpdateWikiPageRequest: {
+            /** @description Full file content including optional YAML frontmatter */
+            content: string;
+        };
+        /** @description Request to rename/move a Wiki page or directory */
+        RenameWikiPageRequest: {
+            newPath: components["schemas"]["WikiPagePath"];
+        };
+        /** @description Request to delete multiple Wiki pages or directories */
+        WikiPageDeleteBatchRequest: {
+            /** @description Wiki page or directory paths to delete (max 100) */
+            paths: components["schemas"]["WikiPagePath"][];
+        };
+        WikiPageDeleteBatchResponse: {
+            /** @description Successfully deleted paths */
+            deleted: string[];
+            /** @description Paths that failed to delete with error details */
+            failed: components["schemas"]["WikiPageDeleteBatchFailedItem"][];
+            /** @description Human-readable summary */
+            message: string;
+        };
+        WikiPageDeleteBatchFailedItem: {
+            path: string;
+            error: string;
         };
         /** @description Log information for the execution */
         Log: {
@@ -5214,6 +5779,29 @@ export interface components {
             expiresAt: string;
             user: components["schemas"]["User"];
         };
+        /** @description Public status of the current Dagu license */
+        LicenseStatusResponse: {
+            /** @description Whether the loaded license token has not expired */
+            valid: boolean;
+            /** @description License plan name */
+            plan: string;
+            /** @description License expiration timestamp, or empty for a perpetual or absent license */
+            expiry: string;
+            /** @description Feature claims included in the license */
+            features: string[];
+            /** @description Whether the license is expired but still inside its grace period */
+            gracePeriod: boolean;
+            /** @description Grace-period end timestamp, or empty when the license has no expiration */
+            graceEndsAt: string;
+            /** @description Whether no license claims are loaded */
+            community: boolean;
+            /** @description Public license source category */
+            source: string;
+            /** @description Warning code included in the license token */
+            warningCode: string;
+            /** @description User-facing explanation when a configured license is unusable */
+            error: string;
+        };
         /** @description Request body for changing password */
         ChangePasswordRequest: {
             /** @description Current password for verification */
@@ -5387,7 +5975,7 @@ export interface components {
             message: string;
         };
         /**
-         * @description Sync status of a DAG
+         * @description Sync status of an item
          * @enum {string}
          */
         SyncStatus: SyncStatus;
@@ -5396,27 +5984,33 @@ export interface components {
          * @enum {string}
          */
         SyncSummary: SyncSummary;
-        /** @description Sync state for a single DAG */
+        /**
+         * @description Type of sync item
+         * @enum {string}
+         */
+        SyncItemKind: SyncItemKind;
+        /** @description Sync state for a single item */
         SyncItem: {
-            /** @description Stable DAG identifier (file path without extension) */
+            /** @description Stable sync item identifier (file path without extension) */
             itemId: string;
             /** @description Relative file path with extension */
             filePath: string;
-            /** @description Display-friendly DAG name */
+            /** @description Display-friendly item name */
             displayName: string;
             status: components["schemas"]["SyncStatus"];
+            kind: components["schemas"]["SyncItemKind"];
             /** @description Commit hash when last synced */
             baseCommit?: string;
             /** @description Content hash when last synced */
             lastSyncedHash?: string;
             /**
              * Format: date-time
-             * @description When the DAG was last synced
+             * @description When the item was last synced
              */
             lastSyncedAt?: string;
             /**
              * Format: date-time
-             * @description When the DAG was last modified locally
+             * @description When the item was last modified locally
              */
             modifiedAt?: string;
             /** @description Current local content hash */
@@ -5440,7 +6034,7 @@ export interface components {
              */
             missingAt?: string;
         };
-        /** @description Counts of DAGs in each sync status */
+        /** @description Counts of items in each sync status */
         SyncStatusCounts: {
             synced: number;
             modified: number;
@@ -5468,7 +6062,7 @@ export interface components {
             lastSyncStatus?: string;
             /** @description Error message from last failed sync */
             lastError?: string;
-            /** @description Sync state for each DAG */
+            /** @description Sync state for each item */
             items: components["schemas"]["SyncItem"][];
             counts: components["schemas"]["SyncStatusCounts"];
         };
@@ -5477,17 +6071,30 @@ export interface components {
             itemId?: string;
             message: string;
         };
-        /** @description Diff between local and remote versions of a DAG */
+        /** @description Diff between local and remote versions of a sync item */
         SyncItemDiffResponse: {
-            /** @description The DAG identifier */
+            /** @description The sync item identifier */
             itemId: string;
             /** @description Relative file path with extension */
             filePath: string;
             status: components["schemas"]["SyncStatus"];
-            /** @description Current local file content */
-            localContent: string;
-            /** @description Content from remote repository */
+            kind?: components["schemas"]["SyncItemKind"];
+            /** @description True for binary items; content fields are omitted and sizes are reported instead */
+            binary?: boolean;
+            /** @description Current local file content. Omitted for binary items. */
+            localContent?: string;
+            /** @description Content from remote repository. Omitted for binary items. */
             remoteContent?: string;
+            /**
+             * Format: int64
+             * @description Local file size in bytes. Only set for binary items.
+             */
+            localSize?: number;
+            /**
+             * Format: int64
+             * @description Remote file size in bytes. Only set for binary items.
+             */
+            remoteSize?: number;
             /** @description Commit hash being compared against */
             remoteCommit?: string;
             /** @description Author of the remote commit */
@@ -5499,17 +6106,17 @@ export interface components {
         SyncResultResponse: {
             success: boolean;
             message?: string;
-            /** @description DAG IDs that were synced */
+            /** @description Sync item IDs that were synced */
             synced?: string[];
-            /** @description DAG IDs that were modified */
+            /** @description Sync item IDs that were modified */
             modified?: string[];
-            /** @description DAG IDs with conflicts */
+            /** @description Sync item IDs with conflicts */
             conflicts?: string[];
             errors?: components["schemas"]["SyncError"][];
             /** Format: date-time */
             timestamp: string;
         };
-        /** @description Request to publish a DAG */
+        /** @description Request to publish a sync item */
         SyncPublishRequest: {
             /** @description Commit message */
             message?: string;
@@ -5519,20 +6126,20 @@ export interface components {
              */
             force: boolean;
         };
-        /** @description Request to publish selected DAGs */
+        /** @description Request to publish selected sync items */
         SyncPublishAllRequest: {
             /** @description Commit message */
             message?: string;
-            /** @description DAG IDs to publish. If omitted, all modified or untracked DAGs are published. */
+            /** @description Sync item IDs to publish. If omitted, all modified or untracked items are published. */
             itemIds?: string[];
         };
-        /** @description Request to delete selected DAGs */
+        /** @description Request to delete selected sync items */
         SyncDeleteBatchRequest: {
-            /** @description DAG IDs to delete */
+            /** @description Sync item IDs to delete */
             itemIds: string[];
             /** @description Commit message for the deletion */
             message?: string;
-            /** @description Force delete DAGs with local modifications or conflicts */
+            /** @description Force delete items with local modifications or conflicts */
             force?: boolean;
         };
         /** @description Response when a conflict is detected */
@@ -5793,11 +6400,26 @@ export interface components {
          * @enum {string}
          */
         ViewColumn: ViewColumn;
+        /**
+         * @description Workflows page workspace selection represented by the view.
+         * @enum {string}
+         */
+        ViewWorkspaceScope: ViewWorkspaceScope;
+        /**
+         * @description Field used to sort workflows.
+         * @enum {string}
+         */
+        ViewSortField: ViewSortField;
+        /**
+         * @description Direction used to sort workflows.
+         * @enum {string}
+         */
+        ViewSortOrder: ViewSortOrder;
         ViewSpec: {
             /** @description Display name for the view. */
             name: string;
             /**
-             * @description Render type. Currently only kanban is supported.
+             * @description Saved view type.
              * @default kanban
              * @enum {string}
              */
@@ -5817,6 +6439,13 @@ export interface components {
              * @default false
              */
             pinned: boolean;
+            workspaceScope?: components["schemas"]["ViewWorkspaceScope"];
+            sortField?: components["schemas"]["ViewSortField"];
+            sortOrder?: components["schemas"]["ViewSortOrder"];
+            /** @description Whether the view only includes scheduled, unsuspended workflows. */
+            activeOnly?: boolean;
+            /** @description Whether this is the default workflow view for its workspace scope. */
+            isDefault?: boolean;
         };
         View: {
             id: string;
@@ -5829,6 +6458,12 @@ export interface components {
             /** @description Visible status columns in left-to-right display order. */
             columns?: components["schemas"]["ViewColumn"][];
             pinned?: boolean;
+            workspaceScope?: components["schemas"]["ViewWorkspaceScope"];
+            sortField?: components["schemas"]["ViewSortField"];
+            sortOrder?: components["schemas"]["ViewSortOrder"];
+            /** @description Whether the view only includes scheduled, unsuspended workflows. */
+            activeOnly?: boolean;
+            isDefault?: boolean;
             /** @description Username of the creator, for display only. */
             createdBy?: string;
             /** Format: date-time */
@@ -5870,8 +6505,12 @@ export interface components {
         APIKeyId: string;
         /** @description number of items per page (default is 30, max is 100) */
         PerPage: number;
+        /** @description Number of Wiki page entries per page (default 50, max 200) */
+        WikiPagesPerPage: number;
         /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
         Workspace: string;
+        /** @description Optional Wiki page path prefix within the selected workspace */
+        WikiPagePrefix: components["schemas"]["WikiPagePath"];
         /** @description Opaque cursor returned by the previous search response */
         SearchCursor: string;
         /** @description Number of search results to return (default 20, max 50) */
@@ -6973,6 +7612,8 @@ export interface operations {
                 name?: string;
                 /** @description Filter DAGs by labels (comma-separated). Returns DAGs that have ALL specified labels. Mutually exclusive with `tags`; the server returns HTTP 400 if both are set. */
                 labels?: string;
+                /** @description Filter to DAGs that have a schedule and are not suspended. */
+                active?: boolean;
                 /**
                  * @deprecated
                  * @description Deprecated alias for `labels`; mutually exclusive with `labels`. Filter DAGs by labels (comma-separated).
@@ -7139,8 +7780,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        /** @description Absolute file path of the DAG file on disk */
-                        filePath?: string;
                         dag?: components["schemas"]["DAGDetails"];
                         /** @description List of local DAGs that are part of this DAG */
                         localDags: components["schemas"]["LocalDag"][];
@@ -7236,6 +7875,11 @@ export interface operations {
                      * @default false
                      */
                     singleton?: boolean;
+                    /**
+                     * @description If true, execute eligible build steps without reusing prior materializations
+                     * @default false
+                     */
+                    noReuse?: boolean;
                     /** @description Additional labels to apply to the DAG-run. Mutually exclusive with `tags`; the server returns HTTP 400 if both are set. */
                     labels?: components["schemas"]["Labels"];
                     /** @description Deprecated alias for `labels`; mutually exclusive with `labels`. */
@@ -7312,6 +7956,11 @@ export interface operations {
                      * @default false
                      */
                     singleton?: boolean;
+                    /**
+                     * @description If true, execute eligible build steps without reusing prior materializations
+                     * @default false
+                     */
+                    noReuse?: boolean;
                     /** @description Additional labels to apply to the DAG-run. Mutually exclusive with `tags`; the server returns HTTP 400 if both are set. */
                     labels?: components["schemas"]["Labels"];
                     /** @description Deprecated alias for `labels`; mutually exclusive with `labels`. */
@@ -7401,6 +8050,11 @@ export interface operations {
                      * @default false
                      */
                     singleton?: boolean;
+                    /**
+                     * @description If true, execute eligible build steps without reusing prior materializations
+                     * @default false
+                     */
+                    noReuse?: boolean;
                     /** @description Additional labels to apply to the DAG-run. Mutually exclusive with `tags`; the server returns HTTP 400 if both are set. */
                     labels?: components["schemas"]["Labels"];
                     /** @description Deprecated alias for `labels`; mutually exclusive with `labels`. */
@@ -7860,6 +8514,59 @@ export interface operations {
             };
         };
     };
+    searchWikiPageFeed: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Optional Wiki page path prefix within the selected workspace */
+                prefix?: components["parameters"]["WikiPagePrefix"];
+                /** @description A search query string */
+                q: string;
+                /** @description Only return Wiki pages carrying every given tag (case-insensitive) */
+                tags?: string[];
+                /** @description Opaque cursor returned by the previous search response */
+                cursor?: components["parameters"]["SearchCursor"];
+                /** @description Number of search results to return (default 20, max 50) */
+                limit?: components["parameters"]["SearchLimit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cursor-based Wiki page search results */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WikiPageSearchFeedResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     searchDagMatches: {
         parameters: {
             query: {
@@ -7904,6 +8611,66 @@ export interface operations {
                 };
             };
             /** @description DAG not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    searchWikiPageMatches: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Wiki page path (may include slashes for nested pages) */
+                path: components["schemas"]["WikiPagePath"];
+                /** @description A search query string */
+                q: string;
+                /** @description Opaque cursor returned by the previous search response */
+                cursor?: components["parameters"]["SearchCursor"];
+                /** @description Number of search match snippets to return (default 5, max 50) */
+                limit?: components["parameters"]["SearchMatchLimit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cursor-based Wiki page match snippets */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchMatchesResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Wiki page not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8082,6 +8849,11 @@ export interface operations {
                      * @default false
                      */
                     singleton?: boolean;
+                    /**
+                     * @description If true, execute eligible build steps without reusing prior materializations
+                     * @default false
+                     */
+                    noReuse?: boolean;
                     /** @description Additional labels to apply to the DAG-run. Mutually exclusive with `tags`; the server returns HTTP 400 if both are set. */
                     labels?: components["schemas"]["Labels"];
                     /** @description Deprecated alias for `labels`; mutually exclusive with `labels`. */
@@ -8159,6 +8931,11 @@ export interface operations {
                      * @default false
                      */
                     singleton?: boolean;
+                    /**
+                     * @description If true, execute eligible build steps without reusing prior materializations
+                     * @default false
+                     */
+                    noReuse?: boolean;
                     /** @description Additional labels to apply to the DAG-run. Mutually exclusive with `tags`; the server returns HTTP 400 if both are set. */
                     labels?: components["schemas"]["Labels"];
                     /** @description Deprecated alias for `labels`; mutually exclusive with `labels`. */
@@ -10701,8 +11478,15 @@ export interface operations {
             header?: {
                 /** @description Bearer token for webhook authentication (e.g., 'Bearer dagu_wh_...'). Required only when the webhook auth mode includes token authentication. */
                 Authorization?: string;
-                /** @description HMAC webhook signature in the format 'sha256=<hex>'. Required only when the webhook auth mode includes HMAC authentication with strict enforcement. */
+                /** @description HMAC webhook signature in the format `sha256=<hex>`. Required only
+                 *     when the webhook auth mode includes HMAC authentication with strict
+                 *     enforcement. Sign the raw request body when `X-Dagu-Profile` is
+                 *     absent. When it is present, sign
+                 *     `x-dagu-profile:<profile>\n<raw-request-body>`.
+                 *      */
                 "X-Dagu-Signature"?: string;
+                /** @description Runtime profile selected for this DAG run. The profile must be allowed by the webhook profile-selection policy. Omit the header to use the DAG's default profile resolution. */
+                "X-Dagu-Profile"?: components["schemas"]["RuntimeProfileName"];
             };
             path: {
                 /** @description the name of the DAG file */
@@ -12182,6 +12966,63 @@ export interface operations {
             };
         };
     };
+    configureDAGWebhookProfileSelection: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                /** @description the name of the DAG file */
+                fileName: components["parameters"]["DAGFileName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WebhookProfileSelectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Webhook profile selection updated successfully */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookDetails"];
+                };
+            };
+            /** @description Invalid or unavailable runtime profile */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No webhook or runtime profile found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     toggleDAGWebhook: {
         parameters: {
             query?: {
@@ -13389,7 +14230,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The DAG identifier (file path without extension) */
+                /** @description The sync item identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
@@ -13405,7 +14246,7 @@ export interface operations {
                     "application/json": components["schemas"]["SyncItemDiffResponse"];
                 };
             };
-            /** @description DAG not found */
+            /** @description Sync item not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13433,7 +14274,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The DAG identifier (file path without extension) */
+                /** @description The sync item identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
@@ -13444,7 +14285,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description DAG published successfully */
+            /** @description Sync item published successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13453,7 +14294,7 @@ export interface operations {
                     "application/json": components["schemas"]["SyncResultResponse"];
                 };
             };
-            /** @description DAG not found */
+            /** @description Sync item not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13490,7 +14331,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The DAG identifier (file path without extension) */
+                /** @description The sync item identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
@@ -13506,7 +14347,7 @@ export interface operations {
                     "application/json": components["schemas"]["SuccessResponse"];
                 };
             };
-            /** @description DAG not found */
+            /** @description Sync item not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13534,14 +14375,14 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The DAG identifier (file path without extension) */
+                /** @description The sync item identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description DAG forgotten successfully */
+            /** @description Sync item forgotten successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13550,7 +14391,7 @@ export interface operations {
                     "application/json": components["schemas"]["SuccessResponse"];
                 };
             };
-            /** @description DAG cannot be forgotten */
+            /** @description Sync item cannot be forgotten */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -13559,7 +14400,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description DAG not found */
+            /** @description Sync item not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13587,7 +14428,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The DAG identifier (file path without extension) */
+                /** @description The sync item identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
@@ -13597,13 +14438,13 @@ export interface operations {
                 "application/json": {
                     /** @description Commit message for the deletion */
                     message?: string;
-                    /** @description Force delete even if the DAG has local modifications */
+                    /** @description Force delete even if the sync item has local modifications */
                     force?: boolean;
                 };
             };
         };
         responses: {
-            /** @description DAG deleted successfully */
+            /** @description Sync item deleted successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13612,7 +14453,7 @@ export interface operations {
                     "application/json": components["schemas"]["SuccessResponse"];
                 };
             };
-            /** @description DAG cannot be deleted */
+            /** @description Sync item cannot be deleted */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -13621,7 +14462,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description DAG not found */
+            /** @description Sync item not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13649,7 +14490,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description The current DAG identifier (file path without extension) */
+                /** @description The current sync item identifier (file path without extension) */
                 itemId: string;
             };
             cookie?: never;
@@ -13657,17 +14498,17 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** @description The new DAG identifier */
+                    /** @description The new sync item identifier */
                     newItemId: string;
                     /** @description Commit message for the move */
                     message?: string;
-                    /** @description Force move even if the DAG has conflicts */
+                    /** @description Force move even if the sync item has conflicts */
                     force?: boolean;
                 };
             };
         };
         responses: {
-            /** @description DAG moved successfully */
+            /** @description Sync item moved successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13676,7 +14517,7 @@ export interface operations {
                     "application/json": components["schemas"]["SuccessResponse"];
                 };
             };
-            /** @description DAG cannot be moved */
+            /** @description Sync item cannot be moved */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -13685,7 +14526,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description DAG not found */
+            /** @description Sync item not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13733,14 +14574,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Missing DAGs deleted successfully */
+            /** @description Missing sync items deleted successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": {
-                        /** @description List of deleted DAG IDs */
+                        /** @description List of deleted sync item IDs */
                         deleted: string[];
                         /** @description Summary message */
                         message: string;
@@ -13783,21 +14624,21 @@ export interface operations {
             };
         };
         responses: {
-            /** @description DAGs deleted successfully */
+            /** @description Sync items deleted successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": {
-                        /** @description List of deleted DAG IDs */
+                        /** @description List of deleted sync item IDs */
                         deleted: string[];
                         /** @description Summary message */
                         message: string;
                     };
                 };
             };
-            /** @description Cannot delete (push disabled, untracked DAGs, validation error) */
+            /** @description Cannot delete (push disabled, untracked items, validation error) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -13806,7 +14647,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description DAG not found */
+            /** @description Sync item not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -13845,7 +14686,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        /** @description List of forgotten DAG IDs */
+                        /** @description List of forgotten sync item IDs */
                         forgotten: string[];
                         /** @description Summary message */
                         message: string;
@@ -14142,6 +14983,38 @@ export interface operations {
             };
         };
     };
+    getLicenseStatus: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current license status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LicenseStatusResponse"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     activateLicense: {
         parameters: {
             query?: {
@@ -14237,6 +15110,653 @@ export interface operations {
             };
             /** @description Insufficient permissions */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listWikiPages: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Optional Wiki page path prefix within the selected workspace */
+                prefix?: components["parameters"]["WikiPagePrefix"];
+                /** @description page number of items to fetch (default is 1) */
+                page?: components["parameters"]["Page"];
+                /** @description Number of Wiki page entries per page (default 50, max 200) */
+                perPage?: components["parameters"]["WikiPagesPerPage"];
+                /** @description If true, returns flat list instead of tree */
+                flat?: boolean;
+                /** @description Only return Wiki pages carrying every given tag (case-insensitive). Effective in flat mode only. */
+                tags?: string[];
+                /** @description Field to sort by:
+                 *     - `name`: Alphabetically by display name (case-insensitive)
+                 *     - `type`: By node type (dirs vs files), then alphabetically within each group
+                 *     - `mtime`: By last modification time
+                 *      */
+                sort?: PathsWikiGetParametersQuerySort;
+                /** @description Sort order. For type: asc=folders first. For mtime: desc=newest first. */
+                order?: PathsWikiGetParametersQueryOrder;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List of Wiki pages */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WikiPageListResponse"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createWikiPage: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWikiPageRequest"];
+            };
+        };
+        responses: {
+            /** @description Wiki page created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        message?: string;
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Wiki page already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    searchWikiPages: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Search query */
+                q: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Search results */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WikiPageSearchResponse"];
+                };
+            };
+            /** @description Missing query parameter */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listWikiPageBacklinks: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Wiki page path or scheme-prefixed wiki-link target (for example dag:name) */
+                target: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Wiki pages linking to the target */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WikiPageBacklinksResponse"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listWikiPageRevisions: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Wiki page path (may include slashes for nested pages) */
+                path: components["schemas"]["WikiPagePath"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stored revisions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WikiPageRevisionsResponse"];
+                };
+            };
+            /** @description Wiki page not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getWikiPageRevision: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Wiki page path (may include slashes for nested pages) */
+                path: components["schemas"]["WikiPagePath"];
+                /** @description Revision identifier from the revision list */
+                rev: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revision with content */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WikiPageRevisionResponse"];
+                };
+            };
+            /** @description Wiki page or revision not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    downloadWikiPageAttachment: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Wiki page path (may include slashes for nested pages) */
+                path: components["schemas"]["WikiPagePath"];
+                /** @description Attachment file name (single path segment) */
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Attachment content */
+            200: {
+                headers: {
+                    /** @description Attachment filename */
+                    "Content-Disposition"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description Wiki page or attachment not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    uploadWikiPageAttachment: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Wiki page path (may include slashes for nested pages) */
+                path: components["schemas"]["WikiPagePath"];
+                /** @description Attachment file name (single path segment) */
+                name: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Attachment stored */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WikiPageAttachmentResponse"];
+                };
+            };
+            /** @description Invalid attachment name */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Wiki page not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Attachment too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getWikiPage: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Wiki page path (may include slashes for nested pages) */
+                path: components["schemas"]["WikiPagePath"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Wiki page details */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WikiPageResponse"];
+                };
+            };
+            /** @description Wiki page not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteWikiPage: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Wiki page path (may include slashes for nested pages) */
+                path: components["schemas"]["WikiPagePath"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Wiki page deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wiki page not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateWikiPage: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Wiki page path (may include slashes for nested pages) */
+                path: components["schemas"]["WikiPagePath"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWikiPageRequest"];
+            };
+        };
+        responses: {
+            /** @description Wiki page updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        message?: string;
+                    };
+                };
+            };
+            /** @description Wiki page not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    renameWikiPage: {
+        parameters: {
+            query: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+                /** @description Current Wiki page or directory path (may include slashes for nested pages) */
+                path: components["schemas"]["WikiPagePath"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameWikiPageRequest"];
+            };
+        };
+        responses: {
+            /** @description Wiki page or directory renamed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        message?: string;
+                    };
+                };
+            };
+            /** @description Wiki page or directory not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Target path already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unexpected error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteWikiPageBatch: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+                /** @description Workspace selector. For list and search APIs, use all, default, or a workspace name. Omitted means all. */
+                workspace?: components["parameters"]["Workspace"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WikiPageDeleteBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Batch delete completed (may include partial failures) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WikiPageDeleteBatchResponse"];
+                };
+            };
+            /** @description Invalid batch delete request */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16629,6 +18149,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description Workspace still contains Wiki pages */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     updateWorkspace: {
@@ -16687,6 +18216,15 @@ export enum PathsDagsGetParametersQueryOrder {
     asc = "asc",
     desc = "desc"
 }
+export enum PathsWikiGetParametersQuerySort {
+    name = "name",
+    type = "type",
+    mtime = "mtime"
+}
+export enum PathsWikiGetParametersQueryOrder {
+    asc = "asc",
+    desc = "desc"
+}
 export enum ChatMessageRole {
     system = "system",
     user = "user",
@@ -16730,14 +18268,21 @@ export enum NotificationProviderType {
     email = "email",
     webhook = "webhook",
     slack = "slack",
-    telegram = "telegram"
+    telegram = "telegram",
+    teams = "teams"
 }
 export enum NotificationEventType {
     dag_run_waiting = "dag.run.waiting",
     dag_run_succeeded = "dag.run.succeeded",
+    dag_run_partially_succeeded = "dag.run.partially_succeeded",
     dag_run_failed = "dag.run.failed",
     dag_run_aborted = "dag.run.aborted",
     dag_run_rejected = "dag.run.rejected"
+}
+export enum NotificationSMTPOAuthProvider {
+    microsoft = "microsoft",
+    google_service_account = "google_service_account",
+    google_refresh = "google_refresh"
 }
 export enum NotificationRouteScope {
     global = "global",
@@ -16859,7 +18404,8 @@ export enum WorkerHealthStatus {
 export enum DAGDetailsType {
     graph = "graph",
     chain = "chain",
-    controller = "controller"
+    controller = "controller",
+    build = "build"
 }
 export enum ValueReferenceNoticeReason {
     unknown_step_id = "unknown_step_id",
@@ -16910,9 +18456,28 @@ export enum ControllerTaskStatus {
     skipped = "skipped",
     failed = "failed"
 }
+export enum BuildExecutionDecision {
+    none = "none",
+    always = "always",
+    execute = "execute",
+    reuse = "reuse",
+    deferred = "deferred"
+}
+export enum BuildExecutionPhase {
+    precondition = "precondition",
+    evaluate = "evaluate",
+    execute = "execute",
+    verify = "verify",
+    commit = "commit",
+    complete = "complete"
+}
 export enum StepOutputDeclarationType {
     string = "string",
     json = "json"
+}
+export enum WikiPageTreeNodeResponseType {
+    file = "file",
+    directory = "directory"
 }
 export enum RepeatMode {
     While = "while",
@@ -16972,6 +18537,11 @@ export enum SyncSummary {
     missing = "missing",
     error = "error"
 }
+export enum SyncItemKind {
+    dag = "dag",
+    doc = "doc",
+    doc_asset = "doc-asset"
+}
 export enum SyncAuthConfigType {
     token = "token",
     ssh = "ssh"
@@ -17030,8 +18600,22 @@ export enum ViewColumn {
     done = "done",
     failed = "failed"
 }
+export enum ViewWorkspaceScope {
+    all = "all",
+    default = "default",
+    workspace = "workspace"
+}
+export enum ViewSortField {
+    name = "name",
+    nextRun = "nextRun"
+}
+export enum ViewSortOrder {
+    asc = "asc",
+    desc = "desc"
+}
 export enum ViewSpecType {
-    kanban = "kanban"
+    kanban = "kanban",
+    workflow = "workflow"
 }
 export enum ComponentsParametersEventLogPaginationMode {
     offset = "offset",

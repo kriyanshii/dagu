@@ -14,13 +14,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis/file"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	"github.com/dagucloud/dagu/v2/internal/proc"
 	"github.com/stretchr/testify/require"
 )
 
-func newProcStore(cfg *config.Config) exec.ProcStore {
+func newProcStore(cfg *config.Config) proc.ProcStore {
 	return file.NewProcStore(cfg)
 }
 
@@ -30,7 +32,7 @@ func procGroupDir(procDir, groupName, dagName string) string {
 
 // ProcHeartbeatObserver is the proc-store surface needed by heartbeat liveness tests.
 type ProcHeartbeatObserver interface {
-	LatestHeartbeat(ctx context.Context, groupName string, dagRun exec.DAGRunRef) (*exec.ProcHeartbeat, error)
+	LatestHeartbeat(ctx context.Context, groupName string, dagRun ir.DAGRunRef) (*proc.ProcHeartbeat, error)
 }
 
 // WaitForProcHeartbeat returns the latest heartbeat observation for dagRun once it exists.
@@ -39,12 +41,12 @@ func WaitForProcHeartbeat(
 	ctx context.Context,
 	procStore ProcHeartbeatObserver,
 	groupName string,
-	dagRun exec.DAGRunRef,
+	dagRun ir.DAGRunRef,
 	timeout time.Duration,
-) exec.ProcHeartbeat {
+) proc.ProcHeartbeat {
 	t.Helper()
 
-	var heartbeat *exec.ProcHeartbeat
+	var heartbeat *proc.ProcHeartbeat
 	var lastErr error
 	require.Eventually(t, func() bool {
 		heartbeat, lastErr = procStore.LatestHeartbeat(ctx, groupName, dagRun)
@@ -63,7 +65,7 @@ func RequireProcHeartbeatAdvance(
 	ctx context.Context,
 	procStore ProcHeartbeatObserver,
 	groupName string,
-	dagRun exec.DAGRunRef,
+	dagRun ir.DAGRunRef,
 	timeout time.Duration,
 ) {
 	t.Helper()
@@ -86,7 +88,7 @@ func CreateStaleLegacyProcFile(
 	t *testing.T,
 	procDir string,
 	groupName string,
-	dagRun exec.DAGRunRef,
+	dagRun ir.DAGRunRef,
 	startedAt time.Time,
 	age time.Duration,
 ) string {
@@ -98,7 +100,7 @@ func CreateStaleLegacyProcFileWithAttempt(
 	t *testing.T,
 	procDir string,
 	groupName string,
-	dagRun exec.DAGRunRef,
+	dagRun ir.DAGRunRef,
 	attemptID string,
 	startedAt time.Time,
 	age time.Duration,
@@ -140,7 +142,7 @@ func CreateStaleLegacyProcFileWithAttempt(
 }
 
 // ReadRunStatus loads the persisted status for the given dag-run reference.
-func ReadRunStatus(ctx context.Context, t *testing.T, store exec.DAGRunStore, dagRun exec.DAGRunRef) *exec.DAGRunStatus {
+func ReadRunStatus(ctx context.Context, t *testing.T, store dagrun.DAGRunStore, dagRun ir.DAGRunRef) *ir.DAGRunStatus {
 	t.Helper()
 
 	attempt, err := store.FindAttempt(ctx, dagRun)

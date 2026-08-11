@@ -20,7 +20,11 @@ import { cn } from '@/lib/utils';
 import { getResponsiveTitleClass } from '@/lib/text-utils';
 import { roleAtLeast } from '@/lib/workspaceAccess';
 import { defaultWorkspaceSelection } from '@/lib/workspace';
-import { UserRole } from '@/api/v1/schema';
+import { UserRole, ViewSpecType } from '@/api/v1/schema';
+import {
+  workflowViewMatchesScope,
+  workflowViewScopeForSelection,
+} from '@/features/dags/components/dag-list/workflowViews';
 import {
   Activity,
   AlertTriangle,
@@ -35,6 +39,7 @@ import {
   Network,
   PanelLeft,
   SlidersHorizontal,
+  Star,
   Sun,
   Webhook,
 } from 'lucide-react';
@@ -238,6 +243,7 @@ type NavGroupProps = {
   defaultExpanded?: boolean;
   persistExpanded?: boolean;
   unmountChildrenWhenCollapsed?: boolean;
+  suppressActive?: boolean;
   children: React.ReactNode;
 };
 
@@ -245,16 +251,28 @@ function isNavTargetActive(
   location: ReturnType<typeof useLocation>,
   target: string
 ): boolean {
-  const [targetPath, targetHash] = target.split('#');
+  const [targetWithoutHash = '', targetHash] = target.split('#');
+  const [targetPath, targetSearch] = targetWithoutHash.split('?');
   if (targetHash) {
     return (
       location.pathname === targetPath && location.hash === `#${targetHash}`
     );
   }
-  return (
+  const pathMatches =
     location.pathname === targetPath ||
-    (targetPath !== '/' && location.pathname.startsWith(targetPath + '/'))
-  );
+    (targetPath !== '/' && location.pathname.startsWith(targetPath + '/'));
+  if (!pathMatches) {
+    return false;
+  }
+  if (targetSearch) {
+    if (location.pathname !== targetPath) {
+      return false;
+    }
+    const expected = new URLSearchParams(targetSearch);
+    const actual = new URLSearchParams(location.search);
+    return [...expected].every(([key, value]) => actual.get(key) === value);
+  }
+  return true;
 }
 
 function isBasePathActive(
@@ -289,11 +307,13 @@ function NavGroup({
   defaultExpanded = false,
   persistExpanded = true,
   unmountChildrenWhenCollapsed = false,
+  suppressActive = false,
   children,
 }: NavGroupProps): React.ReactElement {
   const location = useLocation();
-  const isChildActive = isBasePathActive(location, basePath);
-  const isGroupTargetActive = to ? isNavTargetActive(location, to) : false;
+  const isChildActive = !suppressActive && isBasePathActive(location, basePath);
+  const isGroupTargetActive =
+    !suppressActive && to ? isNavTargetActive(location, to) : false;
 
   const [isExpanded, setIsExpanded] = React.useState(() => {
     try {
@@ -394,7 +414,11 @@ function NavGroup({
               to={to}
               onClick={onClick}
               className="flex h-full min-w-0 flex-1 items-center gap-3 px-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
-              aria-current={isGroupTargetActive ? 'page' : undefined}
+              aria-current={
+                isGroupTargetActive || (isChildActive && !effectivelyExpanded)
+                  ? 'page'
+                  : undefined
+              }
             >
               {labelNode}
             </Link>
@@ -428,6 +452,8 @@ function NavGroup({
         )}
       </div>
       <div
+        aria-hidden={!effectivelyExpanded}
+        inert={!effectivelyExpanded ? true : undefined}
         style={{
           transition:
             'max-height 250ms cubic-bezier(0.4, 0, 0.2, 1), opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
@@ -454,8 +480,21 @@ export const mainListItems = React.forwardRef<
   const config = useConfig();
   const isAdmin = useIsAdmin();
   const { user } = useAuth();
-  const { views } = useViews();
-  const pinnedViews = views.filter((view) => view.pinned);
+  const appBar = React.useContext(AppBarContext);
+  const location = useLocation();
+  const { views: kanbanViews } = useViews();
+  const { views: workflowViews } = useViews(ViewSpecType.workflow);
+  const workflowViewScope = workflowViewScopeForSelection(
+    appBar.workspaceSelection
+  );
+  const pinnedKanbanViews = kanbanViews.filter((view) => view.pinned);
+  const pinnedWorkflowViews = workflowViews.filter(
+    (view) => view.pinned && workflowViewMatchesScope(view, workflowViewScope)
+  );
+  const activeWorkflowViewId = new URLSearchParams(location.search).get('view');
+  const isPinnedWorkflowViewActive =
+    location.pathname === '/dags' &&
+    pinnedWorkflowViews.some((view) => view.id === activeWorkflowViewId);
   const canWrite =
     config.authMode !== 'builtin'
       ? config.permissions.writeDags
@@ -620,12 +659,23 @@ export const mainListItems = React.forwardRef<
         </AppBarContext.Consumer>
 
         <div className="space-y-1">
-          {pinnedViews.map((view) => (
+          {pinnedKanbanViews.map((view) => (
             <NavItem
-              key={view.id}
+              key={`kanban-${view.id}`}
               to={`/views/${view.id}`}
               text={view.name}
               icon={<LayoutGrid size={18} />}
+              isOpen={isOpen}
+              onClick={onNavItemClick}
+              customColor={customColor}
+            />
+          ))}
+          {pinnedWorkflowViews.map((view) => (
+            <NavItem
+              key={`workflow-${view.id}`}
+              to={`/dags?view=${encodeURIComponent(view.id)}`}
+              text={view.name}
+              icon={<Star size={18} />}
               isOpen={isOpen}
               onClick={onNavItemClick}
               customColor={customColor}
@@ -647,10 +697,17 @@ export const mainListItems = React.forwardRef<
             icon={<Network size={18} />}
             label="Workflows"
             isOpen={isOpen}
-            basePath={['/dags', '/search', '/base-config', '/git-sync']}
+            basePath={[
+              '/dags',
+              '/search',
+              '/base-config',
+              '/wiki',
+              '/git-sync',
+            ]}
             to="/dags"
             onClick={onNavItemClick}
             customColor={customColor}
+            suppressActive={isPinnedWorkflowViewActive}
           >
             <NavItem
               to="/search"
@@ -668,6 +725,13 @@ export const mainListItems = React.forwardRef<
                 customColor={customColor}
               />
             )}
+            <NavItem
+              to="/wiki"
+              text="Wiki"
+              isOpen={isOpen}
+              onClick={onNavItemClick}
+              customColor={customColor}
+            />
             {canWrite && config.gitSyncEnabled && (
               <NavItem
                 to="/git-sync"

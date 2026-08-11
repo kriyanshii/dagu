@@ -9,13 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/core/spec"
-	runtimepkg "github.com/dagucloud/dagu/internal/runtime"
-	"github.com/dagucloud/dagu/internal/runtime/agent"
-	"github.com/dagucloud/dagu/internal/test"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	runtimepkg "github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/runtime/agent"
+	"github.com/dagucloud/dagu/v2/internal/spec"
+	"github.com/dagucloud/dagu/v2/internal/test"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -72,7 +71,7 @@ func TestBaseDAGSpecialEnvVarsInHandler(t *testing.T) {
 	dagRunID := uuid.New().String()
 	logDir := th.Config.Paths.LogDir
 	logFile := filepath.Join(logDir, dagRunID+".log")
-	root := exec.NewDAGRunRef(dag.Name, dagRunID)
+	root := ir.NewDAGRunRef(dag.Name, dagRunID)
 
 	drm := runtimepkg.NewManager(th.DAGRunStore, th.ProcStore, th.Config)
 
@@ -97,7 +96,7 @@ func TestBaseDAGSpecialEnvVarsInHandler(t *testing.T) {
 
 	// Verify the DAG failed
 	status := a.Status(th.Context)
-	require.Equal(t, core.Failed, status.Status)
+	require.Equal(t, ir.Failed, status.Status)
 
 	// Read the output file and verify special env vars were available
 	output, err := os.ReadFile(outputFile)
@@ -190,7 +189,7 @@ steps:
 	dagRunID := uuid.New().String()
 	logDir := th.Config.Paths.LogDir
 	logFile := filepath.Join(logDir, dagRunID+".log")
-	root := exec.NewDAGRunRef(dag.Name, dagRunID)
+	root := ir.NewDAGRunRef(dag.Name, dagRunID)
 
 	drm := runtimepkg.NewManager(th.DAGRunStore, th.ProcStore, th.Config)
 

@@ -11,17 +11,18 @@ import (
 	"os"
 	"time"
 
-	"github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/humantask"
-	"github.com/dagucloud/dagu/internal/runtime/controller"
+	"github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/humantask"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/runtime/controller"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 )
 
 const maxIntValue = int(^uint(0) >> 1)
 
-func toSchedule(s core.Schedule) api.Schedule {
+func toSchedule(s ir.Schedule) api.Schedule {
 	schedule := api.Schedule{}
 	if kind := s.GetKind(); kind != "" {
 		schedule.Kind = ptrOf(api.ScheduleKind(kind))
@@ -36,8 +37,8 @@ func toSchedule(s core.Schedule) api.Schedule {
 	return schedule
 }
 
-func workspaceResponseNameFromLabels(labels core.Labels) *string {
-	workspaceName, ok := exec.WorkspaceNameFromLabels(labels)
+func workspaceResponseNameFromLabels(labels ir.Labels) *string {
+	workspaceName, ok := workspace.WorkspaceNameFromLabels(labels)
 	if !ok {
 		return nil
 	}
@@ -45,10 +46,10 @@ func workspaceResponseNameFromLabels(labels core.Labels) *string {
 }
 
 func workspaceResponseNameFromLabelStrings(labels []string) *string {
-	return workspaceResponseNameFromLabels(core.NewLabels(labels))
+	return workspaceResponseNameFromLabels(ir.NewLabels(labels))
 }
 
-func toDAG(dag *core.DAG) api.DAG {
+func toDAG(dag *ir.DAG) api.DAG {
 	schedules := make([]api.Schedule, len(dag.Schedule))
 	for i, s := range dag.Schedule {
 		schedules[i] = toSchedule(s)
@@ -68,7 +69,7 @@ func toDAG(dag *core.DAG) api.DAG {
 	}
 }
 
-func toDAGResources(resources *core.Resources) *api.DAGResources {
+func toDAGResources(resources *ir.Resources) *api.DAGResources {
 	if resources == nil || resources.Limits == nil {
 		return nil
 	}
@@ -80,7 +81,7 @@ func toDAGResources(resources *core.Resources) *api.DAGResources {
 	}
 }
 
-func toStep(obj core.Step) api.Step {
+func toStep(obj ir.Step) api.Step {
 	conditions := make([]api.Condition, len(obj.Preconditions))
 	for i := range obj.Preconditions {
 		conditions[i] = toPrecondition(obj.Preconditions[i])
@@ -122,6 +123,27 @@ func toStep(obj core.Step) api.Step {
 		Preconditions: ptrOf(conditions),
 		RepeatPolicy:  ptrOf(repeatPolicy),
 		Script:        ptrOf(obj.Script),
+	}
+	if len(obj.Inputs) > 0 {
+		inputs := make([]api.StepInputDeclaration, len(obj.Inputs))
+		for i, input := range obj.Inputs {
+			inputs[i] = api.StepInputDeclaration{Name: input.Name, Path: input.Path}
+		}
+		step.Inputs = &inputs
+	}
+	if len(obj.Outputs) > 0 {
+		outputs := make([]api.StepOutputDeclaration, len(obj.Outputs))
+		for i, output := range obj.Outputs {
+			outputs[i].Name = output.Name
+			if output.Type != "" {
+				outputType := api.StepOutputDeclarationType(output.Type)
+				outputs[i].Type = &outputType
+			}
+			if output.Path != "" {
+				outputs[i].Path = &output.Path
+			}
+		}
+		step.Outputs = &outputs
 	}
 
 	if obj.Timeout > 0 {
@@ -223,11 +245,11 @@ func toStep(obj core.Step) api.Step {
 	return step
 }
 
-func toPrecondition(obj *core.Condition) api.Condition {
+func toPrecondition(obj *ir.Condition) api.Condition {
 	condition := api.Condition{
 		Expected: ptrOf(obj.Expected),
 		Negate:   ptrOf(obj.Negate),
-		Error:    ptrOf(obj.GetErrorMessage()),
+		Error:    ptrOf(""),
 	}
 	if obj.Condition != "" {
 		condition.Condition = ptrOf(obj.Condition)
@@ -238,15 +260,21 @@ func toPrecondition(obj *core.Condition) api.Condition {
 	return condition
 }
 
-func toTriggerType(t core.TriggerType) *api.TriggerType {
-	if t == core.TriggerTypeUnknown {
+func toPreconditionResult(result ir.ConditionResult) api.Condition {
+	condition := toPrecondition(&result.Condition)
+	condition.Error = ptrOf(result.Error)
+	return condition
+}
+
+func toTriggerType(t ir.TriggerType) *api.TriggerType {
+	if t == ir.TriggerTypeUnknown {
 		return nil
 	}
 	return new(api.TriggerType(t.String()))
 }
 
-func toDAGRunConditions(status core.Status, conditions []exec.DAGRunCondition) *[]api.DAGRunCondition {
-	if status != core.Queued || len(conditions) == 0 {
+func toDAGRunConditions(status ir.Status, conditions []ir.DAGRunCondition) *[]api.DAGRunCondition {
+	if status != ir.Queued || len(conditions) == 0 {
 		return nil
 	}
 
@@ -296,7 +324,7 @@ func toRuntimeProfileName(name string) *api.RuntimeProfileName {
 	return &profileName
 }
 
-func toDAGRunSummary(s exec.DAGRunStatus) api.DAGRunSummary {
+func toDAGRunSummary(s ir.DAGRunStatus) api.DAGRunSummary {
 	var autoRetryLimit *int
 	if s.AutoRetryLimit > 0 {
 		autoRetryLimit = ptrOf(s.AutoRetryLimit)
@@ -317,6 +345,7 @@ func toDAGRunSummary(s exec.DAGRunStatus) api.DAGRunSummary {
 		StartedAt:          s.StartedAt,
 		FinishedAt:         s.FinishedAt,
 		ArtifactsAvailable: artifactsAvailable,
+		NoReuse:            ptrOf(s.NoReuse),
 		Status:             api.Status(s.Status),
 		StatusLabel:        api.StatusLabel(s.Status.String()),
 		WorkerId:           ptrOf(s.WorkerID),
@@ -327,7 +356,7 @@ func toDAGRunSummary(s exec.DAGRunStatus) api.DAGRunSummary {
 	}
 }
 
-func toDAGRunsPageResponse(page exec.DAGRunStatusPage) api.DAGRunsPageResponse {
+func toDAGRunsPageResponse(page dagrun.DAGRunStatusPage) api.DAGRunsPageResponse {
 	dagRuns := make([]api.DAGRunSummary, 0, len(page.Items))
 	for _, item := range page.Items {
 		if item == nil {
@@ -347,10 +376,10 @@ func toDAGRunsPageResponse(page exec.DAGRunStatusPage) api.DAGRunsPageResponse {
 
 // ToDAGRunDetails converts a DAGRunStatus to its API representation.
 // This function is exported for use by the SSE package.
-func ToDAGRunDetails(s exec.DAGRunStatus) api.DAGRunDetails {
+func ToDAGRunDetails(s ir.DAGRunStatus) api.DAGRunDetails {
 	preconditions := make([]api.Condition, len(s.Preconditions))
 	for i, p := range s.Preconditions {
-		preconditions[i] = toPrecondition(p)
+		preconditions[i] = toPreconditionResult(p)
 	}
 	nodes := make([]api.Node, len(s.Nodes))
 	for i, n := range s.Nodes {
@@ -375,6 +404,7 @@ func ToDAGRunDetails(s exec.DAGRunStatus) api.DAGRunDetails {
 		ParentDAGRunName:       ptrOf(s.Parent.Name),
 		ParentDAGRunId:         ptrOf(s.Parent.ID),
 		ArtifactsAvailable:     artifactsAvailable,
+		NoReuse:                ptrOf(s.NoReuse),
 		Log:                    s.Log,
 		Name:                   s.Name,
 		Params:                 ptrOf(s.Params),
@@ -430,11 +460,19 @@ func hasArtifactEntries(archiveDir string) bool {
 	return false
 }
 
-func toNode(node *exec.Node) api.Node {
+func toNode(node *ir.Node) api.Node {
 	if node == nil {
 		return api.Node{}
 	}
-	return api.Node{
+	step := toStep(node.Step)
+	if node.PreconditionResults != nil {
+		preconditions := make([]api.Condition, len(node.PreconditionResults))
+		for i, condition := range node.PreconditionResults {
+			preconditions[i] = toPreconditionResult(condition)
+		}
+		step.Preconditions = ptrOf(preconditions)
+	}
+	result := api.Node{
 		DoneCount:              node.DoneCount,
 		FinishedAt:             node.FinishedAt,
 		Stdout:                 node.Stdout,
@@ -443,7 +481,7 @@ func toNode(node *exec.Node) api.Node {
 		StartedAt:              node.StartedAt,
 		Status:                 api.NodeStatus(node.Status),
 		StatusLabel:            api.NodeStatusLabel(node.Status.String()),
-		Step:                   toStep(node.Step),
+		Step:                   step,
 		Error:                  ptrOf(node.Error),
 		SubRuns:                ptrOf(toSubDAGRuns(node.SubRuns)),
 		SubRunsRepeated:        ptrOf(toSubDAGRuns(node.SubRunsRepeated)),
@@ -461,9 +499,27 @@ func toNode(node *exec.Node) api.Node {
 		RejectionReason:        ptrOf(node.RejectionReason),
 		ApprovalIteration:      ptrOf(node.ApprovalIteration),
 	}
+	if node.Build != nil {
+		result.Build = &api.BuildExecution{
+			Decision:           api.BuildExecutionDecision(node.Build.Decision),
+			Phase:              api.BuildExecutionPhase(node.Build.Phase),
+			Reason:             string(node.Build.Reason),
+			Detail:             ptrOf(node.Build.Detail),
+			Fingerprint:        ptrOf(node.Build.Fingerprint),
+			MaterializationKey: ptrOf(node.Build.MaterializationKey),
+			ProducerAttemptId:  ptrOf(node.Build.ProducerAttemptID),
+		}
+		if !node.Build.ProducerRun.Zero() {
+			result.Build.ProducerRun = &api.BuildProducer{
+				Name: ptrOf(node.Build.ProducerRun.Name),
+				Id:   ptrOf(node.Build.ProducerRun.ID),
+			}
+		}
+	}
+	return result
 }
 
-func toPushBackHistory(node *exec.Node) []api.PushBackHistoryEntry {
+func toPushBackHistory(node *ir.Node) []api.PushBackHistoryEntry {
 	if node == nil {
 		return nil
 	}
@@ -472,7 +528,7 @@ func toPushBackHistory(node *exec.Node) []api.PushBackHistoryEntry {
 	if node.Step.Approval != nil {
 		allowedInputs = node.Step.Approval.Input
 	}
-	history := exec.NormalizePushBackHistory(
+	history := dagrun.NormalizePushBackHistory(
 		allowedInputs,
 		node.ApprovalIteration,
 		node.PushBackInputs,
@@ -499,7 +555,7 @@ func toPushBackHistory(node *exec.Node) []api.PushBackHistoryEntry {
 	return items
 }
 
-func toSubDAGRuns(subDAGRuns []exec.SubDAGRun) []api.SubDAGRun {
+func toSubDAGRuns(subDAGRuns []ir.SubDAGRun) []api.SubDAGRun {
 	result := make([]api.SubDAGRun, len(subDAGRuns))
 	for i, w := range subDAGRuns {
 		result[i] = api.SubDAGRun{
@@ -511,7 +567,7 @@ func toSubDAGRuns(subDAGRuns []exec.SubDAGRun) []api.SubDAGRun {
 	return result
 }
 
-func toLocalDAG(dag *core.DAG) api.LocalDag {
+func toLocalDAG(dag *ir.DAG) api.LocalDag {
 	return api.LocalDag{
 		Name:   dag.Name,
 		Dag:    toDAGDetails(dag),
@@ -519,7 +575,7 @@ func toLocalDAG(dag *core.DAG) api.LocalDag {
 	}
 }
 
-func toDAGDetails(dag *core.DAG) *api.DAGDetails {
+func toDAGDetails(dag *ir.DAG) *api.DAGDetails {
 	if dag == nil {
 		return nil
 	}
@@ -605,7 +661,7 @@ func controllerDAGType(dagType string) *api.DAGDetailsType {
 
 // declaredControllerTasks lists the goals a controller DAG declares, before any
 // run has made progress against them.
-func declaredControllerTasks(dag *core.DAG) *[]api.ControllerTask {
+func declaredControllerTasks(dag *ir.DAG) *[]api.ControllerTask {
 	if len(dag.Tasks) == 0 {
 		return nil
 	}
@@ -621,9 +677,9 @@ func declaredControllerTasks(dag *core.DAG) *[]api.ControllerTask {
 }
 
 // controllerTimeline reports the ordered decisions a controller DAG-run made.
-func controllerTimeline(nodes []*exec.Node) *[]api.ControllerEvent {
+func controllerTimeline(nodes []*ir.Node) *[]api.ControllerEvent {
 	for _, node := range nodes {
-		if node == nil || node.Step.Name != core.ControllerStepName {
+		if node == nil || node.Step.Name != ir.ControllerStepName {
 			continue
 		}
 		recorded := controller.EventsFromState(node.ControllerState)
@@ -652,9 +708,9 @@ func controllerTimeline(nodes []*exec.Node) *[]api.ControllerEvent {
 
 // controllerTaskProgress reports goal progress recorded by the controller step
 // of a controller DAG-run.
-func controllerTaskProgress(nodes []*exec.Node) *[]api.ControllerTask {
+func controllerTaskProgress(nodes []*ir.Node) *[]api.ControllerTask {
 	for _, node := range nodes {
-		if node == nil || node.Step.Name != core.ControllerStepName {
+		if node == nil || node.Step.Name != ir.ControllerStepName {
 			continue
 		}
 		states := controller.TasksFromState(node.ControllerState)
@@ -698,7 +754,7 @@ func toJSONObject(raw json.RawMessage) *map[string]any {
 	return &value
 }
 
-func toParamDefs(defs []core.ParamDef) []api.ParamDef {
+func toParamDefs(defs []ir.ParamDef) []api.ParamDef {
 	result := make([]api.ParamDef, 0, len(defs))
 	for _, def := range defs {
 		paramDef := api.ParamDef{
@@ -803,7 +859,7 @@ func toParamScalarUint64(value uint64) (api.ParamScalar, bool) {
 	return scalar, scalar.FromParamScalar1(int(value)) == nil
 }
 
-func toHandlerOn(handlers core.HandlerOn) api.HandlerOn {
+func toHandlerOn(handlers ir.HandlerOn) api.HandlerOn {
 	handlerOn := api.HandlerOn{}
 	if handlers.Failure != nil {
 		handlerOn.Failure = ptrOf(toStep(*handlers.Failure))
@@ -820,7 +876,7 @@ func toHandlerOn(handlers core.HandlerOn) api.HandlerOn {
 	return handlerOn
 }
 
-func toChatMessages(messages []exec.LLMMessage) []api.ChatMessage {
+func toChatMessages(messages []ir.LLMMessage) []api.ChatMessage {
 	if messages == nil {
 		return []api.ChatMessage{}
 	}
@@ -832,7 +888,7 @@ func toChatMessages(messages []exec.LLMMessage) []api.ChatMessage {
 	return result
 }
 
-func toChatMessage(msg exec.LLMMessage) api.ChatMessage {
+func toChatMessage(msg ir.LLMMessage) api.ChatMessage {
 	apiMsg := api.ChatMessage{
 		Role:    api.ChatMessageRole(msg.Role),
 		Content: msg.Content,
@@ -863,7 +919,7 @@ func toChatMessage(msg exec.LLMMessage) api.ChatMessage {
 	return apiMsg
 }
 
-func toToolDefinitions(defs []exec.ToolDefinition) *[]api.ToolDefinition {
+func toToolDefinitions(defs []ir.ToolDefinition) *[]api.ToolDefinition {
 	if len(defs) == 0 {
 		return nil
 	}

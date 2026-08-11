@@ -8,10 +8,10 @@ import (
 	"errors"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/runtime/executor"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/runtime/executor"
 )
 
 var errNodeExecutionAborted = errors.New("node execution aborted before start")
@@ -33,6 +33,7 @@ func NewStepExecutor() *StepExecutor {
 // decisions; StepExecutor only preserves executor-provided status overrides.
 func (e *StepExecutor) Execute(ctx context.Context, node *Node, onSetup ...func()) error {
 	attemptStarted := time.Now()
+	node.SetStatusDetails(nil)
 	ctx, cancel, stepTimeout := node.setupContextWithTimeout(ctx)
 	defer cancel()
 
@@ -115,7 +116,7 @@ func (e *StepExecutor) Execute(ctx context.Context, node *Node, onSetup ...func(
 }
 
 func preRunAbortErr(ctx context.Context, node *Node) error {
-	if node.Status() == core.NodeAborted {
+	if node.Status() == ir.NodeAborted {
 		return errNodeExecutionAborted
 	}
 	return ctx.Err()
@@ -173,6 +174,10 @@ func (e *StepExecutor) captureExecutorSideChannels(
 	cmd executor.Executor,
 	node *Node,
 ) (string, bool, error) {
+	if statusDetailsProvider, ok := cmd.(executor.StatusDetailsProvider); ok {
+		node.SetStatusDetails(statusDetailsProvider.GetStatusDetails())
+	}
+
 	if chatHandler, ok := cmd.(executor.ChatMessageHandler); ok {
 		node.SetChatMessages(chatHandler.GetMessages())
 	}

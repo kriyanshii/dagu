@@ -22,23 +22,27 @@ import (
 
 	"github.com/spf13/viper"
 
-	"github.com/dagucloud/dagu/internal/cmn/cmdutil"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/signalctx"
-	"github.com/dagucloud/dagu/internal/core"
-	exec1 "github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/core/spec"
-	"github.com/dagucloud/dagu/internal/dagstate"
-	"github.com/dagucloud/dagu/internal/launcher"
-	"github.com/dagucloud/dagu/internal/node"
-	"github.com/dagucloud/dagu/internal/persis/file"
-	"github.com/dagucloud/dagu/internal/persis/store"
-	runtimepkg "github.com/dagucloud/dagu/internal/runtime"
-	"github.com/dagucloud/dagu/internal/runtime/agent"
-	"github.com/dagucloud/dagu/internal/service/frontend"
-	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/dagucloud/dagu/v2/internal/cmn/cmdutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/signalctx"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/dagstore"
+	"github.com/dagucloud/dagu/v2/internal/dispatch"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/launcher"
+	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	"github.com/dagucloud/dagu/v2/internal/persis/store"
+	"github.com/dagucloud/dagu/v2/internal/proc"
+	"github.com/dagucloud/dagu/v2/internal/queue"
+	runtimepkg "github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/runtime/agent"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	"github.com/dagucloud/dagu/v2/internal/service/frontend"
+	"github.com/dagucloud/dagu/v2/internal/serviceregistry"
+	"github.com/dagucloud/dagu/v2/internal/spec"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -373,6 +377,9 @@ func writeHelperConfigFile(t *testing.T, cfg *config.Config, configPath string) 
 		"users_dir":            cfg.Paths.UsersDir,
 		"executable":           cfg.Paths.Executable,
 	}
+	configData["dag_discovery"] = map[string]any{
+		"recursive": cfg.DAGDiscovery.Recursive,
+	}
 
 	if cfg.Queues.Enabled || len(cfg.Queues.Config) > 0 {
 		qcfg := map[string]any{
@@ -395,9 +402,8 @@ func writeHelperConfigFile(t *testing.T, cfg *config.Config, configPath string) 
 	}
 
 	configData["proc"] = map[string]any{
-		"heartbeat_interval":      cfg.Proc.HeartbeatInterval.String(),
-		"heartbeat_sync_interval": cfg.Proc.HeartbeatSyncInterval.String(),
-		"stale_threshold":         cfg.Proc.StaleThreshold.String(),
+		"heartbeat_interval": cfg.Proc.HeartbeatInterval.String(),
+		"stale_threshold":    cfg.Proc.StaleThreshold.String(),
 	}
 
 	scheduler := map[string]any{}
@@ -511,17 +517,17 @@ type Helper struct {
 	Config                    *config.Config
 	ChildEnv                  []string
 	LoggingOutput             *SyncBuffer
-	DAGStore                  exec1.DAGStore
-	DAGRunStore               exec1.DAGRunStore
+	DAGStore                  dagstore.DAGStore
+	DAGRunStore               dagrun.DAGRunStore
 	DAGRunMgr                 runtimepkg.Manager
-	ProcStore                 exec1.ProcStore
-	QueueStore                exec1.QueueStore
-	StateStore                dagstate.Store
-	ServiceRegistry           exec1.ServiceRegistry
-	DispatchTaskStore         exec1.DispatchTaskStore
-	WorkerHeartbeatStore      exec1.WorkerHeartbeatStore
-	DAGRunLeaseStore          exec1.DAGRunLeaseStore
-	ActiveDistributedRunStore exec1.ActiveDistributedRunStore
+	ProcStore                 proc.ProcStore
+	QueueStore                queue.QueueStore
+	StateStore                dagrun.StateStore
+	ServiceRegistry           serviceregistry.ServiceRegistry
+	DispatchTaskStore         dispatch.DispatchTaskStore
+	WorkerHeartbeatStore      dispatch.WorkerHeartbeatStore
+	DAGRunLeaseStore          dispatch.DAGRunLeaseStore
+	ActiveDistributedRunStore dispatch.ActiveDistributedRunStore
 	SubCmdBuilder             *launcher.SubCmdBuilder
 	ServerOptions             []frontend.ServerOption
 	StaleHeartbeatThreshold   time.Duration
@@ -607,10 +613,10 @@ func (h Helper) DAGExpectError(t *testing.T, name string, expectedErr string) {
 
 type DAG struct {
 	*Helper
-	*core.DAG
+	*ir.DAG
 }
 
-func (d *DAG) AssertLatestStatus(t *testing.T, expected core.Status) {
+func (d *DAG) AssertLatestStatus(t *testing.T, expected ir.Status) {
 	t.Helper()
 
 	require.Eventually(t, func() bool {
@@ -632,7 +638,7 @@ func (d *DAG) AssertDAGRunCount(t *testing.T, expected int) {
 	require.Len(t, runstore, expected)
 }
 
-func (d *DAG) AssertCurrentStatus(t *testing.T, expected core.Status) {
+func (d *DAG) AssertCurrentStatus(t *testing.T, expected ir.Status) {
 	t.Helper()
 
 	assert.Eventually(t, func() bool {
@@ -733,7 +739,7 @@ func (d *DAG) ReadOutputs(t *testing.T) map[string]string {
 	data, err := os.ReadFile(outputsPath) //nolint:gosec // path is constructed from test config
 	require.NoError(t, err)
 
-	var outputs exec1.DAGRunOutputs
+	var outputs ir.DAGRunOutputs
 	require.NoError(t, json.Unmarshal(data, &outputs))
 
 	return outputs.Outputs
@@ -776,7 +782,7 @@ func (d *DAG) Agent(opts ...AgentOption) *Agent {
 
 	logDir := d.Config.Paths.LogDir
 	logFile := filepath.Join(d.Config.Paths.LogDir, dagRunID+".log")
-	root := exec1.NewDAGRunRef(d.Name, dagRunID)
+	root := ir.NewDAGRunRef(d.Name, dagRunID)
 
 	helper.opts.DAGRunStore = d.DAGRunStore
 	helper.opts.QueueStore = d.QueueStore
@@ -787,7 +793,7 @@ func (d *DAG) Agent(opts ...AgentOption) *Agent {
 	helper.opts.DAGRunLogDir = d.Config.Paths.LogDir
 	helper.opts.DAGRunArtifactDir = d.Config.Paths.ArtifactDir
 	if helper.opts.SubWorkflowRunnerFactory == nil {
-		helper.opts.SubWorkflowRunnerFactory = node.NewSubWorkflowRunnerFactory(node.SubWorkflowRunnerConfig{
+		helper.opts.SubWorkflowRunnerFactory = coordinator.NewSubWorkflowRunnerFactory(coordinator.SubWorkflowRunnerConfig{
 			DAGRunMgr:         d.DAGRunMgr,
 			DAGStore:          d.DAGStore,
 			DAGRunStore:       d.DAGRunStore,
@@ -819,7 +825,7 @@ func (d *DAG) Agent(opts ...AgentOption) *Agent {
 
 type Agent struct {
 	*Helper
-	*core.DAG
+	*ir.DAG
 	*agent.Agent
 	opts     agent.Options
 	dagRunID string // the dag-run ID for this agent
@@ -832,14 +838,14 @@ func (a *Agent) RunError(t *testing.T) {
 	assert.Error(t, err)
 
 	st := a.Status(a.Context).Status
-	require.Equal(t, core.Failed.String(), st.String())
+	require.Equal(t, ir.Failed.String(), st.String())
 }
 
 func (a *Agent) RunCancel(t *testing.T) {
 	t.Helper()
 
 	attemptID := newTestAttemptID(t)
-	proc, err := a.ProcStore.Acquire(a.Context, a.ProcGroup(), exec1.ProcMeta{
+	proc, err := a.ProcStore.Acquire(a.Context, a.ProcGroup(), proc.ProcMeta{
 		StartedAt:    time.Now().Unix(),
 		Name:         a.Name,
 		DAGRunID:     a.dagRunID,
@@ -856,7 +862,7 @@ func (a *Agent) RunCancel(t *testing.T) {
 	assert.NoError(t, err)
 
 	st := a.Status(a.Context).Status
-	require.Equal(t, core.Aborted.String(), st.String())
+	require.Equal(t, ir.Aborted.String(), st.String())
 }
 
 func (a *Agent) RunCheckErr(t *testing.T, expectedErr string) {
@@ -866,7 +872,7 @@ func (a *Agent) RunCheckErr(t *testing.T, expectedErr string) {
 	require.Error(t, err, "expected error %q, got nil", expectedErr)
 	require.Contains(t, err.Error(), expectedErr)
 	st := a.Status(a.Context)
-	require.Equal(t, core.Failed.String(), st.Status.String())
+	require.Equal(t, ir.Failed.String(), st.Status.String())
 }
 
 func (a *Agent) RunSuccess(t *testing.T) {
@@ -876,12 +882,12 @@ func (a *Agent) RunSuccess(t *testing.T) {
 	assert.NoError(t, err, "failed to run agent")
 
 	st := a.Status(a.Context).Status
-	require.Equal(t, core.Succeeded.String(), st.String(), "expected status %q, got %q", core.Succeeded, st)
+	require.Equal(t, ir.Succeeded.String(), st.String(), "expected status %q, got %q", ir.Succeeded, st)
 
 	// check all nodes are in success or skipped state
 	for _, node := range a.Status(a.Context).Nodes {
 		st := node.Status
-		if st == core.NodeSkipped || st == core.NodeSucceeded {
+		if st == ir.NodeSkipped || st == ir.NodeSucceeded {
 			continue
 		}
 		t.Errorf("expected node %q to be in success state, got %q", node.Step.Name, st.String())

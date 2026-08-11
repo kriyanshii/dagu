@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"net/http"
 
-	openapiv1 "github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/core/exec"
+	openapiv1 "github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/queue"
 )
 
-func (a *API) queueNameForDAGRun(ctx context.Context, dagRun exec.DAGRunRef) (string, error) {
+func (a *API) queueNameForDAGRun(ctx context.Context, dagRun ir.DAGRunRef) (string, error) {
 	attempt, err := a.dagRunStore.FindAttempt(ctx, dagRun)
 	if err != nil {
 		return "", err
@@ -29,7 +31,7 @@ func (a *API) queueNameForDAGRun(ctx context.Context, dagRun exec.DAGRunRef) (st
 
 func mapAbortQueuedDAGRunAPIError(dagName, dagRunID string, err error) error {
 	switch {
-	case errors.Is(err, exec.ErrDAGRunIDNotFound), errors.Is(err, exec.ErrNoStatusData):
+	case errors.Is(err, dagrun.ErrDAGRunIDNotFound), errors.Is(err, dagrun.ErrNoStatusData):
 		return &Error{
 			HTTPStatus: http.StatusNotFound,
 			Code:       openapiv1.ErrorCodeNotFound,
@@ -37,7 +39,7 @@ func mapAbortQueuedDAGRunAPIError(dagName, dagRunID string, err error) error {
 		}
 	}
 
-	var notQueuedErr *exec.DAGRunNotQueuedError
+	var notQueuedErr *queue.DAGRunNotQueuedError
 	if errors.As(err, &notQueuedErr) {
 		message := "DAGRun status is not queued"
 		if notQueuedErr.HasStatus {

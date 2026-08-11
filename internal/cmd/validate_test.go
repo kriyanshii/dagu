@@ -7,8 +7,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/dagucloud/dagu/internal/cmd"
-	"github.com/dagucloud/dagu/internal/test"
+	"github.com/dagucloud/dagu/v2/internal/cmd"
+	"github.com/dagucloud/dagu/v2/internal/test"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,6 +23,30 @@ steps:
 
 		th.RunCommand(t, cmd.Validate(), test.CmdTest{
 			Args: []string{"validate", dag.Location},
+		})
+	})
+
+	t.Run("StateExpectedVersionExpression", func(t *testing.T) {
+		dagFile := th.CreateDAGFile(t, "state_expected_version.yaml", `
+steps:
+  - id: load
+    action: state.get
+    output: STATE
+    with:
+      key: counters/jobs
+      required: true
+  - id: save
+    action: state.set
+    with:
+      key: counters/jobs
+      expected_version: "${steps.load.outputs.version}"
+      value:
+        count: 1
+    depends: load
+`)
+
+		th.RunCommand(t, cmd.Validate(), test.CmdTest{
+			Args: []string{"validate", dagFile},
 		})
 	})
 

@@ -11,14 +11,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/dagsettings"
-	profilepkg "github.com/dagucloud/dagu/internal/profile"
-	"github.com/dagucloud/dagu/internal/service/audit"
+	"github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/audit"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/dagsettings"
+	"github.com/dagucloud/dagu/v2/internal/dagstore"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	profilepkg "github.com/dagucloud/dagu/v2/internal/profile"
 )
 
 func dagSettingsStoreUnavailable() *Error {
@@ -200,10 +200,10 @@ func (a *API) runProfileForDAG(ctx context.Context, dagName string, workspaceNam
 	return a.defaultRunProfileName(ctx, dagName, workspaceName)
 }
 
-func (a *API) getDAGForSettings(ctx context.Context, fileName string) (*core.DAG, error) {
+func (a *API) getDAGForSettings(ctx context.Context, fileName string) (*ir.DAG, error) {
 	dag, err := a.dagStore.GetMetadata(ctx, fileName)
 	if err != nil {
-		if errors.Is(err, exec.ErrDAGNotFound) {
+		if errors.Is(err, dagstore.ErrDAGNotFound) {
 			return nil, &Error{
 				HTTPStatus: http.StatusNotFound,
 				Code:       api.ErrorCodeNotFound,

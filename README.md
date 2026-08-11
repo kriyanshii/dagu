@@ -1,7 +1,15 @@
 <div align="center">
-  <img src="./assets/images/hero-logo.webp" width="900" alt="Dagu local-first workflow engine for ops automation and AI-assisted workflows">
+  <a href="https://dagu.sh">
+    <img src="./assets/images/hero-logo.png" width="720" alt="Dagu: built for teams whose main work is not orchestration">
+  </a>
   <p>
-    <a href="https://discord.gg/gpahPUjGRk">Community</a>
+    <a href="https://docs.dagu.sh">Docs</a> ·
+    <a href="https://docs.dagu.sh/getting-started/cli">CLI</a> ·
+    <a href="https://petstore.swagger.io/?url=https://raw.githubusercontent.com/dagucloud/dagu/main/api/v1/api.yaml">API</a> ·
+    <a href="https://docs.dagu.sh/writing-workflows/examples">Examples</a> ·
+    <a href="https://dagu-demo-f5e33d0e.dagu.sh">Live demo</a>
+    <code>(username/password: demouser)</code> ·
+    <a href="https://discord.gg/gpahPUjGRk">Discord</a>
   </p>
 </div>
 
@@ -27,17 +35,27 @@ For a quick look at how workflows are defined, see the examples.
 
 <div align="center">
   <a href="./assets/images/dagu-demo.mp4?raw=1">
-    <img src="./assets/images/dagu-demo.gif" width="720" alt="Dagu demo showing workflow definitions, the cockpit view, scheduling, built-in actions, and production features">
+    <img src="./assets/images/cockpit-demo-poster.jpg" width="720" alt="Dagu Cockpit showing queued, running, completed, and failed workflow runs">
   </a>
 </div>
 
-| Run Details | Step Logs |
-|---|---|
-| ![Run details in dark mode](./assets/images/readme-run-details-dark.png) | ![Workflow logs in dark mode](./assets/images/readme-logs-dark.png) |
+| Run Details | Step Logs | Wiki |
+|---|---|---|
+| ![Run details in dark mode](./assets/images/readme-run-details-dark.png) | ![Workflow logs in dark mode](./assets/images/readme-logs-dark.png) | ![Workflow Wiki in dark mode](./assets/images/readme-wiki-dark.png) |
 
 **Try it live:** [Live Demo](https://dagu-demo-f5e33d0e.dagu.sh) (credentials: `demouser` / `demouser`)
 
 ## Why Dagu?
+
+Orchestration is not your main work. You have scripts and containers that already work. You want a schedule, retries, dependencies, and a place to see logs. The usual options each have a cost:
+
+- **cron** runs commands, but gives you no dependencies, no retries, no history.
+- **Airflow** orchestrates, but you operate a platform for it (scheduler, metadata database, workers, a Python environment), and your jobs get rewritten as `@dag`/`@task` framework code.
+- **Temporal** gives durable execution, but your business logic moves into its SDK and programming model.
+
+You wanted to schedule some jobs. Now you operate a second system, and the orchestrator lives inside the code it was supposed to serve.
+
+Dagu treats workflow structure as configuration, not code. Order, dependencies, retries, schedules, and approvals go in one YAML file next to your scripts; the engine that runs them is a single process:
 
 ```sh
   Traditional Orchestrator          Dagu
@@ -51,6 +69,8 @@ For a quick look at how workflows are defined, see the examples.
   └────────────────────────┘         Adds scheduling, retries, and approvals around existing automation.
     6+ services to manage
 ```
+
+Your scripts never import the orchestrator. Delete the YAML and they run exactly as before. Keep it, and every run gets a dependency graph, retries, per-step logs, history, and a Web UI.
 
 ## Performance
 
@@ -89,6 +109,12 @@ curl -fsSL https://raw.githubusercontent.com/dagucloud/dagu/main/scripts/install
 brew install dagu
 ```
 
+**npm:**
+
+```sh
+npm install -g --ignore-scripts=false @dagucloud/dagu
+```
+
 **Windows (PowerShell):**
 
 ```powershell
@@ -111,7 +137,7 @@ helm install dagu dagu/dagu --set persistence.storageClass=<your-rwx-storage-cla
 
 > Replace `<your-rwx-storage-class>` with a StorageClass that supports `ReadWriteMany`. See [charts/dagu/README.md](./charts/dagu/README.md) for chart configuration.
 
-The script installers run a guided wizard that can add Dagu to your PATH, set it up as a background service, and create the initial admin account. Homebrew, npm, Docker, and Helm install without the wizard. See Installation docs for all options.
+The script installers run a guided wizard that can add Dagu to your PATH, set it up as a background service, and create the initial admin account. Homebrew, npm, Docker, and Helm install without the wizard. See the [Installation documentation](https://docs.dagu.sh/getting-started/installation/) for all options.
 
 ### Create and run a workflow
 
@@ -132,7 +158,7 @@ dagu start hello.yaml
 ### Start the server
 
 ```sh
-dagu start-all
+dagu start-all --dags .
 ```
 
 Visit http://localhost:8080
@@ -145,7 +171,7 @@ Dagu exposes a built-in MCP server from the running HTTP server. Start Dagu, the
 http://localhost:8080/mcp
 ```
 
-Use MCP when you want an AI agent to read Dagu state, preview or apply workflow changes, and start, enqueue, retry, or stop runs through `dagu_read`, `dagu_change`, and `dagu_execute`. See the MCP setup guide.
+Use MCP when you want an AI agent to read Dagu state and Wiki pages, preview or apply workflow and Wiki page changes, and start, enqueue, retry, or stop runs through `dagu_read`, `dagu_change`, and `dagu_execute`. See the [MCP setup guide](https://docs.dagu.sh/mcp/quickstart).
 
 For authoring-only help in Claude Code, Codex, Gemini CLI, and other AI coding tools, install the Dagu workflow authoring skill:
 
@@ -155,56 +181,42 @@ gh skill install dagucloud/dagu dagu
 
 ## How You Run Dagu?
 
-Run Dagu on one machine, scale out with distributed workers, or use a managed Dagu instance operated by us. See the Deployment Models guide.
+Run Dagu on one machine, or scale out with distributed workers. See the [Deployment Models guide](https://docs.dagu.sh/overview/deployment-models).
 
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <strong>Local Single-Server</strong><br>
-      <img src="./assets/images/deployment-model-local.gif" width="100%" alt="Local single-server deployment model with one Dagu server handling scheduling and execution.">
+      <strong>Single Server</strong><br>
+      <img src="./assets/images/deployment-model-local.gif" width="100%" alt="Single-server deployment model with one Dagu server handling scheduling and execution.">
     </td>
     <td width="50%" align="center" valign="top">
-      <strong>Self-Hosted</strong><br>
-      <img src="./assets/images/deployment-model-self-hosted.gif" width="100%" alt="Self-hosted deployment model with the Dagu server and workers running on your infrastructure.">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center" valign="top">
-      <strong>Managed Server</strong><br>
-      <img src="./assets/images/deployment-model-cloud.gif" width="100%" alt="Dagu Cloud deployment model with a managed Dagu server running in the cloud.">
-    </td>
-    <td width="50%" align="center" valign="top">
-      <strong>Hybrid</strong><br>
-      <img src="./assets/images/deployment-model-hybrid.gif" width="100%" alt="Hybrid deployment model with a managed Dagu Cloud server and private workers in your infrastructure.">
+      <strong>Distributed Workers</strong><br>
+      <img src="./assets/images/deployment-model-self-hosted.gif" width="100%" alt="Distributed-workers deployment model with the Dagu server dispatching to workers on separate machines.">
     </td>
   </tr>
 </table>
 
 | Model | Server | Execution | Best for |
 |------|--------|-----------|----------|
-| **Local single-server** | `dagu start-all` on one machine. | Same machine. | Development, single-machine scheduled workloads, edge jobs, and internal automation. |
-| **Self-hosted** | Dagu server on your infrastructure. | Local execution or distributed workers on your infrastructure. | Teams that need ownership of infrastructure. |
-| **Managed Server** | Full managed Dagu server in a dedicated, isolated gVisor instance on GKE. | Managed instance. | Teams that want Dagu operated for them without running the server themselves. |
-| **Hybrid** | Full managed Dagu server. | Private workers in your infrastructure over mTLS. | Docker steps, private networks, specialized hardware, or data-local work. |
+| **Single server** | `dagu start-all` on one machine. | Same machine. | Development, single-machine scheduled workloads, edge jobs, and internal automation. |
+| **Distributed workers** | Dagu server and coordinator on your infrastructure. | Workers on separate machines, routed by labels. | Heavier workloads, private networks, and multiple execution hosts. |
 
 ### Licensing
 
-- **Community self-host:** No license key required. You operate the server, storage, upgrades, networking, and workers. Start with the installation guide.
+- **Community self-host:** No license key required. You operate the server, storage, upgrades, networking, and workers. Start with the [installation guide](https://docs.dagu.sh/getting-started/installation/).
 - **Self-host license:** Adds SSO, RBAC, audit logging, and incident SaaS integration to Dagu. See [self-host licensing](https://dagu.sh/pricing#self-host).
-- **Dagu managed instance:** Includes its own managed license. Private workers can run on your infrastructure.
-
-Managed Dagu instances do not expose a Docker daemon or Docker socket. Workflows that need Docker step execution should use self-hosted Dagu or a private worker with Docker access.
 
 ## Key Features
 
 - **Observability:** Shared workflows and scheduling with clear visualizations, status tracking, and logs in the Web UI.
 - **Language-agnostic:** No framework required. Define workflow steps using shell commands, Docker containers, Kubernetes Jobs, SQL queries, HTTP requests, and any other tool via official and third-party Dagu Actions.
+- **Build workflows:** Reuse a step's result when its command and files have not changed. Dagu can also infer dependencies from matching file paths.
 - **Reproducibility:** Reproducible runs with pinned tools, plus automatic installation and caching on workers—eliminating the need to manually install dependencies on the server or workers.
 - **Built-in Approvals:** The Human-in-the-loop steps for manual approvals, review, and intervention in any workflow.
 - **MCP Server:** Built-in MCP server for authoring and running workflows via AI agents like Claude Code, Codex, Gemini CLI, Pi, OpenCode, and more.
 - **External CLI Harness:** You can run coding-agent CLIs (Claude Code, Codex, Gemini CLI, Pi, OpenCode, etc.) with a built-in harness action or custom harness definition.
 - **Secret management:** Built-in secret management with secure log masking, preventing credentials from leaking into logs or the Web UI.
-- **Self-host or managed:** Self-hosted via a single binary that runs on Linux, macOS, and Windows. Includes an optional distributed worker mode for scaling out execution across machines.
+- **Self-hosted:** A single binary that runs on Linux, macOS, and Windows. Includes an optional distributed worker mode for scaling out execution across machines.
 - **Permission Control:** RBAC and SSO support for team environments, controlling who can view, run, and edit workflows through granular permissions and audit logging.
 
 ## Architecture
@@ -261,20 +273,13 @@ Distributed:
 
 ## Parameter Definition
 
-Workflows can define parameters that render as typed input forms in the Web UI and can be passed as environment variables to steps.
+Workflows can define parameters that render as typed input forms in the Web UI and can be referenced by steps.
 
 ```yaml
 params:
-  - id: extract
-    run: ./scripts/extract.sh > data/raw.json
-    retry_policy:
-      limit: 3
-      interval_sec: 30
-
   - name: customer_id
     type: string
     description: Customer or account identifier
-
   - name: change_scope
     type: string
     description: What the repair is allowed to change
@@ -286,6 +291,17 @@ params:
   - name: dry_run
     type: boolean
     default: true
+
+steps:
+  - id: extract
+    run: >-
+      ./scripts/extract.sh
+      --customer "${params.customer_id}"
+      --scope "${params.change_scope}"
+      --dry-run="${params.dry_run}"
+    retry_policy:
+      limit: 3
+      interval_sec: 30
 ```
 
 <div align="center">
@@ -327,6 +343,38 @@ graph LR
     style D fill:#18181B,stroke:#3B82F6,stroke-width:1.6px,color:#fff
 ```
 
+### Reuse unchanged results
+
+Save this as `workflow.yaml`:
+
+```yaml
+type: build
+working_dir: .
+
+steps:
+  - id: uppercase
+    inputs:
+      - name: source
+        path: source.txt
+    outputs:
+      - name: result
+        path: uppercase.txt
+    run: |
+      #!/bin/sh
+      tr '[:lower:]' '[:upper:]' < "${inputs.source}" > "${outputs.result}"
+```
+
+Run it:
+
+```sh
+printf 'alpha\n' > source.txt
+dagu start workflow.yaml
+```
+
+Run `dagu start workflow.yaml` again and Dagu reuses `uppercase.txt`. Change `source.txt` and the step runs again. `${outputs.result}` is a temporary path that Dagu publishes as `uppercase.txt` after the command succeeds.
+
+Build workflows currently run locally. See [Build Workflows](https://docs.dagu.sh/writing-workflows/incremental-workflows) for dependency inference and reuse rules.
+
 ### External tools with pinning and caching
 
 ```yaml
@@ -346,7 +394,7 @@ steps:
         return {"total": sum(input["rows"])}
 ```
 
-Dagu installs declared portable CLIs before the DAG run, exposes them on `PATH` for host command steps, and caches them on each worker. Tool provisioning uses [aqua](https://aquaproj.github.io/) as the default provider. See the Tools documentation and Dagu Actions for more details.
+Dagu installs declared portable CLIs before the DAG run, exposes them on `PATH` for host command steps, and caches them on each worker. Tool provisioning uses [aqua](https://aquaproj.github.io/) as the default provider; the standard registry resolves to the latest aqua-registry release automatically. Pin a specific artifact with `package@version#sha256:<hex>` when the release tag alone is not a strong enough guarantee. See the [Tools documentation](https://docs.dagu.sh/writing-workflows/tools) and [Dagu Actions](https://docs.dagu.sh/dagu-actions/) for more details.
 
 ### Third-party Dagu Actions
 
@@ -362,10 +410,10 @@ steps:
 
   - id: audit
     depends: notify
-    run: echo "Notification result: ${notify.outputs.messageId}"
+    run: 'echo "Notification result: ${steps.notify.outputs.messageId}"'
 ```
 
-A third-party Dagu Action package contains a DAG, manifest, schemas, and helper files behind an `action:` reference. See the Dagu Actions and Third-Party Actions documentation for details.
+A third-party Dagu Action package contains a DAG, manifest, schemas, and helper files behind an `action:` reference. See the [Dagu Actions](https://docs.dagu.sh/dagu-actions/) and [Third-Party Actions](https://docs.dagu.sh/dagu-actions/third-party) documentation for details.
 
 ### Docker step
 
@@ -406,37 +454,41 @@ steps:
       command: cd /var/www && git pull && systemctl restart app
 ```
 
+Declare `ssh` once at the DAG level and every `run` step executes on that host:
+
+```yaml
+ssh:
+  user: deploy
+  host: web-1.internal
+  key: ~/.ssh/deploy_key
+
+steps:
+  - id: health
+    run: curl -f http://localhost:8080/health
+    retry_policy:
+      limit: 3
+      interval_sec: 10
+
+  - id: restart
+    run: systemctl restart myapp
+    depends: health
+```
+
 ### Sub-DAG composition
 
 ```yaml
 steps:
-  - name: extract
+  - id: etl
     action: dag.run
     with:
-      dag: etl/extract
+      dag: etl-pipeline
       params:
         SOURCE: s3://bucket/data.csv
-
-  - name: transform
-    action: dag.run
-    with:
-      dag: etl/transform
-      params:
-        INPUT: ${extract.outputs.result}
-    depends: extract
-
-  - name: load
-    action: dag.run
-    with:
-      dag: etl/load
-      params:
-        DATA: ${transform.outputs.result}
-    depends: transform
 
 ---
 
 # You can include multiple DAGs in the same YAML file, or reference DAGs defined in separate files.
-name: etl/extract
+name: etl-pipeline
 
 params:
   - SOURCE
@@ -445,10 +497,16 @@ tools:
   - aws/aws-cli@2.11.14
 
 steps:
-  - name: download
+  - id: download
     run: aws s3 cp ${params.SOURCE} data.csv
-    outputs:
-      result: data.csv
+
+  - id: transform
+    run: ./transform.sh data.csv
+    depends: download
+
+  - id: load
+    run: ./load.sh transformed.csv
+    depends: transform
 ```
 
 ### Retry and error handling
@@ -509,6 +567,42 @@ steps:
     depends: read_review
 ```
 
+### Scheduled agent review with human approval
+
+Runs as-is with the [Pi coding agent](https://pi.dev) installed (`npm install -g --ignore-scripts @earendil-works/pi-coding-agent`) and an `OPENROUTER_API_KEY` exported. The run pauses at `approve` until someone answers in the Web UI:
+
+```yaml
+schedule: "0 2 * * *"
+working_dir: .
+
+secrets:
+  - name: OPENROUTER_API_KEY
+    provider: env
+    key: OPENROUTER_API_KEY
+
+steps:
+  - id: review
+    action: harness.run
+    with:
+      provider: pi
+      model: openrouter/deepseek/deepseek-v4-flash
+      tools: read,bash
+      prompt: |
+        Review the most recent commit in this repository.
+        Reply with: what changed, one risk, a verdict.
+    output: REVIEW
+
+  - id: approve
+    action: human.task
+    with:
+      prompt: Publish this review?
+    depends: review
+
+  - id: publish
+    run: echo "$REVIEW"
+    depends: approve
+```
+
 ### LLM-driven workflow where the model chooses each step
 
 ```yaml
@@ -559,9 +653,12 @@ With `type: controller` the steps stop being a plan and become a catalog of
 actions; `tasks` declares the goals and ends the run once all are settled. The
 model decides what runs next, so a failing test can be fixed and retried without
 that path being wired in advance. When it opens the human task the run releases
-its worker slot and resumes on the same run once someone answers.
+its worker slot and resumes on the same run once someone answers. `llm.model`
+also accepts an array of models; the controller fails over to the next model
+when a request fails, and a successful fallback stays selected for the rest of
+the run.
 
-For more examples, see the Examples documentation.
+For more examples, see the [Examples documentation](https://docs.dagu.sh/writing-workflows/examples).
 
 ## Built-in Actions
 
@@ -620,7 +717,7 @@ actions:
       action: http.request
       with:
         method: POST
-        url: {{ .input.url }}
+        url: '{{ .input.url }}'
         headers:
           Content-Type: application/json
         body: |
@@ -633,7 +730,7 @@ steps:
       text: deploy complete
 ```
 
-See Custom Actions and the YAML Specification for the exact `actions`, `action`, and `run` field behavior.
+See [Custom Actions](https://docs.dagu.sh/dagu-actions/custom) and the [YAML Specification](https://docs.dagu.sh/writing-workflows/yaml-specification) for the exact `actions`, `action`, and `run` field behavior.
 
 ## Official Dagu Actions
 
@@ -649,9 +746,9 @@ Dagu Actions are official action packages maintained in the `dagucloud` GitHub o
 | `github-cli@v1` | Run GitHub issue, pull request, release, repository, and API automation through `gh` |
 | `rclone@v1` | Run portable copy, sync, check, list, and storage-management workflows through rclone |
 
-Versions are required. Pin production workflows to a version tag or commit SHA. See Official Dagu Actions for the current Dagu Action list and exact input/output contracts.
+Versions are required. Pin production workflows to a version tag or commit SHA. See [Official Dagu Actions](https://docs.dagu.sh/dagu-actions/official) for the current Dagu Action list and exact input/output contracts.
 
-For non-official packages, use Third-Party Actions such as `action: owner/repo@version`. They contain a `dagu-action.yaml` manifest and a DAG entrypoint, run as sub-DAGs, and are transferred to distributed workers as workspace bundles after the reference is resolved. See Third-Party Actions for package layout and reference formats.
+For non-official packages, use [Third-Party Actions](https://docs.dagu.sh/dagu-actions/third-party) such as `action: owner/repo@version`. They contain a `dagu-action.yaml` manifest and a DAG entrypoint, run as sub-DAGs, and are transferred to distributed workers as workspace bundles after the reference is resolved. See the documentation for package layout and reference formats.
 
 ## Security and Access Control
 
@@ -694,7 +791,7 @@ For self-hosted production deployments, treat network exposure and execution bou
 - In distributed deployments, set `peer.insecure=false` and configure peer TLS when coordinator and workers communicate across host or network boundaries.
 - Treat Docker socket mounts, root containers, and host-level executors as privileged access to the underlying machine.
 
-See Server Configuration, Docker deployment, and Distributed execution for the operator-focused guidance.
+See [Server Configuration](https://docs.dagu.sh/server-admin/configuration), [Docker deployment](https://docs.dagu.sh/server-admin/deployment/docker), and [Distributed execution](https://docs.dagu.sh/server-admin/distributed/) for operator-focused guidance.
 
 ## Observability
 
@@ -734,7 +831,7 @@ Dagu runs can write arbitrary files under `${context.paths.artifacts_dir}` in va
 
 This is useful for generated reports, screenshots, charts, exported JSON or CSV files, and other outputs that do not fit simple key/value outputs.
 
-See the Artifacts documentation and the Web UI guide for the full artifact browser workflow and screenshots.
+See the [Artifacts documentation](https://docs.dagu.sh/writing-workflows/artifacts) and the [Web UI guide](https://docs.dagu.sh/overview/web-ui) for the full artifact browser workflow and screenshots.
 
 ## Scheduling and Reliability
 
@@ -766,7 +863,7 @@ dagu coordinator
 DAGU_WORKER_LABELS=gpu=true,memory=64G dagu worker
 ```
 
-See the distributed execution documentation for setup details.
+See the [distributed execution documentation](https://docs.dagu.sh/server-admin/distributed/) for setup details.
 
 ## CLI Reference
 
@@ -791,16 +888,133 @@ See the distributed execution documentation for setup details.
 | `dagu cleanup <dag>` | Clean up old run data |
 | `dagu version` | Show version |
 
+The table lists the most common commands. The binary ships 31 in total, including `exec`, `ls`, `ps`, `rm`, `sync`, `schema`, `example`, `config`, `profile`, `context`, `license`, `upgrade`, and `completion`; run `dagu --help` or see the [CLI reference](https://docs.dagu.sh/getting-started/cli) for all of them.
+
 ## Environment Variables
 
 **Precedence:** Command-line flags > Environment variables > Configuration file (`~/.config/dagu/config.yaml`)
+
+### Server
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DAGU_HOST` | `127.0.0.1` | Bind address |
+| `DAGU_PORT` | `8080` | HTTP port |
+| `DAGU_BASE_PATH` | — | Base path for reverse proxy |
+| `DAGU_HEADLESS` | `false` | Run without web UI |
+| `DAGU_TZ` | — | Timezone (e.g., `Asia/Tokyo`) |
+| `DAGU_LOG_FORMAT` | `text` | `text` or `json` |
+| `DAGU_CERT_FILE` | — | TLS certificate |
+| `DAGU_KEY_FILE` | — | TLS private key |
+| `DAGU_CORS_ALLOWED_ORIGINS` | — | Comma-separated list of allowed CORS origins (e.g. `https://app.example.com`). When unset, cross-origin browser access is disabled. Exact origins enable credentials. An explicit `*` allows every origin without credentials and emits a security warning. |
+| `DAGU_PUBLIC_URL` | — | External Web UI URL used in generated links, including notification and incident DAG-run links |
+| `DAGU_SERVER_METRICS` | `private` | Metrics endpoint access: `private` or `public` |
+| `DAGU_TERMINAL_ENABLED` | `false` | Enable the web-based terminal |
+| `DAGU_DEFAULT_SHELL` | `$SHELL`, then `sh` | Default shell for command steps |
+| `DAGU_ENV_PASSTHROUGH_PREFIXES` | — | Comma-separated env var prefixes forwarded to step execution |
+| `DAGU_DEBUG` | — | Enable debug mode |
+
+### Paths
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DAGU_HOME` | — | Overrides all path defaults |
+| `DAGU_DAGS_DIR` | `~/.config/dagu/dags` | DAG definitions directory |
+| `DAGU_DAG_DISCOVERY_RECURSIVE` | `false` | Discover DAGs in subdirectories |
+| `DAGU_DAG_DISCOVERY_SYMLINKS` | `false` | Include recursive file symlinks and allow external targets |
+| `DAGU_LOG_DIR` | `~/.local/share/dagu/logs` | Log files |
+| `DAGU_DATA_DIR` | `~/.local/share/dagu/data` | Application state |
+| `DAGU_TOOLS_DIR` | `{DAGU_DATA_DIR}/tools` | Managed DAG tool cache |
+| `DAGU_DAG_STATE_DIR` | `{DAGU_DATA_DIR}/dag-state` | Persistent DAG state files |
+| `DAGU_BASE_CONFIG` | — | Shared base configuration applied to all DAGs |
+
+Recursive discovery can also be enabled in `config.yaml`:
+
+```yaml
+dag_discovery:
+  recursive: true
+```
+
+It scans `paths.dags_dir`, excluding `workspaces/`, dot-directories, and symlinks. File stems and effective DAG names must each be unique, using case-sensitive comparison; conflicting files are excluded until the conflict is resolved. `paths.alt_dags_dir` remains lookup-only.
+
+Set `dag_discovery.symlinks: true` (or
+`DAGU_DAG_DISCOVERY_SYMLINKS=true`) to include YAML file symlinks in recursive
+discovery and to allow YAML file symlinks whose targets are outside
+`paths.dags_dir`. Symlinked directories are never traversed. External targets
+can be viewed, scheduled, and run, but cannot be updated, deleted, or renamed
+through Dagu. Without the opt-in, top-level YAML file symlinks whose targets
+remain inside `paths.dags_dir` continue to work. A symlink configured as
+`paths.dags_dir` itself is also supported.
+
+### Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DAGU_AUTH_MODE` | `builtin` | `none`, `basic`, or `builtin` |
+| `DAGU_AUTH_BASIC_USERNAME` | — | Basic auth username |
+| `DAGU_AUTH_BASIC_PASSWORD` | — | Basic auth password |
+| `DAGU_AUTH_TOKEN_SECRET` | (auto) | JWT signing secret |
+| `DAGU_AUTH_TOKEN_TTL` | `24h` | JWT token lifetime (maximum: `8760h` / 365 days) |
+| `DAGU_AUTH_BUILTIN_INITIAL_ADMIN_USERNAME` | — | Auto-provision the first admin on startup (requires the password variable) |
+| `DAGU_AUTH_BUILTIN_INITIAL_ADMIN_PASSWORD` | — | Password for the auto-provisioned admin (minimum 8 characters) |
+| `DAGU_LICENSE_KEY` | — | License key for licensed self-host features |
+
+OIDC variables: `DAGU_AUTH_OIDC_CLIENT_ID`, `DAGU_AUTH_OIDC_CLIENT_SECRET`, `DAGU_AUTH_OIDC_ISSUER`, `DAGU_AUTH_OIDC_SCOPES`, `DAGU_AUTH_OIDC_WHITELIST`, `DAGU_AUTH_OIDC_AUTO_SIGNUP`, `DAGU_AUTH_OIDC_DEFAULT_ROLE`, `DAGU_AUTH_OIDC_ALLOWED_DOMAINS`.
+
+### Scheduler
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DAGU_SCHEDULER_PORT` | `8090` | Health check port |
+| `DAGU_SCHEDULER_ZOMBIE_DETECTION_INTERVAL` | `45s` | Zombie run detection interval (`0` to disable) |
+| `DAGU_SCHEDULER_LOCK_STALE_THRESHOLD` | `30s` | HA lock stale threshold |
+| `DAGU_QUEUE_ENABLED` | `true` | Enable queue system |
+
+### Coordinator / Worker
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DAGU_COORDINATOR_HOST` | `127.0.0.1` | Coordinator bind address |
+| `DAGU_COORDINATOR_PORT` | `50055` | Coordinator gRPC port |
+| `DAGU_COORDINATOR_HEALTH_PORT` | `8091` | Coordinator health check port |
+| `DAGU_WORKER_ID` | — | Worker instance ID |
+| `DAGU_WORKER_MAX_ACTIVE_RUNS` | `100` | Max concurrent runs per worker |
+| `DAGU_WORKER_HEALTH_PORT` | `8092` | Worker health check port |
+| `DAGU_WORKER_LABELS` | — | Worker labels (`key=value,key=value`) |
+| `DAGU_COORDINATOR_ADVERTISE` | auto-detected hostname | Address advertised in the service registry |
+| `DAGU_WORKER_COORDINATORS` | — | Explicit coordinator addresses for shared-nothing mode |
+
+### Peer TLS (gRPC)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DAGU_PEER_CERT_FILE` | — | Peer TLS certificate |
+| `DAGU_PEER_KEY_FILE` | — | Peer TLS private key |
+| `DAGU_PEER_CLIENT_CA_FILE` | — | CA for client verification |
+| `DAGU_PEER_INSECURE` | `true` | Use h2c instead of TLS |
+| `DAGU_PEER_SKIP_TLS_VERIFY` | — | Skip TLS certificate verification |
+
+### Git Sync
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DAGU_GITSYNC_ENABLED` | `false` | Enable Git sync |
+| `DAGU_GITSYNC_REPOSITORY` | — | Repository URL |
+| `DAGU_GITSYNC_BRANCH` | `main` | Branch to sync |
+| `DAGU_GITSYNC_AUTH_TYPE` | `token` | `token` or `ssh` |
+| `DAGU_GITSYNC_AUTH_TOKEN` | — | Personal access token for HTTPS auth |
+| `DAGU_GITSYNC_AUTH_SSH_KEY_PATH` | — | Path to the SSH private key |
+| `DAGU_GITSYNC_AUTOSYNC_ENABLED` | `false` | Enable periodic auto-pull |
+| `DAGU_GITSYNC_AUTOSYNC_INTERVAL` | `300` | Sync interval in seconds |
+
+These tables cover the variables most deployments touch. The full reference lists about 180 `DAGU_*` variables, including SSE, tunnel, UI, monitoring, audit, and secret-provider settings: see the [configuration reference](https://docs.dagu.sh/server-admin/reference).
 
 ## Embedded Go API (Experimental)
 
 Go applications can import Dagu and start DAG runs from the host process:
 
 ```go
-import "github.com/dagucloud/dagu"
+import "github.com/dagucloud/dagu/v2"
 ```
 
 ```go
@@ -832,91 +1046,13 @@ if err != nil {
 fmt.Println(status.Status)
 ```
 
-The embedded API is experimental and may change. See the embedded API documentation and [examples/embedded](./examples/embedded).
-
-### Server
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DAGU_HOST` | `127.0.0.1` | Bind address |
-| `DAGU_PORT` | `8080` | HTTP port |
-| `DAGU_BASE_PATH` | — | Base path for reverse proxy |
-| `DAGU_HEADLESS` | `false` | Run without web UI |
-| `DAGU_TZ` | — | Timezone (e.g., `Asia/Tokyo`) |
-| `DAGU_LOG_FORMAT` | `text` | `text` or `json` |
-| `DAGU_CERT_FILE` | — | TLS certificate |
-| `DAGU_KEY_FILE` | — | TLS private key |
-| `DAGU_CORS_ALLOWED_ORIGINS` | — | Comma-separated list of allowed CORS origins (e.g. `https://app.example.com`). When unset, cross-origin browser access is disabled. Exact origins enable credentials. An explicit `*` allows every origin without credentials and emits a security warning. |
-
-### Paths
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DAGU_HOME` | — | Overrides all path defaults |
-| `DAGU_DAGS_DIR` | `~/.config/dagu/dags` | DAG definitions directory |
-| `DAGU_LOG_DIR` | `~/.local/share/dagu/logs` | Log files |
-| `DAGU_DATA_DIR` | `~/.local/share/dagu/data` | Application state |
-| `DAGU_TOOLS_DIR` | `{DAGU_DATA_DIR}/tools` | Managed DAG tool cache |
-| `DAGU_DAG_STATE_DIR` | `{DAGU_DATA_DIR}/dag-state` | Persistent DAG state files |
-
-### Authentication
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DAGU_AUTH_MODE` | `builtin` | `none`, `basic`, or `builtin` |
-| `DAGU_AUTH_BASIC_USERNAME` | — | Basic auth username |
-| `DAGU_AUTH_BASIC_PASSWORD` | — | Basic auth password |
-| `DAGU_AUTH_TOKEN_SECRET` | (auto) | JWT signing secret |
-| `DAGU_AUTH_TOKEN_TTL` | `24h` | JWT token lifetime (maximum: `8760h` / 365 days) |
-
-OIDC variables: `DAGU_AUTH_OIDC_CLIENT_ID`, `DAGU_AUTH_OIDC_CLIENT_SECRET`, `DAGU_AUTH_OIDC_ISSUER`, `DAGU_AUTH_OIDC_SCOPES`, `DAGU_AUTH_OIDC_WHITELIST`, `DAGU_AUTH_OIDC_AUTO_SIGNUP`, `DAGU_AUTH_OIDC_DEFAULT_ROLE`, `DAGU_AUTH_OIDC_ALLOWED_DOMAINS`.
-
-### Scheduler
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DAGU_SCHEDULER_PORT` | `8090` | Health check port |
-| `DAGU_SCHEDULER_ZOMBIE_DETECTION_INTERVAL` | `45s` | Zombie run detection interval (`0` to disable) |
-| `DAGU_SCHEDULER_LOCK_STALE_THRESHOLD` | `30s` | HA lock stale threshold |
-| `DAGU_QUEUE_ENABLED` | `true` | Enable queue system |
-
-### Coordinator / Worker
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DAGU_COORDINATOR_HOST` | `127.0.0.1` | Coordinator bind address |
-| `DAGU_COORDINATOR_PORT` | `50055` | Coordinator gRPC port |
-| `DAGU_COORDINATOR_HEALTH_PORT` | `8091` | Coordinator health check port |
-| `DAGU_WORKER_ID` | — | Worker instance ID |
-| `DAGU_WORKER_MAX_ACTIVE_RUNS` | `100` | Max concurrent runs per worker |
-| `DAGU_WORKER_HEALTH_PORT` | `8092` | Worker health check port |
-| `DAGU_WORKER_LABELS` | — | Worker labels (`key=value,key=value`) |
-
-### Peer TLS (gRPC)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DAGU_PEER_CERT_FILE` | — | Peer TLS certificate |
-| `DAGU_PEER_KEY_FILE` | — | Peer TLS private key |
-| `DAGU_PEER_CLIENT_CA_FILE` | — | CA for client verification |
-| `DAGU_PEER_INSECURE` | `true` | Use h2c instead of TLS |
-
-### Git Sync
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DAGU_GITSYNC_ENABLED` | `false` | Enable Git sync |
-| `DAGU_GITSYNC_REPOSITORY` | — | Repository URL |
-| `DAGU_GITSYNC_BRANCH` | `main` | Branch to sync |
-| `DAGU_GITSYNC_AUTH_TYPE` | `token` | `token` or `ssh` |
-| `DAGU_GITSYNC_AUTOSYNC_ENABLED` | `false` | Enable periodic auto-pull |
-| `DAGU_GITSYNC_AUTOSYNC_INTERVAL` | `300` | Sync interval in seconds |
+The embedded API is experimental and may change. See the [embedded API documentation](https://docs.dagu.sh/embedding/go-api) and [examples/embedded](./examples/embedded).
 
 ## Community
 
 - [Discord](https://discord.gg/gpahPUjGRk) — Questions and discussion
 - [GitHub Issues](https://github.com/dagucloud/dagu/issues) — Bug reports and feature requests
-- [Bluesky](https://bsky.app/profile/dagu-org.bsky.social)
+- [Bluesky](https://bsky.app/profile/dagu-sh.bsky.social)
 
 ## Development
 
@@ -935,8 +1071,8 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for development workflow and code stand
 
 <div align="center">
   <h3>Premium Sponsors</h3>
-  <a href="https://github.com/slashbinlabs">
-    <img src="https://wsrv.nl/?url=https%3A%2F%2Fgithub.com%2Fslashbinlabs.png&w=150&h=150&fit=cover&mask=circle" width="100" height="100" alt="@slashbinlabs">
+  <a href="https://slashbinlabs.com/">
+    <img src="https://wsrv.nl/?url=https%3A%2F%2Fslashbinlabs.com%2Flogo.png&w=150&h=150&fit=cover&mask=circle" width="100" height="100" alt="/bin labs">
   </a>
 
   <h3>Supporters</h3>

@@ -12,13 +12,13 @@ import (
 	"slices"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	coreexec "github.com/dagucloud/dagu/internal/core/exec"
-	iengine "github.com/dagucloud/dagu/internal/engine"
-	"github.com/dagucloud/dagu/internal/persis/file"
-	"github.com/dagucloud/dagu/internal/persis/store"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/dagstore"
+	iengine "github.com/dagucloud/dagu/v2/internal/engine"
+	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	"github.com/dagucloud/dagu/v2/internal/persis/store"
 
-	_ "github.com/dagucloud/dagu/internal/runtime/builtin" // Register built-in executors for embedded use.
+	_ "github.com/dagucloud/dagu/v2/internal/runtime/builtin" // Register built-in executors for embedded use.
 )
 
 // ExecutionMode controls how a DAG run is dispatched.
@@ -152,6 +152,7 @@ type runOptions struct {
 	workerSelector    map[string]string
 	labels            []string
 	dryRun            bool
+	noReuse           bool
 }
 
 // New creates an embedded Dagu engine.
@@ -398,6 +399,13 @@ func WithDryRun(enabled bool) RunOption {
 	}
 }
 
+// WithNoReuse forces build steps to recompute for this run.
+func WithNoReuse(enabled bool) RunOption {
+	return func(o *runOptions) {
+		o.noReuse = enabled
+	}
+}
+
 func internalOptions(opts Options) iengine.Options {
 	out := iengine.Options{
 		HomeDir:            opts.HomeDir,
@@ -444,7 +452,7 @@ func filePersistenceFactory(ctx context.Context, cfg *config.Config) (iengine.Pe
 	}, nil
 }
 
-func fileEngineDAGStore(_ context.Context, cfg *config.Config, opts iengine.DAGStoreFactoryOptions) (coreexec.DAGStore, error) {
+func fileEngineDAGStore(_ context.Context, cfg *config.Config, opts iengine.DAGStoreFactoryOptions) (dagstore.DAGStore, error) {
 	var fileOpts []file.DAGStoreOption
 	if len(opts.SearchPaths) > 0 {
 		fileOpts = append(fileOpts, file.WithDAGSearchPaths(opts.SearchPaths))
@@ -490,6 +498,7 @@ func internalRunOptions(opts runOptions) iengine.RunOptions {
 		WorkerSelector:    opts.workerSelector,
 		Labels:            opts.labels,
 		DryRun:            opts.dryRun,
+		NoReuse:           opts.noReuse,
 	}
 }
 

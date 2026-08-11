@@ -8,12 +8,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
-	daguapi "github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/core/exec"
+	daguapi "github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	frontendapi "github.com/dagucloud/dagu/v2/internal/service/frontend/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/wiki"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -23,9 +27,17 @@ const (
 	readTargetDAGs       = "dags"
 	readTargetDAG        = "dag"
 	readTargetDAGSpec    = "dag_spec"
-	readTargetRuns       = "runs"
-	readTargetRun        = "run"
-	readTargetRunLogs    = "run_logs"
+	readTargetWiki       = "wiki"
+	readTargetWikiPage   = "wiki_page"
+	readTargetWikiSearch = "wiki_search"
+
+	legacyReadTargetDocs      = "docs"
+	legacyReadTargetDoc       = "doc"
+	legacyReadTargetDocSearch = "doc_search"
+	readTargetRuns            = "runs"
+	readTargetRun             = "run"
+	readTargetRunLogs         = "run_logs"
+	readTargetStepLog         = "step_log"
 
 	readErrorInvalidToolInput      = "invalid_tool_input"
 	readErrorInvalidResourceURI    = "invalid_resource_uri"
@@ -35,25 +47,43 @@ const (
 	readErrorResourceUnavailable   = "resource_unavailable"
 	readErrorInternal              = "internal_error"
 
-	readFieldTarget   = "target"
-	readFieldName     = "name"
-	readFieldDAGRunID = "dagRunId"
-	readFieldQuery    = "query"
-	readFieldURI      = "uri"
+	readFieldTarget    = "target"
+	readFieldName      = "name"
+	readFieldDAGRunID  = "dagRunId"
+	readFieldStepName  = "stepName"
+	readFieldQuery     = "query"
+	readFieldWorkspace = "workspace"
+	readFieldPath      = "path"
+	readFieldSearch    = "search"
+	readFieldPrefix    = "prefix"
+	readFieldCursor    = "cursor"
+	readFieldLimit     = "limit"
+	readFieldURI       = "uri"
 
 	readResourceScheme = "dagu"
 
-	readResourceReferenceCollectionURI = "dagu://reference"
-	readResourceDAGsCollectionURI      = "dagu://dags"
-	readResourceRunsCollectionURI      = "dagu://runs"
+	readResourceReferenceCollectionURI  = "dagu://reference"
+	readResourceDAGsCollectionURI       = "dagu://dags"
+	readResourceWikiCollectionURI       = "dagu://wiki"
+	legacyReadResourceDocsCollectionURI = "dagu://docs"
+	readResourceRunsCollectionURI       = "dagu://runs"
+
+	readWikiSearchMaxLimit = 50
 )
 
 type readInput struct {
-	Target   string `json:"target" jsonschema:"Read target: dags, dag, dag_spec, runs, run, run_logs, or reference."`
-	Name     string `json:"name,omitempty" jsonschema:"DAG name for dag, dag_spec, run, and run_logs targets."`
-	DAGRunID string `json:"dagRunId,omitempty" jsonschema:"DAG-run ID for run and run_logs targets. The value latest is accepted where Dagu accepts it."`
-	Query    string `json:"query,omitempty" jsonschema:"URL query string for list targets, for example page=1&perPage=100 or status=running."`
-	URI      string `json:"uri,omitempty" jsonschema:"Resource URI to read directly, for example dagu://reference/authoring."`
+	Target    string `json:"target" jsonschema:"Read target: dags, dag, dag_spec, wiki, wiki_page, wiki_search, runs, run, run_logs, step_log, or reference."`
+	Name      string `json:"name,omitempty" jsonschema:"DAG name for dag, dag_spec, run, run_logs, and step_log targets."`
+	DAGRunID  string `json:"dagRunId,omitempty" jsonschema:"DAG-run ID for run, run_logs, and step_log targets. The value latest is accepted where Dagu accepts it."`
+	StepName  string `json:"stepName,omitempty" jsonschema:"Step name for the step_log target."`
+	Query     string `json:"query,omitempty" jsonschema:"URL query string for list targets, for example page=1&perPage=100 or status=running."`
+	Workspace string `json:"workspace,omitempty" jsonschema:"Wiki workspace: all, default, or a workspace name. Required for wiki_page and optional for wiki and wiki_search."`
+	Path      string `json:"path,omitempty" jsonschema:"Wiki page path without the .md extension. Required for wiki_page."`
+	Search    string `json:"search,omitempty" jsonschema:"Wiki search text. Required for wiki_search."`
+	Prefix    string `json:"prefix,omitempty" jsonschema:"Wiki page path prefix. Optional for wiki and wiki_search."`
+	Cursor    string `json:"cursor,omitempty" jsonschema:"Opaque cursor returned by wiki_search."`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Maximum wiki_search results to return, from 1 to 50."`
+	URI       string `json:"uri,omitempty" jsonschema:"Resource URI to read directly, for example dagu://reference/authoring."`
 }
 
 func readToolInputSchema() json.RawMessage {
@@ -62,7 +92,7 @@ func readToolInputSchema() json.RawMessage {
 		"properties": {
 			"target": {
 				"type": "string",
-				"description": "Read target: references, reference, dags, dag, dag_spec, runs, run, or run_logs."
+				"description": "Read target: references, reference, dags, dag, dag_spec, wiki, wiki_page, wiki_search, runs, run, run_logs, or step_log. The docs, doc, and doc_search aliases are deprecated."
 			},
 			"name": {
 				"type": "string",
@@ -70,11 +100,41 @@ func readToolInputSchema() json.RawMessage {
 			},
 			"dagRunId": {
 				"type": "string",
-				"description": "DAG-run identifier for run and run_logs targets."
+				"description": "DAG-run identifier for run, run_logs, and step_log targets."
+			},
+			"stepName": {
+				"type": "string",
+				"description": "Step name for the step_log target."
 			},
 			"query": {
 				"type": "string",
 				"description": "URL query string without a leading question mark."
+			},
+			"workspace": {
+				"type": "string",
+				"description": "Wiki workspace: all, default, or a workspace name. Required for wiki_page and optional for wiki and wiki_search."
+			},
+			"path": {
+				"type": "string",
+				"description": "Wiki page path without the .md extension. Required for wiki_page."
+			},
+			"search": {
+				"type": "string",
+				"description": "Wiki search text. Required for wiki_search."
+			},
+			"prefix": {
+				"type": "string",
+				"description": "Wiki page path prefix. Optional for wiki and wiki_search."
+			},
+			"cursor": {
+				"type": "string",
+				"description": "Opaque cursor returned by wiki_search."
+			},
+			"limit": {
+				"type": "integer",
+				"minimum": 1,
+				"maximum": 50,
+				"description": "Maximum number of wiki_search results to return."
 			},
 			"uri": {
 				"type": "string",
@@ -160,6 +220,22 @@ func (svc *Service) readToolImpl(ctx context.Context, input readInput) (*mcpsdk.
 				data = normalizeDAGSpec(raw, input.Name)
 			}
 		}
+	case readTargetWiki:
+		if err = svc.requireAPI(); err == nil {
+			data, err = svc.listWikiPages(ctx, input.Workspace, input.Query)
+		}
+	case readTargetWikiPage:
+		if err = svc.requireAPI(); err == nil {
+			var page daguapi.WikiPageResponse
+			page, err = svc.getWikiPage(ctx, input.Workspace, input.Path)
+			if err == nil {
+				data = normalizeWikiPage(page, input.Workspace)
+			}
+		}
+	case readTargetWikiSearch:
+		if err = svc.requireAPI(); err == nil {
+			data, err = svc.searchWikiPages(ctx, input.Workspace, input.Search, input.Prefix, input.Cursor, input.Limit)
+		}
 	case readTargetRuns:
 		if err = svc.requireAPI(); err == nil {
 			var raw any
@@ -184,6 +260,14 @@ func (svc *Service) readToolImpl(ctx context.Context, input readInput) (*mcpsdk.
 			}
 			data, err = svc.api.GetDAGRunLogsData(ctx, identifier)
 		}
+	case readTargetStepLog:
+		if err = svc.requireAPI(); err == nil {
+			data, err = svc.api.GetStepLogDataByRef(
+				ctx,
+				ir.NewDAGRunRef(input.Name, input.DAGRunID),
+				input.StepName,
+			)
+		}
 	default:
 		return nil, nil, unsupportedReadTargetError(input.Target)
 	}
@@ -195,6 +279,20 @@ func (svc *Service) readToolImpl(ctx context.Context, input readInput) (*mcpsdk.
 		"target":     input.Target,
 		"data":       data,
 		"references": defaultReferenceURIs(),
+	}
+	if input.Target == readTargetStepLog {
+		output["name"] = input.Name
+		output["dagRunId"] = input.DAGRunID
+		output["stepName"] = input.StepName
+	}
+	if input.Workspace != "" {
+		output["workspace"] = input.Workspace
+	}
+	if input.Path != "" {
+		output["path"] = input.Path
+	}
+	if input.Prefix != "" {
+		output["prefix"] = input.Prefix
 	}
 	if input.URI != "" {
 		output["uri"] = input.URI
@@ -214,6 +312,7 @@ func parseReadToolInput(raw json.RawMessage) (readInput, *readToolError) {
 	}
 
 	values := make(map[string]string, len(fields))
+	limit := 0
 	emptyTarget := false
 	for field, value := range fields {
 		if !isReadInputField(field) {
@@ -225,6 +324,15 @@ func parseReadToolInput(raw json.RawMessage) (readInput, *readToolError) {
 		}
 
 		if string(value) == "null" {
+			continue
+		}
+		if field == readFieldLimit {
+			if err := json.Unmarshal(value, &limit); err != nil {
+				return readInput{}, invalidToolInput("Field limit must be an integer.", readFieldLimit)
+			}
+			if limit < 1 || limit > readWikiSearchMaxLimit {
+				return readInput{}, invalidToolInput("Field limit must be between 1 and 50.", readFieldLimit)
+			}
 			continue
 		}
 		var text string
@@ -243,7 +351,18 @@ func parseReadToolInput(raw json.RawMessage) (readInput, *readToolError) {
 
 	if values[readFieldURI] != "" {
 		var mixed []string
-		for _, field := range []string{readFieldTarget, readFieldName, readFieldDAGRunID, readFieldQuery} {
+		for _, field := range []string{
+			readFieldTarget,
+			readFieldName,
+			readFieldDAGRunID,
+			readFieldStepName,
+			readFieldQuery,
+			readFieldWorkspace,
+			readFieldPath,
+			readFieldSearch,
+			readFieldPrefix,
+			readFieldCursor,
+		} {
 			if values[field] != "" {
 				mixed = append(mixed, field)
 			}
@@ -261,10 +380,13 @@ func parseReadToolInput(raw json.RawMessage) (readInput, *readToolError) {
 			}
 			return readInput{}, readErr
 		}
+		if limit != 0 {
+			return readInput{}, invalidToolInput("URI mode cannot be combined with target-mode fields.", readFieldLimit)
+		}
 		return parseReadResourceURI(values[readFieldURI])
 	}
 
-	target := values[readFieldTarget]
+	target := canonicalReadTarget(values[readFieldTarget])
 	if target == "" {
 		if emptyTarget {
 			return readInput{}, invalidToolInput("The target field is required for target mode.", readFieldTarget)
@@ -273,10 +395,17 @@ func parseReadToolInput(raw json.RawMessage) (readInput, *readToolError) {
 	}
 
 	input := readInput{
-		Target:   target,
-		Name:     values[readFieldName],
-		DAGRunID: values[readFieldDAGRunID],
-		Query:    values[readFieldQuery],
+		Target:    target,
+		Name:      values[readFieldName],
+		DAGRunID:  values[readFieldDAGRunID],
+		StepName:  values[readFieldStepName],
+		Query:     values[readFieldQuery],
+		Workspace: values[readFieldWorkspace],
+		Path:      values[readFieldPath],
+		Search:    values[readFieldSearch],
+		Prefix:    values[readFieldPrefix],
+		Cursor:    values[readFieldCursor],
+		Limit:     limit,
 	}
 	if err := validateTargetReadInput(&input); err != nil {
 		return readInput{}, err
@@ -286,10 +415,34 @@ func parseReadToolInput(raw json.RawMessage) (readInput, *readToolError) {
 
 func isReadInputField(field string) bool {
 	switch field {
-	case readFieldTarget, readFieldName, readFieldDAGRunID, readFieldQuery, readFieldURI:
+	case readFieldTarget,
+		readFieldName,
+		readFieldDAGRunID,
+		readFieldStepName,
+		readFieldQuery,
+		readFieldWorkspace,
+		readFieldPath,
+		readFieldSearch,
+		readFieldPrefix,
+		readFieldCursor,
+		readFieldLimit,
+		readFieldURI:
 		return true
 	default:
 		return false
+	}
+}
+
+func canonicalReadTarget(target string) string {
+	switch target {
+	case legacyReadTargetDocs:
+		return readTargetWiki
+	case legacyReadTargetDoc:
+		return readTargetWikiPage
+	case legacyReadTargetDocSearch:
+		return readTargetWikiSearch
+	default:
+		return target
 	}
 }
 
@@ -339,6 +492,54 @@ func parseReadResourceURI(rawURI string) (readInput, *readToolError) {
 		default:
 			return readInput{}, invalidResourceURI(rawURI, "Unsupported DAG resource path.")
 		}
+	case readTargetWiki, legacyReadTargetDocs:
+		switch len(resource.segments) {
+		case 0:
+			if err := validateReadQuery(readTargetWiki, resource.query, true, rawURI); err != nil {
+				return readInput{}, err
+			}
+			return readInput{
+				Target:    readTargetWiki,
+				Workspace: "all",
+				Query:     resource.query,
+				URI:       uriWithQuery(readResourceWikiCollectionURI, resource.query),
+			}, nil
+		case 1:
+			if resource.segments[0] == "all" {
+				return readInput{}, invalidResourceURI(rawURI, "Use dagu://wiki for the all-workspaces collection.")
+			}
+			if err := validateReadQuery(readTargetWiki, resource.query, true, rawURI); err != nil {
+				return readInput{}, err
+			}
+			return readInput{
+				Target:    readTargetWiki,
+				Workspace: resource.segments[0],
+				Query:     resource.query,
+				URI:       uriWithQuery(wikiCollectionURI(resource.segments[0]), resource.query),
+			}, nil
+		case 2:
+			if resource.query != "" {
+				return readInput{}, invalidResourceURI(rawURI, "Wiki page resources do not support query parameters.")
+			}
+			if resource.segments[0] == "all" {
+				return readInput{}, invalidResourceURI(rawURI, "A Wiki page resource requires a concrete workspace.")
+			}
+			input := readInput{
+				Target:    readTargetWikiPage,
+				Workspace: resource.segments[0],
+				Path:      resource.segments[1],
+				URI:       wikiPageURI(resource.segments[0], resource.segments[1]),
+			}
+			if err := validateTargetReadInput(&input); err != nil {
+				err.Code = readErrorInvalidResourceURI
+				err.URI = rawURI
+				err.Field = ""
+				return readInput{}, err
+			}
+			return input, nil
+		default:
+			return readInput{}, invalidResourceURI(rawURI, "Unsupported Wiki resource path.")
+		}
 	case readTargetRuns:
 		switch {
 		case len(resource.segments) == 0:
@@ -371,6 +572,17 @@ func parseReadResourceURI(rawURI string) (readInput, *readToolError) {
 				Query:    resource.query,
 				URI:      runLogsURIWithQuery(resource.segments[0], resource.segments[1], resource.query),
 			}, nil
+		case len(resource.segments) == 5 && resource.segments[2] == "steps" && resource.segments[4] == "logs":
+			if resource.query != "" {
+				return readInput{}, invalidResourceURI(rawURI, "Step log resources do not support query parameters.")
+			}
+			return readInput{
+				Target:   readTargetStepLog,
+				Name:     resource.segments[0],
+				DAGRunID: resource.segments[1],
+				StepName: resource.segments[3],
+				URI:      stepLogURI(resource.segments[0], resource.segments[1], resource.segments[3]),
+			}, nil
 		default:
 			return readInput{}, invalidResourceURI(rawURI, "Unsupported DAG-run resource path.")
 		}
@@ -401,6 +613,33 @@ func parseReadResourcePath(rawURI string) (readResourcePath, *readToolError) {
 }
 
 func validateTargetReadInput(input *readInput) *readToolError {
+	if input.StepName != "" && input.Target != readTargetStepLog {
+		return invalidTargetField(input.Target, readFieldStepName)
+	}
+	wikiTarget := input.Target == readTargetWiki || input.Target == readTargetWikiPage || input.Target == readTargetWikiSearch
+	if input.Workspace != "" && !wikiTarget {
+		return invalidTargetField(input.Target, readFieldWorkspace)
+	}
+	if input.Path != "" && input.Target != readTargetWikiPage {
+		return invalidTargetField(input.Target, readFieldPath)
+	}
+	if input.Search != "" && input.Target != readTargetWikiSearch {
+		return invalidTargetField(input.Target, readFieldSearch)
+	}
+	if input.Prefix != "" && input.Target != readTargetWiki && input.Target != readTargetWikiSearch {
+		return invalidTargetField(input.Target, readFieldPrefix)
+	}
+	if input.Cursor != "" && input.Target != readTargetWikiSearch {
+		return invalidTargetField(input.Target, readFieldCursor)
+	}
+	if input.Limit != 0 && input.Target != readTargetWikiSearch {
+		return invalidTargetField(input.Target, readFieldLimit)
+	}
+	if input.Prefix != "" {
+		if err := wiki.ValidatePageID(input.Prefix); err != nil {
+			return invalidTargetValue(input.Target, readFieldPrefix, err.Error())
+		}
+	}
 	switch input.Target {
 	case readTargetReferences:
 		if input.Name != "" {
@@ -454,6 +693,70 @@ func validateTargetReadInput(input *readInput) *readToolError {
 			return invalidTargetField(input.Target, readFieldQuery)
 		}
 		input.URI = dagSpecURI(input.Name)
+	case readTargetWiki:
+		if input.Name != "" {
+			return invalidTargetField(input.Target, readFieldName)
+		}
+		if input.DAGRunID != "" {
+			return invalidTargetField(input.Target, readFieldDAGRunID)
+		}
+		if input.Workspace == "" {
+			input.Workspace = "all"
+		}
+		if input.Prefix != "" {
+			values, err := url.ParseQuery(input.Query)
+			if err != nil {
+				return readQueryError(input.Target, false, "", "Query contains malformed URL encoding.")
+			}
+			if values.Has(readFieldPrefix) {
+				return invalidTargetValue(input.Target, readFieldPrefix, "The prefix field and query parameter cannot both be set.")
+			}
+			values.Set(readFieldPrefix, input.Prefix)
+			input.Query = values.Encode()
+		}
+		if err := validateReadQuery(input.Target, input.Query, false, ""); err != nil {
+			return err
+		}
+		input.URI = uriWithQuery(wikiCollectionURI(input.Workspace), input.Query)
+	case readTargetWikiPage:
+		if input.Name != "" {
+			return invalidTargetField(input.Target, readFieldName)
+		}
+		if input.DAGRunID != "" {
+			return invalidTargetField(input.Target, readFieldDAGRunID)
+		}
+		if input.Query != "" {
+			return invalidTargetField(input.Target, readFieldQuery)
+		}
+		if input.Workspace == "" {
+			return missingTargetField(input.Target, readFieldWorkspace)
+		}
+		if input.Workspace == "all" {
+			return invalidTargetValue(input.Target, readFieldWorkspace, "The workspace field must identify default or one named workspace for target wiki_page.")
+		}
+		if input.Path == "" {
+			return missingTargetField(input.Target, readFieldPath)
+		}
+		if err := wiki.ValidatePageID(input.Path); err != nil {
+			return invalidTargetValue(input.Target, readFieldPath, err.Error())
+		}
+		input.URI = wikiPageURI(input.Workspace, input.Path)
+	case readTargetWikiSearch:
+		if input.Name != "" {
+			return invalidTargetField(input.Target, readFieldName)
+		}
+		if input.DAGRunID != "" {
+			return invalidTargetField(input.Target, readFieldDAGRunID)
+		}
+		if input.Query != "" {
+			return invalidTargetField(input.Target, readFieldQuery)
+		}
+		if input.Workspace == "" {
+			input.Workspace = "all"
+		}
+		if input.Search == "" {
+			return missingTargetField(input.Target, readFieldSearch)
+		}
 	case readTargetRuns:
 		if input.Name != "" {
 			return invalidTargetField(input.Target, readFieldName)
@@ -486,6 +789,20 @@ func validateTargetReadInput(input *readInput) *readToolError {
 			return err
 		}
 		input.URI = runLogsURIWithQuery(input.Name, input.DAGRunID, input.Query)
+	case readTargetStepLog:
+		if input.Name == "" {
+			return missingTargetField(input.Target, readFieldName)
+		}
+		if input.DAGRunID == "" {
+			return missingTargetField(input.Target, readFieldDAGRunID)
+		}
+		if input.StepName == "" {
+			return missingTargetField(input.Target, readFieldStepName)
+		}
+		if input.Query != "" {
+			return invalidTargetField(input.Target, readFieldQuery)
+		}
+		input.URI = stepLogURI(input.Name, input.DAGRunID, input.StepName)
 	default:
 		return unsupportedReadTargetError(input.Target)
 	}
@@ -530,7 +847,12 @@ func isAllowedReadQueryParam(target, key string) bool {
 	switch target {
 	case readTargetDAGs:
 		switch key {
-		case "page", "perPage", "name", "labels", "sort", "order":
+		case "page", "perPage", "name", "labels", "active", "sort", "order":
+			return true
+		}
+	case readTargetWiki:
+		switch key {
+		case "page", "perPage", "flat", "sort", "order", "prefix":
 			return true
 		}
 	case readTargetRuns:
@@ -559,10 +881,27 @@ func validReadQueryValue(target, key, value string) bool {
 			return value != ""
 		case "labels":
 			return validCommaList(value)
+		case "active":
+			return value == "true" || value == "false"
 		case "sort":
 			return value == "name" || value == "nextRun"
 		case "order":
 			return value == "asc" || value == "desc"
+		}
+	case readTargetWiki:
+		switch key {
+		case "page":
+			return validIntRange(value, 1, 0)
+		case "perPage":
+			return validIntRange(value, 1, 200)
+		case "flat":
+			return value == "true" || value == "false"
+		case "sort":
+			return value == "name" || value == "type" || value == "mtime"
+		case "order":
+			return value == "asc" || value == "desc"
+		case "prefix":
+			return wiki.ValidatePageID(value) == nil
 		}
 	case readTargetRuns:
 		switch key {
@@ -759,6 +1098,24 @@ func classifyReadToolError(input readInput, err error) *readToolError {
 			URI:     resourceURIForReadError(input),
 		}
 	}
+	var apiErr *frontendapi.Error
+	if errors.As(err, &apiErr) {
+		code := readErrorResourceUnavailable
+		switch apiErr.HTTPStatus {
+		case http.StatusBadRequest:
+			code = readErrorInvalidToolInput
+		case http.StatusUnauthorized, http.StatusForbidden:
+			code = readErrorResourceUnavailable
+		case http.StatusNotFound:
+			code = readErrorResourceNotFound
+		}
+		return &readToolError{
+			Code:    code,
+			Message: apiErr.Message,
+			Target:  input.Target,
+			URI:     resourceURIForReadError(input),
+		}
+	}
 	if isReadResourceNotFound(err) {
 		return resourceNotFoundReadError(input, err.Error())
 	}
@@ -772,8 +1129,8 @@ func classifyReadToolError(input readInput, err error) *readToolError {
 
 func isReadResourceNotFound(err error) bool {
 	return isDAGNotFound(err) ||
-		errors.Is(err, exec.ErrDAGRunIDNotFound) ||
-		errors.Is(err, exec.ErrNoStatusData) ||
+		errors.Is(err, dagrun.ErrDAGRunIDNotFound) ||
+		errors.Is(err, dagrun.ErrNoStatusData) ||
 		looksNotFound(err)
 }
 
@@ -800,6 +1157,10 @@ func resourceURIForReadError(input readInput) string {
 		return readReferenceURI(input.Name)
 	case readTargetDAGSpec:
 		return dagSpecURI(input.Name)
+	case readTargetWiki:
+		return uriWithQuery(wikiCollectionURI(input.Workspace), input.Query)
+	case readTargetWikiPage:
+		return wikiPageURI(input.Workspace, input.Path)
 	case readTargetRun:
 		return runURI(input.Name, input.DAGRunID)
 	case readTargetRunLogs:
@@ -830,6 +1191,15 @@ func missingTargetField(target, field string) *readToolError {
 	return &readToolError{
 		Code:    readErrorInvalidToolInput,
 		Message: "The " + field + " field is required for target " + target + ".",
+		Target:  target,
+		Field:   field,
+	}
+}
+
+func invalidTargetValue(target, field, message string) *readToolError {
+	return &readToolError{
+		Code:    readErrorInvalidToolInput,
+		Message: message,
 		Target:  target,
 		Field:   field,
 	}
@@ -944,6 +1314,19 @@ func readResourceLinks(uri string) []resourceLink {
 		if len(resource.segments) == 2 {
 			return []resourceLink{linkForDAGSpec(resource.segments[0])}
 		}
+	case readTargetWiki:
+		if len(resource.segments) <= 1 {
+			return []resourceLink{{
+				uri:         resource.rawURI,
+				name:        "wiki",
+				title:       "Wiki",
+				description: "Workspace-aware Wiki collection.",
+				mimeType:    resourceMIMEJSON,
+			}}
+		}
+		if len(resource.segments) == 2 {
+			return []resourceLink{linkForWikiPage(resource.segments[0], resource.segments[1])}
+		}
 	case readTargetRuns:
 		if len(resource.segments) == 0 {
 			return []resourceLink{{
@@ -955,6 +1338,15 @@ func readResourceLinks(uri string) []resourceLink {
 			}}
 		}
 		if len(resource.segments) >= 2 {
+			if len(resource.segments) == 5 && resource.segments[2] == "steps" && resource.segments[4] == "logs" {
+				return []resourceLink{{
+					uri:         resource.rawURI,
+					name:        "dag_run_step_log",
+					title:       "DAG-run step log",
+					description: "Log output for this DAG-run step.",
+					mimeType:    resourceMIMEJSON,
+				}}
+			}
 			if len(resource.segments) == 3 && resource.segments[2] == "logs" {
 				return []resourceLink{{
 					uri:         resource.rawURI,

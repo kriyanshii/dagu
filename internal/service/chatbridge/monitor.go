@@ -12,9 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/dirlock"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/service/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/cmn/dirlock"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/eventstore"
+	"github.com/dagucloud/dagu/v2/internal/ir"
 )
 
 const (
@@ -30,6 +31,7 @@ const (
 var defaultInterestedNotificationEventTypes = []eventstore.EventType{
 	eventstore.TypeDAGRunWaiting,
 	eventstore.TypeDAGRunSucceeded,
+	eventstore.TypeDAGRunPartiallySucceeded,
 	eventstore.TypeDAGRunFailed,
 	eventstore.TypeDAGRunAborted,
 	eventstore.TypeDAGRunRejected,
@@ -200,7 +202,7 @@ func (m *NotificationMonitor) Run(ctx context.Context) {
 }
 
 // NotifyCompletion queues a status update for every destination that has not yet acknowledged it.
-func (m *NotificationMonitor) NotifyCompletion(status *exec.DAGRunStatus) bool {
+func (m *NotificationMonitor) NotifyCompletion(status *ir.DAGRunStatus) bool {
 	if status == nil {
 		return false
 	}
@@ -213,9 +215,9 @@ func (m *NotificationMonitor) NotifyCompletion(status *exec.DAGRunStatus) bool {
 	}
 
 	m.logger.Info("DAG run notification queued",
-		slog.String("dag", status.Name),
+		tag.DAG(status.Name),
 		slog.String("status", status.Status.String()),
-		slog.String("dag_run_id", status.DAGRunID),
+		tag.RunID(status.DAGRunID),
 	)
 
 	event := NotificationEvent{
@@ -228,7 +230,7 @@ func (m *NotificationMonitor) NotifyCompletion(status *exec.DAGRunStatus) bool {
 }
 
 // IsDelivered reports whether a destination has already acknowledged a status.
-func (m *NotificationMonitor) IsDelivered(destination string, status *exec.DAGRunStatus) bool {
+func (m *NotificationMonitor) IsDelivered(destination string, status *ir.DAGRunStatus) bool {
 	if destination == "" || status == nil {
 		return false
 	}
@@ -419,7 +421,7 @@ func (m *NotificationMonitor) pollSource(ctx context.Context) {
 		if event == nil || !m.isInterestedEventType(event.Type) {
 			continue
 		}
-		status, err := eventstore.DAGRunStatusFromEvent(event)
+		snapshot, err := eventstore.DAGRunSnapshotFromEvent(event)
 		if err != nil {
 			m.logger.Warn("Failed to decode DAG-run event payload",
 				slog.String("event_id", event.ID),
@@ -427,6 +429,7 @@ func (m *NotificationMonitor) pollSource(ctx context.Context) {
 			)
 			continue
 		}
+		status := snapshot.DAGRunStatus()
 		observedAt := event.RecordedAt
 		if observedAt.IsZero() {
 			observedAt = time.Now().UTC()
@@ -435,6 +438,7 @@ func (m *NotificationMonitor) pollSource(ctx context.Context) {
 			Key:        NotificationSeenKey(status),
 			Type:       event.Type,
 			Status:     status,
+			DAGFile:    snapshot.DAGFile,
 			ObservedAt: observedAt.UTC(),
 		})
 	}
@@ -853,7 +857,7 @@ func (m *NotificationMonitor) ensureBootstrapped(ctx context.Context) bool {
 	return true
 }
 
-func (m *NotificationMonitor) commitSourceProgress(ctx context.Context, destinations []string, nextCursor eventstore.NotificationCursor, events []NotificationEvent) ([]queuedNotification, bool) {
+func (m *NotificationMonitor) commitSourceProgress(ctx context.Context, destinations []string, nextCursor eventstore.DAGRunCursor, events []NotificationEvent) ([]queuedNotification, bool) {
 	if ctx.Err() != nil {
 		return nil, false
 	}
@@ -1176,12 +1180,7 @@ func cloneNotificationMonitorState(state notificationMonitorState) notificationM
 		}
 		pending := make(map[string]NotificationEvent, len(destState.Pending))
 		for key, event := range destState.Pending {
-			pending[key] = NotificationEvent{
-				Key:        event.Key,
-				Type:       event.Type,
-				Status:     cloneNotificationStatus(event.Status),
-				ObservedAt: event.ObservedAt,
-			}
+			pending[key] = cloneNotificationEvent(event)
 		}
 		clone.Destinations[destination] = &notificationDestinationState{
 			Pending:   pending,
@@ -1303,12 +1302,7 @@ func enqueueNotifications(state *notificationMonitorState, destinations []string
 				delete(destState.Pending, pendingKey)
 			}
 
-			destState.Pending[event.Key] = NotificationEvent{
-				Key:        event.Key,
-				Type:       event.Type,
-				Status:     cloneNotificationStatus(event.Status),
-				ObservedAt: event.ObservedAt,
-			}
+			destState.Pending[event.Key] = cloneNotificationEvent(event)
 			queued = append(queued, queuedNotification{
 				destination: destination,
 				event:       event,

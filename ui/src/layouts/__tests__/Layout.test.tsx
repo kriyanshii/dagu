@@ -1,7 +1,13 @@
 // Copyright (C) 2026 Yota Hamada
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { render, screen } from '@testing-library/react';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -56,13 +62,57 @@ describe('Layout', () => {
       'href',
       '/home'
     );
-    expect(screen.getByRole('link', { name: 'DAG Runs' })).toHaveAttribute(
-      'href',
-      '/dag-runs'
-    );
-    expect(screen.getByText('briefing_gmail_fetch_test')).toBeVisible();
+    const breadcrumbs = screen.getByRole('navigation', { name: 'breadcrumb' });
     expect(
-      screen.getByText('019df6cf-0127-7340-bd96-d51bc1453045')
-    ).toBeVisible();
+      within(breadcrumbs).getByRole('link', { name: 'Home' })
+    ).toHaveAttribute('href', '/home');
+    expect(
+      within(breadcrumbs).getByRole('link', { name: 'Executions' })
+    ).toHaveAttribute('href', '/dag-runs');
+    expect(
+      within(breadcrumbs).getByRole('link', { name: 'DAG Runs' })
+    ).toHaveAttribute('href', '/dag-runs');
+    expect(
+      within(breadcrumbs).getByRole('link', {
+        name: 'briefing_gmail_fetch_test',
+      })
+    ).toHaveAttribute('href', '/dag-runs?name=briefing_gmail_fetch_test');
+    expect(
+      within(breadcrumbs).getByRole('link', {
+        name: '019df6cf-0127-7340-bd96-d51bc1453045',
+      })
+    ).toHaveAttribute(
+      'href',
+      '/dag-runs/briefing_gmail_fetch_test/019df6cf-0127-7340-bd96-d51bc1453045'
+    );
+    expect(
+      within(breadcrumbs).getByRole('link', {
+        name: '019df6cf-0127-7340-bd96-d51bc1453045',
+      })
+    ).toHaveAttribute('aria-current', 'page');
+    expect(within(breadcrumbs).getAllByRole('link')).toHaveLength(5);
+  });
+
+  it('opens the mobile navigation as a keyboard-contained dialog', async () => {
+    renderLayout('/home');
+
+    const openButton = screen.getByRole('button', { name: 'Open menu' });
+    fireEvent.click(openButton);
+
+    const dialog = screen.getByRole('dialog', { name: 'Dagu' });
+    const closeButton = within(dialog).getByRole('button', {
+      name: 'Close menu',
+    });
+    expect(closeButton).toHaveFocus();
+    expect(
+      screen.getByText('Page Content').closest('[aria-hidden="true"]')
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: 'Tab' });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await waitFor(() => expect(openButton).toHaveFocus());
   });
 });

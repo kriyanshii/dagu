@@ -486,7 +486,12 @@ function DAGSpecReadOnly({
       }
 
       if (responseData?.errors?.length) {
-        showError('Validation errors', responseData.errors.join('\n'));
+        showError(
+          'The spec was not saved',
+          undefined,
+          'Validation errors',
+          responseData.errors
+        );
         return;
       }
 
@@ -717,6 +722,7 @@ function DAGSpecReadOnly({
               <div className="min-h-0 flex-1 overflow-hidden p-2">
                 <Graph
                   steps={previewNodes}
+                  name={dagName}
                   type="status"
                   flowchart={previewFlowchart}
                   onChangeFlowchart={setPreviewFlowchart}

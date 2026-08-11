@@ -10,28 +10,29 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/core"
-	coreexec "github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/dagstate"
-	"github.com/dagucloud/dagu/internal/node"
-	"github.com/dagucloud/dagu/internal/runtime"
-	runtimeexec "github.com/dagucloud/dagu/internal/runtime/executor"
-	"github.com/dagucloud/dagu/internal/runtime/runstate"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/dagstore"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/proc"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	runtimeexec "github.com/dagucloud/dagu/v2/internal/runtime/executor"
+	"github.com/dagucloud/dagu/v2/internal/runtime/runstate"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	"github.com/dagucloud/dagu/v2/internal/serviceregistry"
 	"github.com/spf13/viper"
 )
 
 type Engine struct {
 	cfg             *config.Config
-	dagRunStore     coreexec.DAGRunStore
+	dagRunStore     dagrun.DAGRunStore
 	runStateStore   runstate.Store
-	stateStore      dagstate.Store
-	procStore       coreexec.ProcStore
-	serviceRegistry coreexec.ServiceRegistry
-	dagStore        coreexec.DAGStore
+	stateStore      dagrun.StateStore
+	procStore       proc.ProcStore
+	serviceRegistry serviceregistry.ServiceRegistry
+	dagStore        dagstore.DAGStore
 	dagRunMgr       runtime.Manager
 	defaultMode     ExecutionMode
 	distributed     DistributedOptions
@@ -205,7 +206,7 @@ func (e *Engine) coordinatorClient(opts DistributedOptions) (coordinator.Client,
 }
 
 func (e *Engine) subWorkflowRunnerFactory(stores RuntimeStores) func(context.Context) (runtimeexec.SubWorkflowRunner, error) {
-	return node.NewSubWorkflowRunnerFactory(node.SubWorkflowRunnerConfig{
+	return coordinator.NewSubWorkflowRunnerFactory(coordinator.SubWorkflowRunnerConfig{
 		DAGRunMgr:         e.dagRunMgr,
 		DAGStore:          e.dagStore,
 		DAGRunStore:       e.dagRunStore,
@@ -222,7 +223,7 @@ func (e *Engine) subWorkflowRunnerFactory(stores RuntimeStores) func(context.Con
 	})
 }
 
-func runStatusToPublic(status *coreexec.DAGRunStatus) (*Status, error) {
+func runStatusToPublic(status *ir.DAGRunStatus) (*Status, error) {
 	if status == nil {
 		return nil, nil
 	}
@@ -260,10 +261,10 @@ func parseStatusTime(value string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, value)
 }
 
-func statusFromValue(status coreexec.DAGRunStatus) (*Status, error) {
+func statusFromValue(status ir.DAGRunStatus) (*Status, error) {
 	return runStatusToPublic(&status)
 }
 
 func isSuccess(status *Status) bool {
-	return status != nil && (status.Status == core.Succeeded.String() || status.Status == core.PartiallySucceeded.String())
+	return status != nil && (status.Status == ir.Succeeded.String() || status.Status == ir.PartiallySucceeded.String())
 }

@@ -11,10 +11,10 @@ import (
 	"slices"
 	"time"
 
-	api "github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/auth"
-	"github.com/dagucloud/dagu/internal/service/audit"
-	"github.com/dagucloud/dagu/internal/view"
+	api "github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/audit"
+	"github.com/dagucloud/dagu/v2/internal/auth"
+	"github.com/dagucloud/dagu/v2/internal/view"
 	"github.com/google/uuid"
 )
 
@@ -152,6 +152,21 @@ func (a *API) UpdateView(ctx context.Context, request api.UpdateViewRequestObjec
 	if request.Body.Columns == nil {
 		updated.Columns = slices.Clone(existing.Columns)
 	}
+	if request.Body.WorkspaceScope == nil {
+		updated.WorkspaceScope = existing.WorkspaceScope
+	}
+	if request.Body.SortField == nil {
+		updated.SortField = existing.SortField
+	}
+	if request.Body.SortOrder == nil {
+		updated.SortOrder = existing.SortOrder
+	}
+	if request.Body.ActiveOnly == nil {
+		updated.ActiveOnly = existing.ActiveOnly
+	}
+	if request.Body.IsDefault == nil {
+		updated.Default = existing.Default
+	}
 	updated.ID = existing.ID
 	updated.CreatedBy = existing.CreatedBy
 	updated.CreatedAt = existing.CreatedAt
@@ -242,6 +257,8 @@ func viewFromSpec(spec api.ViewSpec) *view.View {
 		Workspace:    valueOf(spec.Workspace),
 		DAGName:      valueOf(spec.DagName),
 		Pinned:       valueOf(spec.Pinned),
+		ActiveOnly:   valueOf(spec.ActiveOnly),
+		Default:      valueOf(spec.IsDefault),
 	}
 	if spec.Type != nil {
 		v.Type = string(*spec.Type)
@@ -254,6 +271,15 @@ func viewFromSpec(spec api.ViewSpec) *view.View {
 		for i, column := range *spec.Columns {
 			v.Columns[i] = string(column)
 		}
+	}
+	if spec.WorkspaceScope != nil {
+		v.WorkspaceScope = string(*spec.WorkspaceScope)
+	}
+	if spec.SortField != nil {
+		v.SortField = string(*spec.SortField)
+	}
+	if spec.SortOrder != nil {
+		v.SortOrder = string(*spec.SortOrder)
 	}
 	return v
 }
@@ -279,6 +305,16 @@ func toViewResponse(v *view.View) api.View {
 	if len(v.Labels) > 0 {
 		labels := slices.Clone(v.Labels)
 		resp.Labels = &labels
+	}
+	if v.Type == view.TypeWorkflow {
+		workspaceScope := api.ViewWorkspaceScope(v.WorkspaceScope)
+		sortField := api.ViewSortField(v.SortField)
+		sortOrder := api.ViewSortOrder(v.SortOrder)
+		resp.WorkspaceScope = &workspaceScope
+		resp.SortField = &sortField
+		resp.SortOrder = &sortOrder
+		resp.ActiveOnly = ptrOf(v.ActiveOnly)
+		resp.IsDefault = ptrOf(v.Default)
 	}
 	return resp
 }

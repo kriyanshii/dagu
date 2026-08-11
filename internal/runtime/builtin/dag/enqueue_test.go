@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/runtime"
-	_ "github.com/dagucloud/dagu/internal/runtime/builtin/dag"
-	"github.com/dagucloud/dagu/internal/runtime/executor"
-	"github.com/dagucloud/dagu/internal/test"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/queue"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	_ "github.com/dagucloud/dagu/v2/internal/runtime/builtin/dag"
+	"github.com/dagucloud/dagu/v2/internal/runtime/executor"
+	"github.com/dagucloud/dagu/v2/internal/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,19 +30,19 @@ func TestEnqueueExecutorPersistsInheritedProfile(t *testing.T) {
 		cfg.Queues.Config = []config.QueueConfig{{Name: "default", MaxActiveRuns: 1}}
 	}))
 
-	parent := &core.DAG{
+	parent := &ir.DAG{
 		Name: "parent",
-		LocalDAGs: map[string]*core.DAG{
+		LocalDAGs: map[string]*ir.DAG{
 			"child": {
 				Name:     "child",
 				YamlData: []byte("name: child\nsteps:\n  - name: step\n    run: echo child\n"),
-				Steps: []core.Step{
-					{Name: "step", ExecutorConfig: core.ExecutorConfig{Type: "noop"}},
+				Steps: []ir.Step{
+					{Name: "step", ExecutorConfig: ir.ExecutorConfig{Type: "noop"}},
 				},
 			},
 		},
 	}
-	parentRun := exec.NewDAGRunRef(parent.Name, "parent-run")
+	parentRun := ir.NewDAGRunRef(parent.Name, "parent-run")
 	ctx := runtime.NewContext(
 		th.Context,
 		parent,
@@ -56,10 +56,10 @@ func TestEnqueueExecutorPersistsInheritedProfile(t *testing.T) {
 		runtime.WithRuntimeProfile("prod", "", nil),
 	)
 
-	step := core.Step{
+	step := ir.Step{
 		Name:           "enqueue-child",
-		ExecutorConfig: core.ExecutorConfig{Type: core.ExecutorTypeDAGEnqueue},
-		SubDAG:         &core.SubDAG{Name: "child"},
+		ExecutorConfig: ir.ExecutorConfig{Type: ir.ExecutorTypeDAGEnqueue},
+		SubDAG:         &ir.SubDAG{Name: "child"},
 	}
 	execImpl, err := executor.NewExecutor(ctx, step)
 	require.NoError(t, err)
@@ -72,36 +72,97 @@ func TestEnqueueExecutorPersistsInheritedProfile(t *testing.T) {
 	execImpl.SetStdout(&stdout)
 	require.NoError(t, execImpl.Run(ctx))
 
-	attempt, err := th.DAGRunStore.FindAttempt(ctx, exec.NewDAGRunRef("child", "child-run"))
+	attempt, err := th.DAGRunStore.FindAttempt(ctx, ir.NewDAGRunRef("child", "child-run"))
 	require.NoError(t, err)
 	status, err := attempt.ReadStatus(ctx)
 	require.NoError(t, err)
 
-	assert.Equal(t, core.Queued, status.Status)
-	assert.Equal(t, core.TriggerTypeSubDAG, status.TriggerType)
+	assert.Equal(t, ir.Queued, status.Status)
+	assert.Equal(t, ir.TriggerTypeSubDAG, status.TriggerType)
 	assert.Equal(t, "prod", status.ProfileName)
-	assert.Equal(t, exec.NewDAGRunRef("child", "child-run"), status.Root)
+	assert.Equal(t, ir.NewDAGRunRef("child", "child-run"), status.Root)
 	assert.True(t, status.Parent.Zero())
+}
+
+func TestEnqueueWorkerSelector(t *testing.T) {
+	t.Parallel()
+
+	th := test.Setup(t, test.WithConfigMutator(func(cfg *config.Config) {
+		cfg.Queues.Enabled = true
+		cfg.Queues.Config = []config.QueueConfig{{Name: "default", MaxActiveRuns: 1}}
+	}))
+
+	parent := &ir.DAG{
+		Name: "parent",
+		LocalDAGs: map[string]*ir.DAG{
+			"child": {
+				Name:     "child",
+				YamlData: []byte("name: child\nsteps:\n  - name: step\n    run: echo child\n"),
+				Steps: []ir.Step{
+					{Name: "step", ExecutorConfig: ir.ExecutorConfig{Type: "noop"}},
+				},
+			},
+		},
+	}
+	parentRun := ir.NewDAGRunRef(parent.Name, "parent-run")
+	ctx := runtime.NewContext(
+		th.Context,
+		parent,
+		parentRun.ID,
+		filepath.Join(th.Config.Paths.LogDir, "parent.log"),
+		runtime.WithRootDAGRun(parentRun),
+		runtime.WithDAGRunStore(th.DAGRunStore),
+		runtime.WithQueueStore(th.QueueStore),
+		runtime.WithDAGRunLogDir(th.Config.Paths.LogDir),
+		runtime.WithDAGRunArtifactDir(th.Config.Paths.ArtifactDir),
+	)
+
+	step := ir.Step{
+		Name:           "enqueue-child",
+		ExecutorConfig: ir.ExecutorConfig{Type: ir.ExecutorTypeDAGEnqueue},
+		SubDAG:         &ir.SubDAG{Name: "child"},
+		Parallel:       &ir.ParallelConfig{},
+		WorkerSelector: map[string]string{"host": "${ITEM}"},
+	}
+	execImpl, err := executor.NewExecutor(ctx, step)
+	require.NoError(t, err)
+
+	parallelExec, ok := execImpl.(executor.ParallelExecutor)
+	require.True(t, ok)
+	parallelExec.SetParamsList([]executor.RunParams{{
+		RunID:          "child-run",
+		DAGName:        "child",
+		Params:         "FACILITY=serverA",
+		WorkerSelector: map[string]string{"host": "serverA"},
+	}})
+
+	require.NoError(t, execImpl.Run(ctx))
+
+	attempt, err := th.DAGRunStore.FindAttempt(ctx, ir.NewDAGRunRef("child", "child-run"))
+	require.NoError(t, err)
+	child, err := attempt.ReadDAG(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"host": "serverA"}, child.WorkerSelector)
 }
 
 func TestSubDAGExecutorsRejectHumanTasks(t *testing.T) {
 	t.Parallel()
 
 	th := test.Setup(t)
-	parent := &core.DAG{
+	parent := &ir.DAG{
 		Name: "parent",
-		LocalDAGs: map[string]*core.DAG{
+		LocalDAGs: map[string]*ir.DAG{
 			"child": {
 				Name: "child",
-				Steps: []core.Step{{
+				Steps: []ir.Step{{
 					ID:        "review",
 					Name:      "review",
-					HumanTask: &core.HumanTaskConfig{Prompt: "Review"},
+					HumanTask: &ir.HumanTaskConfig{Prompt: "Review"},
 				}},
 			},
 		},
 	}
-	root := exec.NewDAGRunRef(parent.Name, "parent-run")
+	root := ir.NewDAGRunRef(parent.Name, "parent-run")
 	ctx := runtime.NewContext(
 		th.Context,
 		parent,
@@ -112,27 +173,27 @@ func TestSubDAGExecutorsRejectHumanTasks(t *testing.T) {
 		runtime.WithQueueStore(th.QueueStore),
 	)
 
-	for _, step := range []core.Step{
+	for _, step := range []ir.Step{
 		{
 			Name:           "run-child",
-			ExecutorConfig: core.ExecutorConfig{Type: core.ExecutorTypeDAG},
-			SubDAG:         &core.SubDAG{Name: "child"},
+			ExecutorConfig: ir.ExecutorConfig{Type: ir.ExecutorTypeDAG},
+			SubDAG:         &ir.SubDAG{Name: "child"},
 		},
 		{
 			Name:           "run-child-in-parallel",
-			ExecutorConfig: core.ExecutorConfig{Type: core.ExecutorTypeDAG},
-			SubDAG:         &core.SubDAG{Name: "child"},
-			Parallel:       &core.ParallelConfig{Items: []core.ParallelItem{{Value: "one"}}},
+			ExecutorConfig: ir.ExecutorConfig{Type: ir.ExecutorTypeDAG},
+			SubDAG:         &ir.SubDAG{Name: "child"},
+			Parallel:       &ir.ParallelConfig{Items: []ir.ParallelItem{{Value: "one"}}},
 		},
 	} {
 		_, err := executor.NewExecutor(ctx, step)
 		require.ErrorContains(t, err, "human task steps are not allowed in sub-DAGs")
 	}
 
-	enqueueStep := core.Step{
+	enqueueStep := ir.Step{
 		Name:           "enqueue-child",
-		ExecutorConfig: core.ExecutorConfig{Type: core.ExecutorTypeDAGEnqueue},
-		SubDAG:         &core.SubDAG{Name: "child"},
+		ExecutorConfig: ir.ExecutorConfig{Type: ir.ExecutorTypeDAGEnqueue},
+		SubDAG:         &ir.SubDAG{Name: "child"},
 	}
 	enqueueExecutor, err := executor.NewExecutor(ctx, enqueueStep)
 	require.NoError(t, err)
@@ -150,19 +211,19 @@ func TestEnqueueExecutorParallelHonorsMaxConcurrent(t *testing.T) {
 		cfg.Queues.Config = []config.QueueConfig{{Name: "default", MaxActiveRuns: 1}}
 	}))
 
-	parent := &core.DAG{
+	parent := &ir.DAG{
 		Name: "parent",
-		LocalDAGs: map[string]*core.DAG{
+		LocalDAGs: map[string]*ir.DAG{
 			"child": {
 				Name:     "child",
 				YamlData: []byte("name: child\nsteps:\n  - name: step\n    run: echo child\n"),
-				Steps: []core.Step{
-					{Name: "step", ExecutorConfig: core.ExecutorConfig{Type: "noop"}},
+				Steps: []ir.Step{
+					{Name: "step", ExecutorConfig: ir.ExecutorConfig{Type: "noop"}},
 				},
 			},
 		},
 	}
-	parentRun := exec.NewDAGRunRef(parent.Name, "parent-run")
+	parentRun := ir.NewDAGRunRef(parent.Name, "parent-run")
 	queueStore := newRecordingQueueStore(th.QueueStore, 2)
 	ctx := runtime.NewContext(
 		th.Context,
@@ -176,11 +237,11 @@ func TestEnqueueExecutorParallelHonorsMaxConcurrent(t *testing.T) {
 		runtime.WithDAGRunArtifactDir(th.Config.Paths.ArtifactDir),
 	)
 
-	step := core.Step{
+	step := ir.Step{
 		Name:           "enqueue-child",
-		ExecutorConfig: core.ExecutorConfig{Type: core.ExecutorTypeDAGEnqueue},
-		SubDAG:         &core.SubDAG{Name: "child"},
-		Parallel:       &core.ParallelConfig{MaxConcurrent: 2},
+		ExecutorConfig: ir.ExecutorConfig{Type: ir.ExecutorTypeDAGEnqueue},
+		SubDAG:         &ir.SubDAG{Name: "child"},
+		Parallel:       &ir.ParallelConfig{MaxConcurrent: 2},
 	}
 	execImpl, err := executor.NewExecutor(ctx, step)
 	require.NoError(t, err)
@@ -196,7 +257,7 @@ func TestEnqueueExecutorParallelHonorsMaxConcurrent(t *testing.T) {
 	var stdout bytes.Buffer
 	execImpl.SetStdout(&stdout)
 
-	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	runCtx, cancel := context.WithTimeout(ctx, enqueueConcurrencyWaitTimeout(t))
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -219,8 +280,25 @@ func TestEnqueueExecutorParallelHonorsMaxConcurrent(t *testing.T) {
 	assert.Equal(t, 2, queueStore.MaxActive())
 }
 
+// enqueueConcurrencyWaitTimeout bounds the wait for the executor to reach the
+// queue store. Each child run performs filesystem setup before it gets there,
+// and that cost varies widely with host load and platform, so the budget is
+// generous and shrinks only to stay inside the test deadline.
+func enqueueConcurrencyWaitTimeout(t *testing.T) time.Duration {
+	t.Helper()
+
+	timeout := time.Minute
+	if deadline, ok := t.Deadline(); ok {
+		remaining := time.Until(deadline) - 15*time.Second
+		if remaining > 0 && remaining < timeout {
+			return remaining
+		}
+	}
+	return timeout
+}
+
 type recordingQueueStore struct {
-	exec.QueueStore
+	queue.QueueStore
 
 	mu        sync.Mutex
 	active    int
@@ -233,7 +311,7 @@ type recordingQueueStore struct {
 	releaseOnce  sync.Once
 }
 
-func newRecordingQueueStore(store exec.QueueStore, targetActive int) *recordingQueueStore {
+func newRecordingQueueStore(store queue.QueueStore, targetActive int) *recordingQueueStore {
 	return &recordingQueueStore{
 		QueueStore:   store,
 		targetActive: targetActive,
@@ -242,7 +320,7 @@ func newRecordingQueueStore(store exec.QueueStore, targetActive int) *recordingQ
 	}
 }
 
-func (s *recordingQueueStore) Enqueue(ctx context.Context, name string, priority exec.QueuePriority, dagRun exec.DAGRunRef) error {
+func (s *recordingQueueStore) Enqueue(ctx context.Context, name string, priority queue.QueuePriority, dagRun ir.DAGRunRef) error {
 	s.mu.Lock()
 	s.active++
 	if s.active > s.maxActive {

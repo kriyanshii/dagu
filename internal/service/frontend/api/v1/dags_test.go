@@ -15,15 +15,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/cmn/config"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/core/spec"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
-	localapi "github.com/dagucloud/dagu/internal/service/frontend/api/v1"
-	"github.com/dagucloud/dagu/internal/service/scheduler"
-	"github.com/dagucloud/dagu/internal/test"
+	"github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/dagstore"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	localapi "github.com/dagucloud/dagu/v2/internal/service/frontend/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
+	"github.com/dagucloud/dagu/v2/internal/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -75,7 +74,7 @@ func sendRawRequestStatus(
 	return resp.StatusCode
 }
 
-func apiStatusOutputValue(t *testing.T, status *exec.DAGRunStatus, key string) string {
+func apiStatusOutputValue(t *testing.T, status *ir.DAGRunStatus, key string) string {
 	t.Helper()
 
 	require.NotNil(t, status)
@@ -360,7 +359,7 @@ steps:
 				return false
 			}
 
-			return dagRunStatus.DagRun.Status == api.Status(core.Succeeded)
+			return dagRunStatus.DagRun.Status == api.Status(ir.Succeeded)
 		}, dagRunEventuallyTimeout(5*time.Second), time.Second, "expected DAG to complete")
 
 		// Delete the created DAG
@@ -433,7 +432,7 @@ steps:
 			if !getJSONWhenAvailable(t, server, url, &dagRunDetails) {
 				return false
 			}
-			return dagRunDetails.DagRun.Status == api.Status(core.Succeeded)
+			return dagRunDetails.DagRun.Status == api.Status(ir.Succeeded)
 		}, dagRunEventuallyTimeout(10*time.Second), 500*time.Millisecond, "DAG should complete")
 
 		require.NotNil(t, dagRunDetails.DagRun.Params)
@@ -476,7 +475,7 @@ steps:
 			if !getJSONWhenAvailable(t, server, url, &dagRunDetails) {
 				return false
 			}
-			return dagRunDetails.DagRun.Status == api.Status(core.Succeeded)
+			return dagRunDetails.DagRun.Status == api.Status(ir.Succeeded)
 		}, dagRunEventuallyTimeout(10*time.Second), 500*time.Millisecond, "DAG should complete")
 
 		require.NotNil(t, dagRunDetails.DagRun.Params)
@@ -515,7 +514,7 @@ steps:
 			if !getJSONWhenAvailable(t, server, url, &dagRunStatus) {
 				return false
 			}
-			return dagRunStatus.DagRun.Status == api.Status(core.Succeeded)
+			return dagRunStatus.DagRun.Status == api.Status(ir.Succeeded)
 		}, dagRunEventuallyTimeout(5*time.Second), 500*time.Millisecond)
 
 		_ = server.Client().Delete("/api/v1/dags/" + dagName).ExpectStatus(http.StatusNoContent).Send(t)
@@ -691,7 +690,7 @@ steps:
 			}
 
 			s := dagRun.DagRunDetails.Status
-			return s == api.Status(core.Queued) || s == api.Status(core.Running) || s == api.Status(core.Succeeded)
+			return s == api.Status(ir.Queued) || s == api.Status(ir.Running) || s == api.Status(ir.Succeeded)
 		}, 5*time.Second, 250*time.Millisecond, "expected DAG-run to reach queued state")
 	})
 
@@ -728,7 +727,7 @@ steps:
 			if !getJSONWhenAvailable(t, server, fmt.Sprintf("/api/v1/dags/%s/dag-runs/%s", dagName, execResp.DagRunId), &dagRunStatus) {
 				return false
 			}
-			return dagRunStatus.DagRun.Status == api.Status(core.Succeeded)
+			return dagRunStatus.DagRun.Status == api.Status(ir.Succeeded)
 		}, dagRunEventuallyTimeout(10*time.Second), 500*time.Millisecond, "expected DAG to complete")
 
 		resp = server.Client().Get("/api/v1/dags/" + dagName + "/dag-runs").
@@ -776,7 +775,7 @@ steps:
 		resp.Unmarshal(t, &body)
 		require.NotEmpty(t, body.DagRunId)
 
-		ref := exec.NewDAGRunRef(dagName, body.DagRunId)
+		ref := ir.NewDAGRunRef(dagName, body.DagRunId)
 		require.Eventually(t, func() bool {
 			attempt, err := server.DAGRunStore.FindAttempt(server.Context, ref)
 			if err != nil {
@@ -786,7 +785,7 @@ steps:
 			if err != nil {
 				return false
 			}
-			return status.Status == core.Succeeded
+			return status.Status == ir.Succeeded
 		}, dagRunEventuallyTimeout(10*time.Second), 200*time.Millisecond)
 
 		attempt, err := server.DAGRunStore.FindAttempt(server.Context, ref)
@@ -825,12 +824,12 @@ steps:
 		resp.Unmarshal(t, &body)
 		require.NotEmpty(t, body.DagRunId)
 
-		attempt, err := server.DAGRunStore.FindAttempt(server.Context, exec.NewDAGRunRef(dagName, body.DagRunId))
+		attempt, err := server.DAGRunStore.FindAttempt(server.Context, ir.NewDAGRunRef(dagName, body.DagRunId))
 		require.NoError(t, err)
 
 		status, err := attempt.ReadStatus(server.Context)
 		require.NoError(t, err)
-		require.Equal(t, core.Queued, status.Status)
+		require.Equal(t, ir.Queued, status.Status)
 
 		queueProcessor := scheduler.NewQueueProcessor(
 			server.QueueStore,
@@ -852,7 +851,7 @@ steps:
 		queueProcessor.ProcessQueueItems(server.Context, dagName)
 
 		require.Eventually(t, func() bool {
-			latestAttempt, err := server.DAGRunStore.FindAttempt(server.Context, exec.NewDAGRunRef(dagName, body.DagRunId))
+			latestAttempt, err := server.DAGRunStore.FindAttempt(server.Context, ir.NewDAGRunRef(dagName, body.DagRunId))
 			if err != nil {
 				return false
 			}
@@ -860,10 +859,10 @@ steps:
 			if err != nil {
 				return false
 			}
-			return latestStatus.Status == core.Succeeded
+			return latestStatus.Status == ir.Succeeded
 		}, dagRunEventuallyTimeout(10*time.Second), 200*time.Millisecond)
 
-		latestAttempt, err := server.DAGRunStore.FindAttempt(server.Context, exec.NewDAGRunRef(dagName, body.DagRunId))
+		latestAttempt, err := server.DAGRunStore.FindAttempt(server.Context, ir.NewDAGRunRef(dagName, body.DagRunId))
 		require.NoError(t, err)
 		latestStatus, err := latestAttempt.ReadStatus(server.Context)
 		require.NoError(t, err)
@@ -900,6 +899,88 @@ steps:
 	require.Equal(t, "test_name", body.Dags[0].Dag.Name)
 }
 
+func TestRecursiveDAGDiscoveryUsesFileNameAPI(t *testing.T) {
+	server := test.SetupServer(t, test.WithConfigMutator(func(cfg *config.Config) {
+		cfg.DAGDiscovery.Recursive = true
+	}))
+
+	nestedDir := filepath.Join(server.Config.Paths.DAGsDir, "team", "services")
+	require.NoError(t, os.MkdirAll(nestedDir, 0750))
+	dagSpec := fmt.Sprintf(`
+name: nested-effective-name
+steps:
+  - %s
+`, test.ShellQuote("exit 0"))
+	require.NoError(t, os.WriteFile(filepath.Join(nestedDir, "nested-file.yaml"), []byte(dagSpec), 0600))
+
+	resp := server.Client().Get("/api/v1/dags?name=nested-file").ExpectStatus(http.StatusOK).Send(t)
+	var listBody api.ListDAGs200JSONResponse
+	resp.Unmarshal(t, &listBody)
+	require.Len(t, listBody.Dags, 1)
+	assert.Equal(t, "nested-file", listBody.Dags[0].FileName)
+	assert.Equal(t, "nested-effective-name", listBody.Dags[0].Dag.Name)
+
+	resp = server.Client().Get("/api/v1/dags/nested-file").ExpectStatus(http.StatusOK).Send(t)
+	var details api.GetDAGDetails200JSONResponse
+	resp.Unmarshal(t, &details)
+	require.NotNil(t, details.Dag)
+	assert.Equal(t, "nested-effective-name", details.Dag.Name)
+
+	resp = server.Client().Post("/api/v1/dags/nested-file/start", api.ExecuteDAGJSONRequestBody{}).
+		ExpectStatus(http.StatusOK).Send(t)
+	var executeBody api.ExecuteDAG200JSONResponse
+	resp.Unmarshal(t, &executeBody)
+	require.NotEmpty(t, executeBody.DagRunId)
+
+	require.Eventually(t, func() bool {
+		url := fmt.Sprintf("/api/v1/dags/nested-file/dag-runs/%s", executeBody.DagRunId)
+		var status api.GetDAGDAGRunDetails200JSONResponse
+		if !getJSONWhenAvailable(t, server, url, &status) {
+			return false
+		}
+		return status.DagRun.Status == api.Status(ir.Succeeded)
+	}, dagRunEventuallyTimeout(5*time.Second), 200*time.Millisecond)
+}
+
+func TestExternalDAGFileSymlinkAPI(t *testing.T) {
+	server := test.SetupServer(t, test.WithConfigMutator(func(cfg *config.Config) {
+		cfg.DAGDiscovery.Symlinks = true
+	}))
+
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, "source.yaml")
+	dagSpec := fmt.Sprintf(`
+name: external-link
+steps:
+  - %s
+`, test.ShellQuote("exit 0"))
+	require.NoError(t, os.WriteFile(targetPath, []byte(dagSpec), 0600))
+	if err := os.Symlink(targetPath, filepath.Join(server.Config.Paths.DAGsDir, "external-link.yaml")); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+
+	server.Client().Get("/api/v1/dags/external-link").
+		ExpectStatus(http.StatusOK).Send(t)
+	resp := server.Client().Post(
+		"/api/v1/dags/external-link/enqueue",
+		api.EnqueueDAGDAGRunJSONRequestBody{},
+	).ExpectStatus(http.StatusOK).Send(t)
+	var enqueueBody api.EnqueueDAGDAGRun200JSONResponse
+	resp.Unmarshal(t, &enqueueBody)
+	require.NotEmpty(t, enqueueBody.DagRunId)
+
+	resp = server.Client().Put("/api/v1/dags/external-link/spec", api.UpdateDAGSpecJSONRequestBody{
+		Spec: dagSpec,
+	}).ExpectStatus(http.StatusForbidden).Send(t)
+	var errorBody api.Error
+	resp.Unmarshal(t, &errorBody)
+	assert.Equal(t, api.ErrorCodeForbidden, errorBody.Code)
+	assert.Contains(t, errorBody.Message, "external file symlink")
+
+	server.Client().Delete("/api/v1/dags/external-link").
+		ExpectStatus(http.StatusForbidden).Send(t)
+}
+
 type stubSchedulerStateStore struct {
 	state *scheduler.SchedulerState
 }
@@ -915,15 +996,15 @@ func (stubSchedulerStateStore) Save(context.Context, *scheduler.SchedulerState) 
 var errLoadSpecFatal = errors.New("load spec fatal")
 
 type loadSpecErrorDAGStore struct {
-	exec.DAGStore
+	dagstore.DAGStore
 	updateCalled bool
 }
 
-func (s *loadSpecErrorDAGStore) GetDetails(context.Context, string, ...spec.LoadOption) (*core.DAG, error) {
-	return &core.DAG{Name: "load-spec-error"}, nil
+func (s *loadSpecErrorDAGStore) GetDetails(context.Context, string, dagstore.DAGLoadOptions) (*ir.DAG, error) {
+	return &ir.DAG{Name: "load-spec-error"}, nil
 }
 
-func (s *loadSpecErrorDAGStore) LoadSpec(context.Context, []byte, ...spec.LoadOption) (*core.DAG, error) {
+func (s *loadSpecErrorDAGStore) LoadSpec(context.Context, []byte, string, dagstore.DAGLoadOptions) (*ir.DAG, error) {
 	return nil, errLoadSpecFatal
 }
 
@@ -1092,12 +1173,12 @@ func TestNextRunProjectionUsesConfiguredLocation(t *testing.T) {
 	est := time.FixedZone("EST", -5*3600)
 	helper.Config.Core.Location = est
 
-	schedule, err := core.NewCronSchedule("0 15 * * *")
+	schedule, err := ir.NewCronSchedule("0 15 * * *")
 	require.NoError(t, err)
 
-	dag := &core.DAG{
+	dag := &ir.DAG{
 		Name:     "timezone-next-run-dag",
-		Schedule: []core.Schedule{schedule},
+		Schedule: []ir.Schedule{schedule},
 	}
 
 	apiImpl := localapi.New(
@@ -1169,6 +1250,62 @@ steps:
 	require.Equal(t, listResp.Dags[1].Dag.Name, sseResp.Dags[1].Dag.Name)
 }
 
+func TestListDAGsActiveFilterMatchesSSEPath(t *testing.T) {
+	t.Parallel()
+
+	helper := test.Setup(t, test.WithStatusPersistence())
+	helper.DAG(t, `
+name: active-filter-live
+schedule: "0 * * * *"
+steps:
+  - run: echo live
+`)
+	suspended := helper.DAG(t, `
+name: active-filter-suspended
+schedule: "0 * * * *"
+steps:
+  - run: echo suspended
+`)
+	helper.DAG(t, `
+name: active-filter-unscheduled
+steps:
+  - run: echo unscheduled
+`)
+	require.NoError(t, helper.DAGStore.ToggleSuspend(context.Background(), suspended.FileName(), true))
+
+	apiImpl := localapi.New(
+		helper.DAGStore,
+		helper.DAGRunStore,
+		helper.QueueStore,
+		helper.ProcStore,
+		helper.DAGRunMgr,
+		helper.Config,
+		nil,
+		helper.ServiceRegistry,
+		nil,
+		nil,
+	)
+
+	active := true
+	listRespObj, err := apiImpl.ListDAGs(context.Background(), api.ListDAGsRequestObject{
+		Params: api.ListDAGsParams{Active: &active},
+	})
+	require.NoError(t, err)
+	listResp, ok := listRespObj.(*api.ListDAGs200JSONResponse)
+	require.True(t, ok)
+	require.Len(t, listResp.Dags, 1)
+	assert.Equal(t, "active-filter-live", listResp.Dags[0].Dag.Name)
+	assert.Equal(t, 1, listResp.Pagination.TotalRecords)
+
+	sseRespAny, err := apiImpl.GetDAGsListData(context.Background(), "active=true")
+	require.NoError(t, err)
+	sseResp, ok := sseRespAny.(api.ListDAGs200JSONResponse)
+	require.True(t, ok)
+	require.Len(t, sseResp.Dags, 1)
+	assert.Equal(t, listResp.Dags[0].Dag.Name, sseResp.Dags[0].Dag.Name)
+	assert.Equal(t, listResp.Pagination.TotalRecords, sseResp.Pagination.TotalRecords)
+}
+
 func TestGetDAGDetails_InvalidYAML_Returns200WithErrors(t *testing.T) {
 	t.Parallel()
 
@@ -1205,10 +1342,6 @@ func TestGetDAGDetails_InvalidYAML_Returns200WithErrors(t *testing.T) {
 
 	// Should contain build errors describing the YAML parse failure
 	require.NotEmpty(t, resp.Errors, "expected build errors for invalid YAML")
-
-	// File path should still be set
-	require.NotNil(t, resp.FilePath)
-	require.NotEmpty(t, *resp.FilePath)
 }
 
 func TestUpdateDAGSpec_AllowsLegacyDefinitionRuntimeVariableInput(t *testing.T) {

@@ -72,9 +72,16 @@ func OpenOrCreateFileWithoutSync(filepath string) (*os.File, error) {
 	return openOrCreateFile(filepath, 0)
 }
 
-func openOrCreateFile(filepath string, extraFlags int) (*os.File, error) {
-	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND | extraFlags
+// OpenOrCreateFileForRandomWrite opens or creates a file for writes at explicit offsets.
+func OpenOrCreateFileForRandomWrite(filepath string) (*os.File, error) {
+	return openFileWithFlags(filepath, os.O_CREATE|os.O_WRONLY)
+}
 
+func openOrCreateFile(filepath string, extraFlags int) (*os.File, error) {
+	return openFileWithFlags(filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND|extraFlags)
+}
+
+func openFileWithFlags(filepath string, flags int) (*os.File, error) {
 	var file *os.File
 	err := retryWindowsFileOp(func() error {
 		opened, err := os.OpenFile(filepath, flags, 0600) // nolint:gosec
@@ -304,6 +311,19 @@ func WriteFileAtomic(filePath string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("failed to sync directory %s: %w", dir, err)
 	}
 	return nil
+}
+
+// ReplaceFileDurable replaces target with source and persists the directory entry change.
+func ReplaceFileDurable(source, target string) error {
+	if err := ReplaceFile(source, target); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(target))
+}
+
+// SyncDir persists directory entry changes where the platform requires it.
+func SyncDir(path string) error {
+	return syncDir(path)
 }
 
 // WriteFileAtomicExclusive durably creates filePath without replacing an

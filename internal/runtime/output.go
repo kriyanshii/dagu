@@ -14,12 +14,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/cmn/logger"
-	"github.com/dagucloud/dagu/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/internal/cmn/masking"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/runtime/executor"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
+	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
+	"github.com/dagucloud/dagu/v2/internal/cmn/masking"
+	"github.com/dagucloud/dagu/v2/internal/runctx"
+	"github.com/dagucloud/dagu/v2/internal/runtime/executor"
 )
 
 type OutputCoordinator struct {
@@ -375,14 +375,14 @@ func (oc *OutputCoordinator) setupRemoteWriters(ctx context.Context, data NodeDa
 	stepName := data.Step.Name
 
 	// Create streaming writers for stdout and stderr
-	oc.stdoutWriter = factory.NewStepWriter(ctx, stepName, exec.StreamTypeStdout)
+	oc.stdoutWriter = factory.NewStepWriter(ctx, stepName, runctx.StreamTypeStdout)
 	oc.stdoutFileName = data.State.Stdout // Keep path for status reporting
 
 	// Check if stdout and stderr should be merged
 	if data.State.Stdout == data.State.Stderr {
 		oc.stderrWriter = oc.stdoutWriter
 	} else {
-		oc.stderrWriter = factory.NewStepWriter(ctx, stepName, exec.StreamTypeStderr)
+		oc.stderrWriter = factory.NewStepWriter(ctx, stepName, runctx.StreamTypeStderr)
 	}
 	oc.stderrFileName = data.State.Stderr
 

@@ -11,9 +11,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	llmpkg "github.com/dagucloud/dagu/internal/llm"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	llmpkg "github.com/dagucloud/dagu/v2/internal/llm"
 )
 
 // DecisionKind classifies what the controller chose to do this turn.
@@ -58,11 +57,11 @@ type Decision struct {
 // Planner asks the model which action to take next.
 // MaskFunc hides secret values in the copy of a conversation that leaves for an
 // external model.
-type MaskFunc func([]exec.LLMMessage) []exec.LLMMessage
+type MaskFunc func([]ir.LLMMessage) []ir.LLMMessage
 
 type Planner struct {
 	provider llmpkg.Provider
-	cfg      *core.LLMConfig
+	cfg      *ir.LLMConfig
 	catalog  *Catalog
 	system   string
 	mask     MaskFunc
@@ -73,7 +72,7 @@ type Planner struct {
 // resolved, so a workflow can parameterise its instructions.
 func NewPlanner(
 	provider llmpkg.Provider,
-	cfg *core.LLMConfig,
+	cfg *ir.LLMConfig,
 	catalog *Catalog,
 	system string,
 	mask MaskFunc,
@@ -91,8 +90,8 @@ func NewPlanner(
 // with the model's reply; the caller is responsible for appending the tool
 // result once the decision has been carried out.
 func (p *Planner) Next(ctx context.Context, st *State) (*Decision, error) {
-	msgs := make([]exec.LLMMessage, 0, len(st.Messages())+1)
-	msgs = append(msgs, exec.LLMMessage{Role: exec.RoleSystem, Content: p.systemPrompt(st)})
+	msgs := make([]ir.LLMMessage, 0, len(st.Messages())+1)
+	msgs = append(msgs, ir.LLMMessage{Role: ir.LLMRoleSystem, Content: p.systemPrompt(st)})
 	msgs = append(msgs, st.Messages()...)
 
 	// The prompt and transcript hold values resolved from the run scope, which
@@ -121,8 +120,8 @@ func (p *Planner) Next(ctx context.Context, st *State) (*Decision, error) {
 	st.Turns++
 
 	if len(resp.ToolCalls) == 0 {
-		st.Append(exec.LLMMessage{
-			Role:     exec.RoleAssistant,
+		st.Append(ir.LLMMessage{
+			Role:     ir.LLMRoleAssistant,
 			Content:  resp.Content,
 			Metadata: p.metadata(&resp.Usage),
 		})
@@ -132,13 +131,13 @@ func (p *Planner) Next(ctx context.Context, st *State) (*Decision, error) {
 	// One action per turn: the conversation records only the call that runs, so
 	// history never references a tool result that was never produced.
 	call := resp.ToolCalls[0]
-	st.Append(exec.LLMMessage{
-		Role:    exec.RoleAssistant,
+	st.Append(ir.LLMMessage{
+		Role:    ir.LLMRoleAssistant,
 		Content: resp.Content,
-		ToolCalls: []exec.ToolCall{{
+		ToolCalls: []ir.ToolCall{{
 			ID:   call.ID,
 			Type: call.Type,
-			Function: exec.ToolCallFunction{
+			Function: ir.ToolCallFunction{
 				Name:      call.Function.Name,
 				Arguments: call.Function.Arguments,
 			},
@@ -258,8 +257,8 @@ func (p *Planner) systemPrompt(st *State) string {
 	return sb.String()
 }
 
-func (p *Planner) metadata(usage *llmpkg.Usage) *exec.LLMMessageMetadata {
-	meta := &exec.LLMMessageMetadata{Provider: p.cfg.Provider, Model: p.cfg.Model}
+func (p *Planner) metadata(usage *llmpkg.Usage) *ir.LLMMessageMetadata {
+	meta := &ir.LLMMessageMetadata{Provider: p.cfg.Provider, Model: p.cfg.Model}
 	if usage != nil {
 		meta.PromptTokens = usage.PromptTokens
 		meta.CompletionTokens = usage.CompletionTokens
@@ -282,7 +281,7 @@ func decodeArgs(raw string) (map[string]any, error) {
 	return args, nil
 }
 
-func toProviderMessages(msgs []exec.LLMMessage) []llmpkg.Message {
+func toProviderMessages(msgs []ir.LLMMessage) []llmpkg.Message {
 	result := make([]llmpkg.Message, len(msgs))
 	for i, msg := range msgs {
 		result[i] = llmpkg.Message{

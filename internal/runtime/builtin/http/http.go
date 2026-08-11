@@ -15,10 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/runtime"
-	"github.com/dagucloud/dagu/internal/runtime/executor"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/executor/registry"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/runtime/executor"
 	"github.com/go-resty/resty/v2"
 	"github.com/go-viper/mapstructure/v2"
 )
@@ -57,7 +58,7 @@ type httpJSONResult struct {
 	Output     string              `json:"output,omitempty"`
 }
 
-func newHTTP(ctx context.Context, step core.Step) (executor.Executor, error) {
+func newHTTP(ctx context.Context, step ir.Step) (executor.Executor, error) {
 	var reqCfg httpConfig
 	if len(step.Script) > 0 {
 		if err := decodeHTTPConfigFromString(ctx, step.Script, &reqCfg); err != nil {
@@ -383,5 +384,5 @@ func splitMethodURL(cmdWithArgs string) (string, string) {
 }
 
 func init() {
-	executor.RegisterExecutor("http", newHTTP, nil, core.ExecutorCapabilities{Command: true, Script: true})
+	executor.RegisterExecutor("http", newHTTP, nil, registry.ExecutorCapabilities{Command: true, Script: true})
 }

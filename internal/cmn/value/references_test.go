@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/dagucloud/dagu/internal/cmn/value"
+	"github.com/dagucloud/dagu/v2/internal/cmn/value"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -86,6 +86,53 @@ func TestIsExactRef(t *testing.T) {
 
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, value.IsExactRef(tt.token), tt.token)
+	}
+}
+
+func TestHasStepRuntimeOutputReference(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{
+		"${build.stdout}",
+		"${build.stderr:1:2}",
+		"${build.exitCode}",
+		"${build.exit_code}",
+		"${build.output}",
+		"${build.output.result}",
+		"${build.outputs}",
+		"$build.outputs.result",
+	} {
+		assert.True(t, value.HasStepRuntimeOutputReference(input, "build"), input)
+	}
+
+	for _, input := range []string{
+		"${steps.build.outputs.artifact}",
+		"${other.stdout}",
+		"${build.status}",
+		"${build.stdout:-1}",
+	} {
+		assert.False(t, value.HasStepRuntimeOutputReference(input, "build"), input)
+	}
+}
+
+func TestHasReferenceToNamespace(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{
+		"${inputs.source}",
+		"$inputs.source",
+		"prefix ${outputs.artifact}",
+		"prefix $outputs.artifact",
+	} {
+		assert.True(t, value.HasReferenceToNamespace(input, "inputs", "outputs"), input)
+	}
+
+	for _, input := range []string{
+		"${params.source}",
+		"$build.output",
+		`\${inputs.source}`,
+	} {
+		assert.False(t, value.HasReferenceToNamespace(input, "inputs", "outputs"), input)
 	}
 }
 

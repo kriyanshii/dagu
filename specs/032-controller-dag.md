@@ -19,7 +19,7 @@ This spec defines:
 
 This spec does not define:
 
-- provider selection, model behavior, or prompt engineering beyond the framing
+- provider-specific model behavior or prompt engineering beyond the framing
   the controller supplies
 - `action: human.task` semantics, which are defined in `031-human-task.md`
 - REST, Web UI, MCP, notification, authentication, or authorization behavior
@@ -82,6 +82,11 @@ when `type` is `controller`, and `type: controller` requires it.
 `llm` MUST be present. Its `system` value, when set, is prepended to the
 controller's own framing rather than replacing it.
 
+`llm.model` MAY be an ordered array of model entries. The first entry is the
+primary model and each later entry is a fallback. Provider, model name, base
+URL, API-key name, and sampling overrides are taken from the selected entry in
+the same way as for a chat step.
+
 `llm.system` and every task `description` are author-written prompt text and
 MUST be resolved against the run's variables before the controller sees them, so
 a workflow can be steered by its parameters without editing the DAG. The
@@ -90,6 +95,23 @@ judged against.
 
 `llm.max_tool_iterations` bounds the number of decisions in a single run. When
 unset the bound is 50.
+
+`llm.observation_max_bytes` bounds each tool result added to the controller's
+conversation. It defaults to 524288 bytes (512 KiB). The limit applies only to
+the controller-facing copy: the step's output, logs, and human-task submission
+stay complete in their owning records. A truncated result uses an explicit
+marker when the configured limit can hold it and MUST remain valid UTF-8. A
+value of zero disables this size limit.
+
+`llm.max_context_tokens` is the prompt-token threshold for observation aging and
+defaults to 200000. Dagu does not infer it from the model. An author SHOULD
+override the default when needed to leave headroom below the provider's hard
+context limit. Once aging starts, `llm.observation_keep_recent` controls how many
+recent tool results remain complete; it defaults to 20. A zero
+`max_context_tokens` disables proactive aging. A zero
+`observation_keep_recent` disables aging entirely, including overflow recovery.
+These context-management fields are valid only in a controller DAG's root
+`llm` configuration and MUST NOT be set on an individual step.
 
 ### Step constraints
 
@@ -179,8 +201,55 @@ Each turn:
 
    For every other step, a bounded tail of stdout and stderr is reported.
 
+   The complete tool result is then limited by `llm.observation_max_bytes`.
+   Human answers repeated in the controller's system message use the same
+   controller-facing limit.
+
 The loop ends when no task is open, when an action opens a human task, or when a
 limit is reached.
+
+### Model fallback
+
+When `llm.model` is an array, every decision starts with the currently selected
+model. If its request still fails after the provider and logical retry budgets
+are exhausted, the controller advances through the remaining entries in order.
+A fallback that succeeds remains selected for later turns in the same controller
+process, so a sustained primary outage is not retried on every decision. A new
+process after suspension starts from the configured primary again.
+
+A failed model request MUST NOT consume a controller turn or append an assistant
+message. The next model receives the existing conversation unchanged, including
+assistant tool calls and tool results produced through earlier models. Every
+successful assistant message records the provider and model that produced it.
+
+Context-length recovery runs against the current model before advancing to a
+fallback. If all configured models fail, the run fails with an error identifying
+the exhausted models and preserving their underlying errors.
+
+### Observation aging and context recovery
+
+Every successful decision records the provider-reported prompt token count. If
+that count reaches `llm.max_context_tokens`, observation aging starts before the
+next decision and remains active for the rest of the run.
+
+While aging is active, the newest `llm.observation_keep_recent` tool results
+remain complete. Every older tool result is replaced by a deterministic
+one-line summary derived from the matching decision-timeline event. The
+assistant tool call, tool result role, and tool-call ID MUST remain in the
+conversation so provider tool-call protocols remain valid. Compacted results
+are persisted and MUST NOT expand again after suspension or retry.
+
+If observation aging is enabled and a provider rejects a decision because its
+context is too long, Dagu enables aging immediately and replaces every tool
+result whose deterministic summary is smaller, including results normally
+protected by `llm.observation_keep_recent`. It retries the decision once only
+when that compaction changed the transcript. The rejected request does not
+consume a controller turn or add an assistant message. If nothing can be made
+smaller, or if the rebuilt request also fails, that model attempt fails and
+ordinary model fallback applies. No further overflow retries are made for that
+decision. When aging is disabled, a context-too-long response advances to the
+next configured model without a recovery retry, or fails the run when no
+fallback remains.
 
 ### Task status
 
@@ -255,8 +324,8 @@ newly declared task starts open.
 
 A controller run records an ordered timeline of its decisions, persisted
 alongside goal progress and restored on resume. Each entry carries the turn it
-belongs to and one of these kinds: `action`, `task_complete`, `task_reopen`,
-`ask_user`, `rejected`, `stalled`. An `action` entry additionally carries the resulting
+belongs to and one of these kinds: `action`, `task_status`, `ask_user`,
+`rejected`, `stalled`. An `action` entry additionally carries the resulting
 status, which attempt of that step it was, and the start and finish times.
 
 The timeline exists because a controller has no dependency edges: execution

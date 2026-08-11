@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -202,6 +202,11 @@ func (l *ConfigLoader) Load() (*Config, error) {
 		}
 	}
 
+	var configFilesUsed []string
+	if l.v.ConfigFileUsed() != "" {
+		configFilesUsed = append(configFilesUsed, l.v.ConfigFileUsed())
+	}
+
 	if err := checkForLegacyKeys(l.v); err != nil {
 		return nil, err
 	}
@@ -223,6 +228,7 @@ func (l *ConfigLoader) Load() (*Config, error) {
 			return nil, fmt.Errorf("failed to read admin config: %w", err)
 		}
 	} else if l.requires(SectionServer) {
+		configFilesUsed = append(configFilesUsed, l.v.ConfigFileUsed())
 		if err := l.mergeTrustedProxyMappingsFile(l.v.ConfigFileUsed()); err != nil {
 			return nil, err
 		}
@@ -251,6 +257,13 @@ func (l *ConfigLoader) Load() (*Config, error) {
 	}
 
 	cfg.Paths.ConfigFileUsed = configFileUsed
+	for _, filename := range configFilesUsed {
+		resolved, err := l.resolvePath("config file", filename)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Paths.ConfigFilesUsed = append(cfg.Paths.ConfigFilesUsed, resolved)
+	}
 	l.finalizeBaseEnv(cfg)
 	cfg.Notices = l.notices
 	cfg.Warnings = l.warnings
@@ -316,7 +329,9 @@ func (l *ConfigLoader) buildConfig(def Definition) (*Config, error) {
 		return nil, err
 	}
 	l.loadLegacyEnv(&cfg)
-	l.finalizePaths(&cfg)
+	if err := l.finalizePaths(&cfg); err != nil {
+		return nil, err
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -342,6 +357,10 @@ func (l *ConfigLoader) loadCoreConfig(cfg *Config, def Definition) error {
 		EnvPassthroughPrefixes: envPassthroughPrefixes,
 		BaseEnv:                baseEnv,
 		Peer:                   l.loadPeerConfig(def.Peer),
+	}
+	cfg.DAGDiscovery = DAGDiscoveryConfig{
+		Recursive: l.v.GetBool("dag_discovery.recursive"),
+		Symlinks:  l.v.GetBool("dag_discovery.symlinks"),
 	}
 
 	if err := setTimezone(&cfg.Core); err != nil {
@@ -433,6 +452,24 @@ func (l *ConfigLoader) loadPathsConfig(cfg *Config, def Definition) error {
 		*m.target = resolved
 	}
 
+	wikiDir := def.Paths.WikiDir
+	if wikiDir != "" {
+		if def.Paths.DocsDir != "" {
+			l.warnings = append(l.warnings, "paths.docs_dir is deprecated and ignored because paths.wiki_dir is set")
+		}
+	} else if def.Paths.DocsDir != "" {
+		wikiDir = def.Paths.DocsDir
+		cfg.Paths.WikiDirLegacy = true
+		l.warnings = append(l.warnings, "paths.docs_dir is deprecated; use paths.wiki_dir instead")
+	}
+	if wikiDir != "" {
+		resolved, err := l.resolvePath("WikiDir", wikiDir)
+		if err != nil {
+			return err
+		}
+		cfg.Paths.WikiDir = resolved
+	}
+
 	return nil
 }
 
@@ -442,9 +479,30 @@ func (l *ConfigLoader) loadSecretsConfig(cfg *Config, def Definition) {
 	}
 
 	if def.Secrets.Vault != nil {
+		vaultCACert := def.Secrets.Vault.CACert
+		if resolved, err := l.resolvePath("secrets.vault.ca_cert", vaultCACert); err != nil {
+			l.warnings = append(l.warnings, err.Error())
+		} else {
+			vaultCACert = resolved
+		}
+		vaultClientCert := def.Secrets.Vault.ClientCert
+		if resolved, err := l.resolvePath("secrets.vault.client_cert", vaultClientCert); err != nil {
+			l.warnings = append(l.warnings, err.Error())
+		} else {
+			vaultClientCert = resolved
+		}
+		vaultClientKey := def.Secrets.Vault.ClientKey
+		if resolved, err := l.resolvePath("secrets.vault.client_key", vaultClientKey); err != nil {
+			l.warnings = append(l.warnings, err.Error())
+		} else {
+			vaultClientKey = resolved
+		}
 		cfg.Secrets.Vault = VaultSecretsConfig{
-			Address: def.Secrets.Vault.Address,
-			Token:   def.Secrets.Vault.Token,
+			Address:    def.Secrets.Vault.Address,
+			Token:      def.Secrets.Vault.Token,
+			CACert:     vaultCACert,
+			ClientCert: vaultClientCert,
+			ClientKey:  vaultClientKey,
 		}
 	}
 
@@ -556,14 +614,14 @@ func (l *ConfigLoader) loadServerFlags(cfg *Config, def Definition) {
 	if def.Headless != nil {
 		cfg.Server.Headless = *def.Headless
 	}
-	cfg.Server.AccessLog = AccessLogAll
+	cfg.Server.AccessLog = AccessLogNone
 	if def.AccessLog != nil {
 		switch AccessLogMode(*def.AccessLog) {
 		case AccessLogAll, AccessLogNonPublic, AccessLogNone:
 			cfg.Server.AccessLog = AccessLogMode(*def.AccessLog)
 		default:
 			l.warnings = append(l.warnings, fmt.Sprintf(
-				"Invalid access_log_mode value: %q, defaulting to 'all'", *def.AccessLog))
+				"Invalid access_log_mode value: %q, defaulting to 'none'", *def.AccessLog))
 		}
 	}
 	if def.LatestStatusToday != nil {
@@ -1406,11 +1464,6 @@ func (l *ConfigLoader) loadProcConfig(cfg *Config, def Definition) {
 			"proc.heartbeat_interval", l.v.GetString("proc.heartbeat_interval"),
 		)
 	}
-	if l.v.IsSet("proc.heartbeat_sync_interval") {
-		cfg.Proc.HeartbeatSyncInterval = l.parseDuration(
-			"proc.heartbeat_sync_interval", l.v.GetString("proc.heartbeat_sync_interval"),
-		)
-	}
 	if l.v.IsSet("proc.stale_threshold") {
 		cfg.Proc.StaleThreshold = l.parseDuration(
 			"proc.stale_threshold", l.v.GetString("proc.stale_threshold"),
@@ -1427,12 +1480,6 @@ func (l *ConfigLoader) loadLegacySchedulerProcConfig(cfg *Config, def Definition
 		"proc.heartbeat_interval",
 		"scheduler.heartbeat_interval",
 		l.schedulerLegacyValue(def, "scheduler.heartbeat_interval", func(sd *SchedulerDef) string { return sd.HeartbeatInterval }),
-	)
-	l.applyDeprecatedProcAlias(
-		&cfg.Proc.HeartbeatSyncInterval,
-		"proc.heartbeat_sync_interval",
-		"scheduler.heartbeat_sync_interval",
-		l.schedulerLegacyValue(def, "scheduler.heartbeat_sync_interval", func(sd *SchedulerDef) string { return sd.HeartbeatSyncInterval }),
 	)
 	l.applyDeprecatedProcAlias(
 		&cfg.Proc.StaleThreshold,
@@ -1473,9 +1520,6 @@ func (l *ConfigLoader) applyDeprecatedProcAlias(
 func (l *ConfigLoader) setProcDefaults(cfg *Config) {
 	if cfg.Proc.HeartbeatInterval <= 0 {
 		cfg.Proc.HeartbeatInterval = 5 * time.Second
-	}
-	if cfg.Proc.HeartbeatSyncInterval <= 0 {
-		cfg.Proc.HeartbeatSyncInterval = 10 * time.Second
 	}
 	if cfg.Proc.StaleThreshold <= 0 {
 		cfg.Proc.StaleThreshold = 90 * time.Second
@@ -1673,7 +1717,7 @@ func (l *ConfigLoader) loadCacheConfig(cfg *Config, def Definition) {
 	}
 }
 
-func (l *ConfigLoader) finalizePaths(cfg *Config) {
+func (l *ConfigLoader) finalizePaths(cfg *Config) error {
 	derivedPaths := []struct {
 		target      *string
 		defaultPath string
@@ -1708,12 +1752,55 @@ func (l *ConfigLoader) finalizePaths(cfg *Config) {
 	if cfg.Paths.ArtifactDir == "" {
 		cfg.Paths.ArtifactDir = filepath.Join(cfg.Paths.DataDir, "artifacts")
 	}
+	if cfg.Paths.WikiDir == "" {
+		wikiDir := filepath.Join(cfg.Paths.DAGsDir, "wiki")
+		docsDir := filepath.Join(cfg.Paths.DAGsDir, "docs")
+		selected, legacy, err := selectRenamedPath(wikiDir, docsDir)
+		if err != nil {
+			return fmt.Errorf("wiki directory: %w", err)
+		}
+		cfg.Paths.WikiDir = selected
+		cfg.Paths.WikiDirLegacy = legacy
+		if legacy {
+			l.notices = append(l.notices, fmt.Sprintf("Using existing legacy docs directory %s for the Wiki; configure paths.wiki_dir to choose another location", selected))
+		}
+	}
 
 	if cfg.Paths.Executable == "" {
 		if executable, err := os.Executable(); err == nil {
 			cfg.Paths.Executable = executable
 		}
 	}
+	return nil
+}
+
+func selectRenamedPath(canonical, legacy string) (string, bool, error) {
+	canonicalExists, err := pathExists(canonical)
+	if err != nil {
+		return "", false, err
+	}
+	legacyExists, err := pathExists(legacy)
+	if err != nil {
+		return "", false, err
+	}
+	if canonicalExists && legacyExists {
+		return "", false, fmt.Errorf("both %s and %s exist; set paths.wiki_dir explicitly after reconciling them", canonical, legacy)
+	}
+	if legacyExists {
+		return legacy, true, nil
+	}
+	return canonical, false, nil
+}
+
+func pathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect %s: %w", path, err)
 }
 
 // LoadLegacyFields applies deprecated configuration fields to the current Config.
@@ -1860,6 +1947,8 @@ func (l *ConfigLoader) setupViper(xdgConfig XDGConfig, homeDir, configFile, appH
 func (l *ConfigLoader) setViperDefaultValues(paths Paths) {
 	// Paths
 	l.v.SetDefault("skip_examples", false)
+	l.v.SetDefault("dag_discovery.recursive", false)
+	l.v.SetDefault("dag_discovery.symlinks", false)
 	l.v.SetDefault("paths.dags_dir", paths.DAGsDir)
 	l.v.SetDefault("paths.suspend_flags_dir", paths.SuspendFlagsDir)
 	l.v.SetDefault("paths.data_dir", paths.DataDir)
@@ -1880,7 +1969,7 @@ func (l *ConfigLoader) setViperDefaultValues(paths Paths) {
 	l.v.SetDefault("metrics", "private")
 	l.v.SetDefault("cache", "normal")
 	l.v.SetDefault("log_format", "text")
-	l.v.SetDefault("access_log_mode", "all")
+	l.v.SetDefault("access_log_mode", "none")
 
 	// Coordinator
 	l.v.SetDefault("coordinator.host", "127.0.0.1")
@@ -1981,12 +2070,17 @@ var envBindings = []envBinding{
 	// Core
 	{key: "default_shell", env: "DEFAULT_SHELL"},
 	{key: "skip_examples", env: "SKIP_EXAMPLES"},
+	{key: "dag_discovery.recursive", env: "DAG_DISCOVERY_RECURSIVE"},
+	{key: "dag_discovery.symlinks", env: "DAG_DISCOVERY_SYMLINKS"},
 	{key: "env_passthrough", env: "ENV_PASSTHROUGH"},
 	{key: "env_passthrough_prefixes", env: "ENV_PASSTHROUGH_PREFIXES"},
 
 	// Secrets
 	{key: "secrets.vault.address", env: "SECRETS_VAULT_ADDRESS"},
 	{key: "secrets.vault.token", env: "SECRETS_VAULT_TOKEN"},
+	{key: "secrets.vault.ca_cert", env: "SECRETS_VAULT_CA_CERT", isPath: true},
+	{key: "secrets.vault.client_cert", env: "SECRETS_VAULT_CLIENT_CERT", isPath: true},
+	{key: "secrets.vault.client_key", env: "SECRETS_VAULT_CLIENT_KEY", isPath: true},
 	{key: "secrets.kubernetes.namespace", env: "SECRETS_KUBERNETES_NAMESPACE"},
 	{key: "secrets.kubernetes.kubeconfig", env: "SECRETS_KUBERNETES_KUBECONFIG", isPath: true},
 	{key: "secrets.kubernetes.context", env: "SECRETS_KUBERNETES_CONTEXT"},
@@ -2008,11 +2102,9 @@ var envBindings = []envBinding{
 
 	// Proc
 	{key: "proc.heartbeat_interval", env: "PROC_HEARTBEAT_INTERVAL"},
-	{key: "proc.heartbeat_sync_interval", env: "PROC_HEARTBEAT_SYNC_INTERVAL"},
 	{key: "proc.stale_threshold", env: "PROC_STALE_THRESHOLD"},
 	// Proc (legacy scheduler aliases)
 	{key: "scheduler.heartbeat_interval", env: "SCHEDULER_HEARTBEAT_INTERVAL"},
-	{key: "scheduler.heartbeat_sync_interval", env: "SCHEDULER_HEARTBEAT_SYNC_INTERVAL"},
 	{key: "scheduler.stale_threshold", env: "SCHEDULER_STALE_THRESHOLD"},
 
 	// UI
@@ -2075,6 +2167,8 @@ var envBindings = []envBinding{
 	{key: "paths.dags_dir", env: "DAGS", isPath: true},
 	{key: "paths.dags_dir", env: "DAGS_DIR", isPath: true},
 	{key: "paths.alt_dags_dir", env: "ALT_DAGS_DIR", isPath: true},
+	{key: "paths.wiki_dir", env: "WIKI_DIR", isPath: true},
+	{key: "paths.docs_dir", env: "DOCS_DIR", isPath: true},
 	{key: "paths.executable", env: "EXECUTABLE", isPath: true},
 	{key: "paths.log_dir", env: "LOG_DIR", isPath: true},
 	{key: "paths.artifact_dir", env: "ARTIFACT_DIR", isPath: true},

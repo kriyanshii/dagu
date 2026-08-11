@@ -6,7 +6,7 @@ syntax = "proto3";
 package coordinator.v1;
 
 // protolint:disable:next MAX_LINE_LENGTH
-option go_package = "github.com/dagucloud/dagu/proto/coordinator/v1;coordinatorv1";
+option go_package = "github.com/dagucloud/dagu/v2/proto/coordinator/v1;coordinatorv1";
 
 
 // Service definition for Coordinator Service.
@@ -207,6 +207,7 @@ message HeartbeatResponse {
 message AckTaskClaimRequest {
   string worker_id = 1;
   string claim_token = 2;
+  string attempt_key = 3;
 }
 
 message AckTaskClaimResponse {
@@ -253,6 +254,8 @@ message ReportStatusRequest {
   string worker_id = 1;
   DAGRunStatusProto status = 2;
   string owner_coordinator_id = 3;
+  string source_file = 4;
+  string labels = 5;
 }
 
 // Response message for reporting DAG run status.
@@ -285,6 +288,10 @@ message LogChunk {
   string attempt_id = 11;
   // Owner coordinator used to validate owner-bound log writes.
   string owner_coordinator_id = 12;
+  // Durable attempt identity used to fence log writes.
+  string attempt_key = 13;
+  // When present, data is written at this absolute byte position; otherwise it is appended.
+  optional uint64 byte_offset = 14;
 }
 
 // Type of log stream.
@@ -320,6 +327,8 @@ message ArtifactChunk {
   string attempt_id = 10;
   // Owner coordinator used to validate owner-bound artifact writes.
   string owner_coordinator_id = 11;
+  // Durable attempt identity used to fence artifact writes.
+  string attempt_key = 12;
 }
 
 // Response message for artifact streaming.

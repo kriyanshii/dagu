@@ -12,28 +12,29 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/persis/file/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	filedagrun "github.com/dagucloud/dagu/v2/internal/persis/file/dagrun"
 	"github.com/stretchr/testify/require"
 )
 
 func TestAttemptCloseKeepsSingleStatusFile(t *testing.T) {
 	ctx := context.Background()
 	baseDir := t.TempDir()
-	store := dagrun.New(baseDir, dagrun.WithLatestStatusToday(false))
-	dag := &core.DAG{Name: "single-status-close"}
+	store := filedagrun.New(baseDir, filedagrun.WithLatestStatusToday(false))
+	dag := &ir.DAG{Name: "single-status-close"}
 	startedAt := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 
-	attempt, err := store.CreateAttempt(ctx, dag, startedAt, "run-1", exec.NewDAGRunAttemptOptions{})
+	attempt, err := store.CreateAttempt(ctx, dag, startedAt, "run-1", dagrun.NewDAGRunAttemptOptions{})
 	require.NoError(t, err)
 	require.NoError(t, attempt.Open(ctx))
-	require.NoError(t, attempt.Write(ctx, exec.DAGRunStatus{
+	require.NoError(t, attempt.Write(ctx, ir.DAGRunStatus{
 		Name:      dag.Name,
 		DAGRunID:  "run-1",
 		AttemptID: attempt.ID(),
-		Status:    core.Queued,
-		QueuedAt:  exec.FormatTime(startedAt),
+		Status:    ir.Queued,
+		QueuedAt:  stringutil.FormatTime(startedAt),
 	}))
 
 	statusFile := findOnlyStatusFile(t, baseDir)
@@ -48,7 +49,7 @@ func TestAttemptCloseKeepsSingleStatusFile(t *testing.T) {
 
 	status, err := attempt.ReadStatus(ctx)
 	require.NoError(t, err)
-	require.Equal(t, core.Queued, status.Status)
+	require.Equal(t, ir.Queued, status.Status)
 }
 
 func TestAttempt_WriteClearsRuntimeConditionsWhenStatusLeavesQueued(t *testing.T) {
@@ -56,45 +57,45 @@ func TestAttempt_WriteClearsRuntimeConditionsWhenStatusLeavesQueued(t *testing.T
 
 	ctx := context.Background()
 	baseDir := t.TempDir()
-	store := dagrun.New(baseDir, dagrun.WithLatestStatusToday(false))
-	dag := &core.DAG{Name: "runtime-conditions"}
+	store := filedagrun.New(baseDir, filedagrun.WithLatestStatusToday(false))
+	dag := &ir.DAG{Name: "runtime-conditions"}
 	startedAt := time.Date(2026, 5, 19, 1, 2, 3, 0, time.UTC)
 
-	attempt, err := store.CreateAttempt(ctx, dag, startedAt, "run-1", exec.NewDAGRunAttemptOptions{})
+	attempt, err := store.CreateAttempt(ctx, dag, startedAt, "run-1", dagrun.NewDAGRunAttemptOptions{})
 	require.NoError(t, err)
 	require.NoError(t, attempt.Open(ctx))
 	defer func() {
 		_ = attempt.Close(ctx)
 	}()
 
-	condition := exec.NewDAGRunCondition(
+	condition := ir.NewDAGRunCondition(
 		"Runnable",
 		"False",
 		"MaxConcurrencyReached",
 		"The DAG-run cannot start because the queue active-run concurrency limit has been reached.",
 		startedAt,
 	)
-	queued := exec.DAGRunStatus{
+	queued := ir.DAGRunStatus{
 		Name:       dag.Name,
 		DAGRunID:   "run-1",
 		AttemptID:  attempt.ID(),
-		Status:     core.Queued,
-		QueuedAt:   exec.FormatTime(startedAt),
-		Conditions: []exec.DAGRunCondition{condition},
+		Status:     ir.Queued,
+		QueuedAt:   stringutil.FormatTime(startedAt),
+		Conditions: []ir.DAGRunCondition{condition},
 	}
 	require.NoError(t, attempt.Write(ctx, queued))
 
 	persistedQueued, err := attempt.ReadStatus(ctx)
 	require.NoError(t, err)
-	require.Equal(t, []exec.DAGRunCondition{condition}, persistedQueued.Conditions)
+	require.Equal(t, []ir.DAGRunCondition{condition}, persistedQueued.Conditions)
 
 	running := queued
-	running.Status = core.Running
+	running.Status = ir.Running
 	require.NoError(t, attempt.Write(ctx, running))
 
 	persistedRunning, err := attempt.ReadStatus(ctx)
 	require.NoError(t, err)
-	require.Equal(t, core.Running, persistedRunning.Status)
+	require.Equal(t, ir.Running, persistedRunning.Status)
 	require.Empty(t, persistedRunning.Conditions)
 }
 
@@ -103,11 +104,11 @@ func TestCompareAndSwapLatestAttemptStatusReturnsNormalizedConditions(t *testing
 
 	ctx := context.Background()
 	baseDir := t.TempDir()
-	store := dagrun.New(baseDir, dagrun.WithLatestStatusToday(false))
-	dag := &core.DAG{Name: "conditions-return"}
+	store := filedagrun.New(baseDir, filedagrun.WithLatestStatusToday(false))
+	dag := &ir.DAG{Name: "conditions-return"}
 	startedAt := time.Date(2026, 5, 19, 1, 2, 3, 0, time.UTC)
 
-	attempt, err := store.CreateAttempt(ctx, dag, startedAt, "run-conditions", exec.NewDAGRunAttemptOptions{})
+	attempt, err := store.CreateAttempt(ctx, dag, startedAt, "run-conditions", dagrun.NewDAGRunAttemptOptions{})
 	require.NoError(t, err)
 	require.NoError(t, attempt.Open(ctx))
 	closed := false
@@ -117,13 +118,13 @@ func TestCompareAndSwapLatestAttemptStatusReturnsNormalizedConditions(t *testing
 		}
 	})
 
-	status := exec.DAGRunStatus{
+	status := ir.DAGRunStatus{
 		Name:      dag.Name,
 		DAGRunID:  "run-conditions",
 		AttemptID: attempt.ID(),
-		Status:    core.Queued,
-		Conditions: []exec.DAGRunCondition{
-			exec.NewDAGRunCondition(
+		Status:    ir.Queued,
+		Conditions: []ir.DAGRunCondition{
+			ir.NewDAGRunCondition(
 				"Runnable",
 				"False",
 				"MaxConcurrencyReached",
@@ -138,18 +139,18 @@ func TestCompareAndSwapLatestAttemptStatusReturnsNormalizedConditions(t *testing
 
 	updated, swapped, err := store.CompareAndSwapLatestAttemptStatus(
 		ctx,
-		exec.NewDAGRunRef(dag.Name, "run-conditions"),
+		ir.NewDAGRunRef(dag.Name, "run-conditions"),
 		attempt.ID(),
-		core.Queued,
-		func(latest *exec.DAGRunStatus) error {
-			latest.Status = core.Failed
+		ir.Queued,
+		func(latest *ir.DAGRunStatus) error {
+			latest.Status = ir.Failed
 			return nil
 		},
 	)
 	require.NoError(t, err)
 	require.True(t, swapped)
 	require.NotNil(t, updated)
-	require.Equal(t, core.Failed, updated.Status)
+	require.Equal(t, ir.Failed, updated.Status)
 	require.Empty(t, updated.Conditions)
 }
 
@@ -161,7 +162,7 @@ func findOnlyStatusFile(t *testing.T, root string) string {
 		if walkErr != nil {
 			return walkErr
 		}
-		if d.IsDir() || d.Name() != dagrun.JSONLStatusFile {
+		if d.IsDir() || d.Name() != filedagrun.JSONLStatusFile {
 			return nil
 		}
 		matches = append(matches, path)

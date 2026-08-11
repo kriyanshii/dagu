@@ -12,8 +12,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/dagucloud/dagu/internal/auth"
-	"github.com/dagucloud/dagu/internal/workspace"
+	"github.com/dagucloud/dagu/v2/internal/auth"
+	"github.com/dagucloud/dagu/v2/internal/workspace"
 )
 
 // Config holds the overall configuration for the application.
@@ -23,6 +23,7 @@ type Config struct {
 	EventStore      EventStoreConfig
 	Webhooks        WebhooksConfig
 	Paths           PathsConfig
+	DAGDiscovery    DAGDiscoveryConfig
 	Secrets         SecretsConfig
 	UI              UI
 	Queues          Queues
@@ -38,6 +39,12 @@ type Config struct {
 	License         LicenseConfig
 	Notices         []string
 	Warnings        []string
+}
+
+// DAGDiscoveryConfig controls how DAG definitions are discovered.
+type DAGDiscoveryConfig struct {
+	Recursive bool
+	Symlinks  bool
 }
 
 const DefaultWebhookMaxPayloadSize = 1 * 1024 * 1024
@@ -148,7 +155,7 @@ type Server struct {
 	APIBasePath       string
 	Headless          bool
 	CheckUpdates      bool
-	AccessLog         AccessLogMode // "all" (default), "non-public", or "none"
+	AccessLog         AccessLogMode // "all", "non-public", or "none" (default)
 	LatestStatusToday bool
 	TLS               *TLSConfig
 	Auth              Auth
@@ -289,6 +296,24 @@ type AuthOIDC struct {
 	RoleMapping    OIDCRoleMapping
 }
 
+// OIDCPolicy contains the OIDC settings evaluated for each login.
+type OIDCPolicy struct {
+	AutoSignup     bool
+	AllowedDomains []string
+	Whitelist      []string
+	RoleMapping    OIDCRoleMapping
+}
+
+// Policy returns the login-time policy from the OIDC configuration.
+func (o AuthOIDC) Policy() OIDCPolicy {
+	return OIDCPolicy{
+		AutoSignup:     o.AutoSignup,
+		AllowedDomains: o.AllowedDomains,
+		Whitelist:      o.Whitelist,
+		RoleMapping:    o.RoleMapping,
+	}
+}
+
 // IsConfigured returns true if all required OIDC fields are set.
 func (o AuthOIDC) IsConfigured() bool {
 	return o.ClientID != "" && o.ClientSecret != "" && o.ClientURL != "" && o.Issuer != ""
@@ -366,6 +391,8 @@ const (
 // PathsConfig represents the file system paths configuration.
 type PathsConfig struct {
 	DAGsDir            string
+	WikiDir            string
+	WikiDirLegacy      bool
 	Executable         string
 	LogDir             string
 	ArtifactDir        string
@@ -389,6 +416,7 @@ type PathsConfig struct {
 	WorkspacesDir      string
 	ViewsDir           string
 	ConfigFileUsed     string
+	ConfigFilesUsed    []string
 }
 
 // SecretsConfig holds global defaults for external secret providers.
@@ -426,8 +454,11 @@ type AlibabaSecretsConfig struct {
 
 // VaultSecretsConfig holds shared HashiCorp Vault client defaults.
 type VaultSecretsConfig struct {
-	Address string
-	Token   string
+	Address    string
+	Token      string
+	CACert     string
+	ClientCert string
+	ClientKey  string
 }
 
 // KubernetesSecretsConfig holds shared Kubernetes client defaults.
@@ -520,9 +551,8 @@ type Worker struct {
 
 // Proc represents local proc-file heartbeat configuration.
 type Proc struct {
-	HeartbeatInterval     time.Duration // Default: 5s
-	HeartbeatSyncInterval time.Duration // Default: 10s
-	StaleThreshold        time.Duration // Default: 90s
+	HeartbeatInterval time.Duration // Default: 5s
+	StaleThreshold    time.Duration // Default: 90s
 }
 
 // Scheduler represents the scheduler configuration.
@@ -616,12 +646,6 @@ func (c *Config) validateProc() error {
 		return fmt.Errorf(
 			"proc.heartbeat_interval (%s) must be less than proc.stale_threshold (%s)",
 			p.HeartbeatInterval, p.StaleThreshold,
-		)
-	}
-	if p.HeartbeatSyncInterval > 0 && p.StaleThreshold > 0 && p.HeartbeatSyncInterval >= p.StaleThreshold {
-		return fmt.Errorf(
-			"proc.heartbeat_sync_interval (%s) must be less than proc.stale_threshold (%s)",
-			p.HeartbeatSyncInterval, p.StaleThreshold,
 		)
 	}
 	return nil

@@ -13,9 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	apiv1 "github.com/dagucloud/dagu/api/v1"
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/humantask"
+	apiv1 "github.com/dagucloud/dagu/v2/api/v1"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
+	"github.com/dagucloud/dagu/v2/internal/humantask"
+	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,7 +28,7 @@ func TestAuthorizeHumanTaskMutationClassifiesLookupErrors(t *testing.T) {
 		wantCode   apiv1.ErrorCode
 		wantStatus int
 	}{
-		{name: "missing run", err: exec.ErrDAGRunIDNotFound, wantCode: apiv1.ErrorCodeNotFound, wantStatus: http.StatusNotFound},
+		{name: "missing run", err: dagrun.ErrDAGRunIDNotFound, wantCode: apiv1.ErrorCodeNotFound, wantStatus: http.StatusNotFound},
 		{name: "storage failure", err: errors.New("storage unavailable"), wantCode: apiv1.ErrorCodeInternalError, wantStatus: http.StatusInternalServerError},
 	}
 
@@ -192,11 +193,11 @@ type trackingReadCloser struct {
 }
 
 type lookupErrorDAGRunStore struct {
-	exec.DAGRunStore
+	dagrun.DAGRunStore
 	err error
 }
 
-func (s lookupErrorDAGRunStore) FindAttempt(context.Context, exec.DAGRunRef) (exec.DAGRunAttempt, error) {
+func (s lookupErrorDAGRunStore) FindAttempt(context.Context, ir.DAGRunRef) (dagrun.DAGRunAttempt, error) {
 	return nil, s.err
 }
 

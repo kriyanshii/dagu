@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,6 +30,34 @@ func testLoadWithError(t *testing.T, opts ...ConfigLoaderOption) error {
 	opts = append([]ConfigLoaderOption{WithAppHomeDir(t.TempDir())}, opts...)
 	_, err := NewConfigLoader(viper.New(), opts...).Load()
 	return err
+}
+
+func TestLoad_DAGDiscovery(t *testing.T) {
+	t.Run("Default", func(t *testing.T) {
+		t.Setenv("DAGU_DAG_DISCOVERY_RECURSIVE", "")
+		t.Setenv("DAGU_DAG_DISCOVERY_SYMLINKS", "")
+		cfg := testLoad(t)
+		assert.False(t, cfg.DAGDiscovery.Recursive)
+		assert.False(t, cfg.DAGDiscovery.Symlinks)
+	})
+
+	t.Run("YAML", func(t *testing.T) {
+		cfg := loadFromYAML(t, `
+dag_discovery:
+  recursive: true
+  symlinks: true
+`)
+		assert.True(t, cfg.DAGDiscovery.Recursive)
+		assert.True(t, cfg.DAGDiscovery.Symlinks)
+	})
+
+	t.Run("Environment", func(t *testing.T) {
+		t.Setenv("DAGU_DAG_DISCOVERY_RECURSIVE", "true")
+		t.Setenv("DAGU_DAG_DISCOVERY_SYMLINKS", "true")
+		cfg := testLoad(t)
+		assert.True(t, cfg.DAGDiscovery.Recursive)
+		assert.True(t, cfg.DAGDiscovery.Symlinks)
+	})
 }
 
 func preserveTZEnv(t *testing.T) {
@@ -117,6 +145,7 @@ func TestLoad_Env(t *testing.T) {
 		"DAGU_KEY_FILE":  filepath.Join(testPaths, "key.pem"),
 
 		"DAGU_DAGS_DIR":             filepath.Join(testPaths, "dags"),
+		"DAGU_WIKI_DIR":             filepath.Join(testPaths, "wiki"),
 		"DAGU_EXECUTABLE":           filepath.Join(testPaths, "bin", "dagu"),
 		"DAGU_LOG_DIR":              filepath.Join(testPaths, "logs"),
 		"DAGU_DATA_DIR":             filepath.Join(testPaths, "data"),
@@ -183,6 +212,7 @@ func TestLoad_Env(t *testing.T) {
 
 	require.NotEmpty(t, cfg.Paths.ConfigFileUsed)
 	cfg.Paths.ConfigFileUsed = ""
+	cfg.Paths.ConfigFilesUsed = nil
 
 	expected := &Config{
 		Core: Core{
@@ -262,6 +292,7 @@ func TestLoad_Env(t *testing.T) {
 		},
 		Paths: PathsConfig{
 			DAGsDir:            filepath.Join(testPaths, "dags"),
+			WikiDir:            filepath.Join(testPaths, "wiki"),
 			AltDAGsDir:         filepath.Join(testPaths, "alt-dags"),
 			Executable:         filepath.Join(testPaths, "bin", "dagu"),
 			LogDir:             filepath.Join(testPaths, "logs"),
@@ -326,9 +357,8 @@ func TestLoad_Env(t *testing.T) {
 			},
 		},
 		Proc: Proc{
-			HeartbeatInterval:     5 * time.Second,
-			HeartbeatSyncInterval: 10 * time.Second,
-			StaleThreshold:        90 * time.Second,
+			HeartbeatInterval: 5 * time.Second,
+			StaleThreshold:    90 * time.Second,
 		},
 		Scheduler: Scheduler{
 			Port:                    9999,
@@ -644,7 +674,7 @@ scheduler:
 			APIBasePath:       "/api/v1",
 			Headless:          true,
 			CheckUpdates:      false,
-			AccessLog:         AccessLogAll,
+			AccessLog:         AccessLogNone,
 			LatestStatusToday: true,
 			Auth: Auth{
 				Mode:  AuthModeBasic, // Explicit basic mode from YAML
@@ -724,6 +754,7 @@ scheduler:
 		Paths: PathsConfig{
 			DAGsDir:            resolvedTestPath(t, "/var/dagu/dags"),
 			LogDir:             resolvedTestPath(t, "/var/dagu/logs"),
+			WikiDir:            resolvedTestPath(t, "/var/dagu/dags/wiki"),
 			DataDir:            resolvedTestPath(t, "/var/dagu/data"),
 			DAGStateDir:        resolvedTestPath(t, "/var/dagu/data/dag-state"),
 			ToolsDir:           resolvedTestPath(t, "/var/dagu/tools"),
@@ -784,9 +815,8 @@ scheduler:
 			},
 		},
 		Proc: Proc{
-			HeartbeatInterval:     5 * time.Second,
-			HeartbeatSyncInterval: 10 * time.Second,
-			StaleThreshold:        90 * time.Second,
+			HeartbeatInterval: 5 * time.Second,
+			StaleThreshold:    90 * time.Second,
 		},
 		Scheduler: Scheduler{
 			Port:                    7890,
@@ -861,6 +891,67 @@ paths:
 	assert.Equal(t, filepath.Join(dataDir, "service-registry"), cfg.Paths.ServiceRegistryDir)
 	assert.Equal(t, filepath.Join(dataDir, "users"), cfg.Paths.UsersDir)
 	assert.Equal(t, filepath.Join(dataDir, "contexts"), cfg.Paths.ContextsDir)
+}
+
+func TestLoad_WikiDirectoryCompatibility(t *testing.T) {
+	t.Run("canonical config", func(t *testing.T) {
+		cfg := loadFromYAML(t, `
+paths:
+  wiki_dir: "/custom/wiki"
+`)
+		assert.Equal(t, resolvedTestPath(t, "/custom/wiki"), cfg.Paths.WikiDir)
+		assert.False(t, cfg.Paths.WikiDirLegacy)
+		assert.NotContains(t, strings.Join(cfg.Warnings, "\n"), "paths.docs_dir")
+	})
+
+	t.Run("legacy config", func(t *testing.T) {
+		cfg := loadFromYAML(t, `
+paths:
+  docs_dir: "/custom/docs"
+`)
+		assert.Equal(t, resolvedTestPath(t, "/custom/docs"), cfg.Paths.WikiDir)
+		assert.True(t, cfg.Paths.WikiDirLegacy)
+		assert.Contains(t, strings.Join(cfg.Warnings, "\n"), "paths.docs_dir is deprecated")
+	})
+
+	t.Run("canonical config wins", func(t *testing.T) {
+		cfg := loadFromYAML(t, `
+paths:
+  wiki_dir: "/custom/wiki"
+  docs_dir: "/custom/docs"
+`)
+		assert.Equal(t, resolvedTestPath(t, "/custom/wiki"), cfg.Paths.WikiDir)
+		assert.False(t, cfg.Paths.WikiDirLegacy)
+		assert.Contains(t, strings.Join(cfg.Warnings, "\n"), "paths.docs_dir is deprecated and ignored")
+	})
+
+	t.Run("legacy environment", func(t *testing.T) {
+		cfg := loadWithEnv(t, "# empty", map[string]string{"DAGU_DOCS_DIR": "/env/docs"})
+		assert.Equal(t, resolvedTestPath(t, "/env/docs"), cfg.Paths.WikiDir)
+		assert.True(t, cfg.Paths.WikiDirLegacy)
+		assert.Contains(t, strings.Join(cfg.Warnings, "\n"), "paths.docs_dir is deprecated")
+	})
+
+	t.Run("adopts existing legacy default", func(t *testing.T) {
+		dagsDir := t.TempDir()
+		legacyDir := filepath.Join(dagsDir, "docs")
+		require.NoError(t, os.Mkdir(legacyDir, 0o700))
+		cfg := loadFromYAML(t, fmt.Sprintf("paths:\n  dags_dir: %q\n", dagsDir))
+		assert.Equal(t, legacyDir, cfg.Paths.WikiDir)
+		assert.True(t, cfg.Paths.WikiDirLegacy)
+		require.Len(t, cfg.Notices, 1)
+		assert.Contains(t, cfg.Notices[0], "Using existing legacy docs directory")
+	})
+
+	t.Run("rejects ambiguous defaults", func(t *testing.T) {
+		dagsDir := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(dagsDir, "wiki"), 0o700))
+		require.NoError(t, os.Mkdir(filepath.Join(dagsDir, "docs"), 0o700))
+		err := loadWithErrorFromYAML(t, fmt.Sprintf("paths:\n  dags_dir: %q\n", dagsDir))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "both")
+		assert.Contains(t, err.Error(), "paths.wiki_dir")
+	})
 }
 
 func TestLoad_EdgeCases_ToolsDirFromConfig(t *testing.T) {
@@ -995,21 +1086,17 @@ auth:
   mode: none
 proc:
   heartbeat_interval: 7s
-  heartbeat_sync_interval: 11s
   stale_threshold: 95s
 scheduler:
   heartbeat_interval: 20s
-  heartbeat_sync_interval: 25s
   stale_threshold: 120s
 `)
 
 		assert.Equal(t, 7*time.Second, cfg.Proc.HeartbeatInterval)
-		assert.Equal(t, 11*time.Second, cfg.Proc.HeartbeatSyncInterval)
 		assert.Equal(t, 95*time.Second, cfg.Proc.StaleThreshold)
-		require.Len(t, cfg.Warnings, 3)
+		require.Len(t, cfg.Warnings, 2)
 		assert.Contains(t, cfg.Warnings[0], "scheduler.heartbeat_interval is deprecated and ignored")
-		assert.Contains(t, cfg.Warnings[1], "scheduler.heartbeat_sync_interval is deprecated and ignored")
-		assert.Contains(t, cfg.Warnings[2], "scheduler.stale_threshold is deprecated and ignored")
+		assert.Contains(t, cfg.Warnings[1], "scheduler.stale_threshold is deprecated and ignored")
 	})
 
 	t.Run("ProcConfigLegacySchedulerFallback", func(t *testing.T) {
@@ -1018,17 +1105,14 @@ auth:
   mode: none
 scheduler:
   heartbeat_interval: 8s
-  heartbeat_sync_interval: 12s
   stale_threshold: 100s
 `)
 
 		assert.Equal(t, 8*time.Second, cfg.Proc.HeartbeatInterval)
-		assert.Equal(t, 12*time.Second, cfg.Proc.HeartbeatSyncInterval)
 		assert.Equal(t, 100*time.Second, cfg.Proc.StaleThreshold)
-		require.Len(t, cfg.Warnings, 3)
+		require.Len(t, cfg.Warnings, 2)
 		assert.Contains(t, cfg.Warnings[0], "scheduler.heartbeat_interval is deprecated")
-		assert.Contains(t, cfg.Warnings[1], "scheduler.heartbeat_sync_interval is deprecated")
-		assert.Contains(t, cfg.Warnings[2], "scheduler.stale_threshold is deprecated")
+		assert.Contains(t, cfg.Warnings[1], "scheduler.stale_threshold is deprecated")
 	})
 
 	t.Run("ProcConfigLoadsForServiceScopedCommands", func(t *testing.T) {
@@ -1049,7 +1133,6 @@ auth:
   mode: none
 proc:
   heartbeat_interval: 6s
-  heartbeat_sync_interval: 9s
   stale_threshold: 75s
 `), 0600)
 				require.NoError(t, err)
@@ -1057,7 +1140,6 @@ proc:
 				cfg := testLoad(t, WithConfigFile(configFile), WithService(tc.service))
 
 				assert.Equal(t, 6*time.Second, cfg.Proc.HeartbeatInterval)
-				assert.Equal(t, 9*time.Second, cfg.Proc.HeartbeatSyncInterval)
 				assert.Equal(t, 75*time.Second, cfg.Proc.StaleThreshold)
 			})
 		}
@@ -1201,6 +1283,7 @@ func loadFromYAML(t *testing.T, yamlContent string) *Config {
 
 	cfg := testLoad(t, WithConfigFile(configFile))
 	cfg.Paths.ConfigFileUsed = ""
+	cfg.Paths.ConfigFilesUsed = nil
 	return cfg
 }
 
@@ -1466,6 +1549,9 @@ secrets:
   vault:
     address: "https://vault.example.com"
     token: "yaml-token"
+    ca_cert: "relative/vault-ca.pem"
+    client_cert: "relative/vault-client-cert.pem"
+    client_key: "relative/vault-client-key.pem"
   kubernetes:
     namespace: "secret-ns"
     kubeconfig: "relative/kubeconfig"
@@ -1485,6 +1571,9 @@ secrets:
 
 		assert.Equal(t, "https://vault.example.com", cfg.Secrets.Vault.Address)
 		assert.Equal(t, "yaml-token", cfg.Secrets.Vault.Token)
+		assert.Equal(t, resolvedTestPath(t, "relative/vault-ca.pem"), cfg.Secrets.Vault.CACert)
+		assert.Equal(t, resolvedTestPath(t, "relative/vault-client-cert.pem"), cfg.Secrets.Vault.ClientCert)
+		assert.Equal(t, resolvedTestPath(t, "relative/vault-client-key.pem"), cfg.Secrets.Vault.ClientKey)
 		assert.Equal(t, "secret-ns", cfg.Secrets.Kubernetes.Namespace)
 		assert.Equal(t, resolvedTestPath(t, "relative/kubeconfig"), cfg.Secrets.Kubernetes.Kubeconfig)
 		assert.Equal(t, "prod", cfg.Secrets.Kubernetes.Context)
@@ -1500,9 +1589,15 @@ secrets:
 	t.Run("FromEnv", func(t *testing.T) {
 		kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
 		alibabaCAFile := filepath.Join(t.TempDir(), "alibaba-ca.pem")
+		vaultCACert := filepath.Join(t.TempDir(), "vault-ca.pem")
+		vaultClientCert := filepath.Join(t.TempDir(), "vault-client-cert.pem")
+		vaultClientKey := filepath.Join(t.TempDir(), "vault-client-key.pem")
 		cfg := loadWithEnv(t, "# empty", map[string]string{
 			"DAGU_SECRETS_VAULT_ADDRESS":         "https://vault.example.com",
 			"DAGU_SECRETS_VAULT_TOKEN":           "env-token",
+			"DAGU_SECRETS_VAULT_CA_CERT":         vaultCACert,
+			"DAGU_SECRETS_VAULT_CLIENT_CERT":     vaultClientCert,
+			"DAGU_SECRETS_VAULT_CLIENT_KEY":      vaultClientKey,
 			"DAGU_SECRETS_KUBERNETES_NAMESPACE":  "env-ns",
 			"DAGU_SECRETS_KUBERNETES_KUBECONFIG": kubeconfig,
 			"DAGU_SECRETS_KUBERNETES_CONTEXT":    "env-context",
@@ -1517,6 +1612,9 @@ secrets:
 
 		assert.Equal(t, "https://vault.example.com", cfg.Secrets.Vault.Address)
 		assert.Equal(t, "env-token", cfg.Secrets.Vault.Token)
+		assert.Equal(t, vaultCACert, cfg.Secrets.Vault.CACert)
+		assert.Equal(t, vaultClientCert, cfg.Secrets.Vault.ClientCert)
+		assert.Equal(t, vaultClientKey, cfg.Secrets.Vault.ClientKey)
 		assert.Equal(t, "env-ns", cfg.Secrets.Kubernetes.Namespace)
 		assert.Equal(t, kubeconfig, cfg.Secrets.Kubernetes.Kubeconfig)
 		assert.Equal(t, "env-context", cfg.Secrets.Kubernetes.Context)
@@ -1592,30 +1690,25 @@ secrets:
 func TestLoad_ProcConfig(t *testing.T) {
 	t.Run("FromEnv", func(t *testing.T) {
 		cfg := loadWithEnv(t, "# empty", map[string]string{
-			"DAGU_AUTH_MODE":                    "none",
-			"DAGU_PROC_HEARTBEAT_INTERVAL":      "6s",
-			"DAGU_PROC_HEARTBEAT_SYNC_INTERVAL": "9s",
-			"DAGU_PROC_STALE_THRESHOLD":         "75s",
+			"DAGU_AUTH_MODE":               "none",
+			"DAGU_PROC_HEARTBEAT_INTERVAL": "6s",
+			"DAGU_PROC_STALE_THRESHOLD":    "75s",
 		})
 		assert.Equal(t, 6*time.Second, cfg.Proc.HeartbeatInterval)
-		assert.Equal(t, 9*time.Second, cfg.Proc.HeartbeatSyncInterval)
 		assert.Equal(t, 75*time.Second, cfg.Proc.StaleThreshold)
 	})
 
 	t.Run("LegacySchedulerEnvFallback", func(t *testing.T) {
 		cfg := loadWithEnv(t, "# empty", map[string]string{
-			"DAGU_AUTH_MODE":                         "none",
-			"DAGU_SCHEDULER_HEARTBEAT_INTERVAL":      "8s",
-			"DAGU_SCHEDULER_HEARTBEAT_SYNC_INTERVAL": "12s",
-			"DAGU_SCHEDULER_STALE_THRESHOLD":         "100s",
+			"DAGU_AUTH_MODE":                    "none",
+			"DAGU_SCHEDULER_HEARTBEAT_INTERVAL": "8s",
+			"DAGU_SCHEDULER_STALE_THRESHOLD":    "100s",
 		})
 		assert.Equal(t, 8*time.Second, cfg.Proc.HeartbeatInterval)
-		assert.Equal(t, 12*time.Second, cfg.Proc.HeartbeatSyncInterval)
 		assert.Equal(t, 100*time.Second, cfg.Proc.StaleThreshold)
-		require.Len(t, cfg.Warnings, 3)
+		require.Len(t, cfg.Warnings, 2)
 		assert.Contains(t, cfg.Warnings[0], "scheduler.heartbeat_interval is deprecated")
-		assert.Contains(t, cfg.Warnings[1], "scheduler.heartbeat_sync_interval is deprecated")
-		assert.Contains(t, cfg.Warnings[2], "scheduler.stale_threshold is deprecated")
+		assert.Contains(t, cfg.Warnings[1], "scheduler.stale_threshold is deprecated")
 	})
 }
 
@@ -1889,7 +1982,7 @@ access_log_mode: "none"
 
 	t.Run("AccessLogDefault", func(t *testing.T) {
 		cfg := loadFromYAML(t, "# empty")
-		assert.Equal(t, AccessLogAll, cfg.Server.AccessLog)
+		assert.Equal(t, AccessLogNone, cfg.Server.AccessLog)
 	})
 
 	t.Run("AccessLogFromEnv", func(t *testing.T) {
@@ -1905,7 +1998,7 @@ auth:
   mode: none
 access_log_mode: "invalid"
 `)
-		assert.Equal(t, AccessLogAll, cfg.Server.AccessLog)
+		assert.Equal(t, AccessLogNone, cfg.Server.AccessLog)
 		require.Len(t, cfg.Warnings, 1)
 		assert.Contains(t, cfg.Warnings[0], "Invalid access_log_mode value")
 		assert.Contains(t, cfg.Warnings[0], "invalid")

@@ -5,13 +5,20 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dagucloud/dagu/v2/internal/cmn/config"
+	"github.com/dagucloud/dagu/v2/internal/dagstore"
+	filedag "github.com/dagucloud/dagu/v2/internal/persis/file/dag"
+	"github.com/dagucloud/dagu/v2/internal/runtime"
+	frontendapi "github.com/dagucloud/dagu/v2/internal/service/frontend/api/v1"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,6 +40,269 @@ func TestServerExposesCompactToolSurface(t *testing.T) {
 	require.Equal(t, []string{toolChange, toolExecute, toolRead}, names)
 }
 
+func TestChangeToolRenamesAndDeletesDAG(t *testing.T) {
+	ctx := context.Background()
+	store := filedag.New(t.TempDir(), filedag.WithSkipExamples(true))
+	require.NoError(t, store.Create(ctx, "mcp-original", []byte(`
+name: mcp-original
+steps:
+  - run: echo hello
+`)))
+	require.NoError(t, store.Create(ctx, "mcp-existing", []byte(`
+name: mcp-existing
+steps:
+  - run: echo existing
+`)))
+	cfg := &config.Config{}
+	cfg.Server.Permissions = map[config.Permission]bool{config.PermissionWriteDAGs: true}
+	api := frontendapi.New(
+		store,
+		nil,
+		nil,
+		nil,
+		runtime.Manager{},
+		cfg,
+		nil,
+		nil,
+		prometheus.NewRegistry(),
+		nil,
+	)
+	session := connectTestClient(t, ctx, NewServer(api))
+
+	conflict := callTool(t, ctx, session, toolChange, changeInput{
+		Type:    changeTypeRenameDAG,
+		Name:    "mcp-original",
+		NewName: "mcp-existing",
+	})
+	require.True(t, conflict.IsError)
+	require.Equal(t, changeErrorConflict, structuredMap(t, conflict)["code"])
+
+	rename := changeInput{
+		Type:    changeTypeRenameDAG,
+		Name:    "mcp-original",
+		NewName: "mcp-renamed",
+	}
+	preview := callTool(t, ctx, session, toolChange, rename)
+	require.False(t, preview.IsError)
+	require.Equal(t, false, structuredMap(t, preview)["applied"])
+	_, err := store.GetSpec(ctx, rename.Name)
+	require.NoError(t, err)
+	_, err = store.GetSpec(ctx, rename.NewName)
+	require.ErrorIs(t, err, dagstore.ErrDAGNotFound)
+
+	rename.Mode = changeModeApply
+	applied := callTool(t, ctx, session, toolChange, rename)
+	require.False(t, applied.IsError)
+	require.Equal(t, true, structuredMap(t, applied)["applied"])
+	require.Equal(t, dagSpecURI(rename.NewName), structuredMap(t, applied)["newDagUri"])
+	require.NotContains(t, structuredMap(t, applied), "dagUri")
+	_, err = store.GetSpec(ctx, rename.Name)
+	require.ErrorIs(t, err, dagstore.ErrDAGNotFound)
+	spec, err := store.GetSpec(ctx, rename.NewName)
+	require.NoError(t, err)
+	require.Contains(t, spec, "name: mcp-original")
+
+	remove := changeInput{Type: changeTypeDeleteDAG, Name: rename.NewName}
+	preview = callTool(t, ctx, session, toolChange, remove)
+	require.False(t, preview.IsError)
+	_, err = store.GetSpec(ctx, remove.Name)
+	require.NoError(t, err)
+
+	remove.Mode = changeModeApply
+	deleted := callTool(t, ctx, session, toolChange, remove)
+	require.False(t, deleted.IsError)
+	require.Equal(t, true, structuredMap(t, deleted)["applied"])
+	require.NotContains(t, structuredMap(t, deleted), "dagUri")
+	_, err = store.GetSpec(ctx, remove.Name)
+	require.ErrorIs(t, err, dagstore.ErrDAGNotFound)
+
+	missing := callTool(t, ctx, session, toolChange, remove)
+	require.True(t, missing.IsError)
+	require.Equal(t, changeErrorResourceNotFound, structuredMap(t, missing)["code"])
+}
+
+func TestDAGChangeInputValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantField string
+	}{
+		{
+			name:  "rename",
+			input: `{"type":"rename_dag","name":"old","newName":"new"}`,
+		},
+		{
+			name:  "delete",
+			input: `{"type":"delete_dag","name":"old"}`,
+		},
+		{
+			name:      "rename requires destination",
+			input:     `{"type":"rename_dag","name":"old"}`,
+			wantField: changeFieldNewName,
+		},
+		{
+			name:      "rename rejects blank destination",
+			input:     `{"type":"rename_dag","name":"old","newName":" "}`,
+			wantField: changeFieldNewName,
+		},
+		{
+			name:      "rename requires different destination",
+			input:     `{"type":"rename_dag","name":"old","newName":"old"}`,
+			wantField: changeFieldNewName,
+		},
+		{
+			name:      "rename validates destination",
+			input:     `{"type":"rename_dag","name":"old","newName":"bad name"}`,
+			wantField: changeFieldNewName,
+		},
+		{
+			name:      "delete rejects spec",
+			input:     `{"type":"delete_dag","name":"old","spec":"steps: []"}`,
+			wantField: changeFieldSpec,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input, changeErr := parseChangeToolInput(json.RawMessage(test.input))
+			if test.wantField == "" {
+				require.Nil(t, changeErr)
+				require.Equal(t, changeModePreview, input.Mode)
+				return
+			}
+			require.NotNil(t, changeErr)
+			require.Equal(t, changeErrorInvalidToolInput, changeErr.Code)
+			require.Equal(t, test.wantField, changeErr.Field)
+		})
+	}
+}
+
+func TestExecuteToolSupportsNoReuse(t *testing.T) {
+	ctx := context.Background()
+	session := connectTestClient(t, ctx, NewServer(nil))
+
+	result, err := session.ListTools(ctx, nil)
+	require.NoError(t, err)
+	schema, err := json.Marshal(findTool(t, result.Tools, toolExecute).InputSchema)
+	require.NoError(t, err)
+	require.Contains(t, string(schema), `"noReuse"`)
+
+	startBody := executeBody(executeInput{NoReuse: true})
+	require.NotNil(t, startBody.NoReuse)
+	require.True(t, *startBody.NoReuse)
+
+	enqueueBody := enqueueBody(executeInput{NoReuse: true})
+	require.NotNil(t, enqueueBody.NoReuse)
+	require.True(t, *enqueueBody.NoReuse)
+}
+
+func TestServerAdvertisesSupportedCapabilities(t *testing.T) {
+	ctx := context.Background()
+	session := connectTestClient(t, ctx, NewServer(nil))
+
+	result := session.InitializeResult()
+	require.NotNil(t, result)
+	require.Equal(t, &mcpsdk.PromptCapabilities{}, result.Capabilities.Prompts)
+	require.Equal(t, &mcpsdk.ResourceCapabilities{Subscribe: true}, result.Capabilities.Resources)
+	require.Equal(t, &mcpsdk.ToolCapabilities{}, result.Capabilities.Tools)
+	apps, ok := result.Capabilities.Extensions[mcpAppsExtensionURI].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, []any{mcpAppMIMEType}, apps["mimeTypes"])
+}
+
+func TestServerExposesMCPAppRunInspector(t *testing.T) {
+	ctx := context.Background()
+	session := connectTestClient(t, ctx, NewServer(nil))
+
+	tools, err := session.ListTools(ctx, nil)
+	require.NoError(t, err)
+	for _, name := range []string{toolRead, toolExecute} {
+		tool := findTool(t, tools.Tools, name)
+		require.Equal(t, runInspectorURI, tool.Meta[runInspectorMetaKey])
+		ui, ok := tool.Meta["ui"].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, runInspectorURI, ui["resourceUri"])
+		require.Equal(t, []any{"model", "app"}, ui["visibility"])
+	}
+
+	resources, err := session.ListResources(ctx, nil)
+	require.NoError(t, err)
+	resource := findResource(t, resources.Resources, runInspectorURI)
+	require.Equal(t, mcpAppMIMEType, resource.MIMEType)
+	require.NotEmpty(t, resource.Meta)
+
+	result, err := session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: runInspectorURI})
+	require.NoError(t, err)
+	require.Len(t, result.Contents, 1)
+	require.Equal(t, mcpAppMIMEType, result.Contents[0].MIMEType)
+	require.Contains(t, result.Contents[0].Text, "<!doctype html>")
+	require.Contains(t, result.Contents[0].Text, `name: "`+toolExecute+`"`)
+	require.NotEmpty(t, result.Contents[0].Meta)
+}
+
+func TestServerExposesStepLogResource(t *testing.T) {
+	ctx := context.Background()
+	session := connectTestClient(t, ctx, NewServer(nil))
+
+	templates, err := session.ListResourceTemplates(ctx, nil)
+	require.NoError(t, err)
+	require.True(t, slices.ContainsFunc(templates.ResourceTemplates, func(template *mcpsdk.ResourceTemplate) bool {
+		return template.URITemplate == "dagu://runs/{name}/{dagRunId}/steps/{stepName}/logs"
+	}))
+
+	const expectedURI = "dagu://runs/demo%20dag/run%2F1/steps/build%2Foutput/logs"
+	require.Equal(t, expectedURI, stepLogURI("demo dag", "run/1", "build/output"))
+	input, readErr := parseReadResourceURI(expectedURI)
+	require.Nil(t, readErr)
+	require.Equal(t, readTargetStepLog, input.Target)
+	require.Equal(t, "demo dag", input.Name)
+	require.Equal(t, "run/1", input.DAGRunID)
+	require.Equal(t, "build/output", input.StepName)
+
+	input, readErr = parseReadToolInput(json.RawMessage(`{
+		"target":"step_log",
+		"name":"demo dag",
+		"dagRunId":"run/1",
+		"stepName":"build/output"
+	}`))
+	require.Nil(t, readErr)
+	require.Equal(t, expectedURI, input.URI)
+
+	_, err = session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: expectedURI + "?tail=100"})
+	require.Error(t, err)
+}
+
+func TestReadToolValidatesDAGQuery(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		wantError bool
+	}{
+		{name: "active true", query: "active=true"},
+		{name: "active false", query: "active=false"},
+		{name: "numeric active", query: "active=1", wantError: true},
+		{name: "uppercase active", query: "active=TRUE", wantError: true},
+		{name: "unsupported parameter", query: "unknown=value", wantError: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := json.Marshal(readInput{Target: readTargetDAGs, Query: test.query})
+			require.NoError(t, err)
+
+			input, readErr := parseReadToolInput(payload)
+			if test.wantError {
+				require.NotNil(t, readErr)
+				require.Equal(t, readErrorInvalidToolInput, readErr.Code)
+				require.Equal(t, readFieldQuery, readErr.Field)
+				return
+			}
+			require.Nil(t, readErr)
+			require.Equal(t, test.query, input.Query)
+		})
+	}
+}
+
 func TestHTTPHandlerServesStreamableMCP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testConnectTimeout)
 	defer cancel()
@@ -50,6 +320,10 @@ func TestHTTPHandlerServesStreamableMCP(t *testing.T) {
 	result, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
 	require.Len(t, result.Tools, 3)
+
+	resource, err := session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: runInspectorURI})
+	require.NoError(t, err)
+	require.Len(t, resource.Contents, 1)
 }
 
 func TestServerExposesReferenceResourcesAndPrompts(t *testing.T) {
@@ -67,11 +341,19 @@ func TestServerExposesReferenceResourcesAndPrompts(t *testing.T) {
 	require.Contains(t, got.Contents[0].Text, "retry")
 	require.Contains(t, got.Contents[0].Text, "stop")
 
+	execute, err := session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: "dagu://reference/execute-tool"})
+	require.NoError(t, err)
+	require.Len(t, execute.Contents, 1)
+	require.Contains(t, execute.Contents[0].Text, "noReuse")
+
 	authoring, err := session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: "dagu://reference/authoring"})
 	require.NoError(t, err)
 	require.Len(t, authoring.Contents, 1)
 	require.Contains(t, authoring.Contents[0].Text, "human.task")
 	require.Contains(t, authoring.Contents[0].Text, "Human task form properties")
+	require.Contains(t, authoring.Contents[0].Text, "type: build")
+	require.Contains(t, authoring.Contents[0].Text, "${outputs.name}")
+	require.Contains(t, authoring.Contents[0].Text, "Build workflows are local-only")
 
 	prompts, err := session.ListPrompts(ctx, nil)
 	require.NoError(t, err)
@@ -81,6 +363,10 @@ func TestServerExposesReferenceResourcesAndPrompts(t *testing.T) {
 	}
 	require.Contains(t, names, "dagu_create_dag")
 	require.Contains(t, names, "dagu_edit_dag")
+	require.Contains(t, names, "dagu_create_wiki_page")
+	require.Contains(t, names, "dagu_edit_wiki_page")
+	require.Contains(t, names, "dagu_create_doc")
+	require.Contains(t, names, "dagu_edit_doc")
 	require.Contains(t, names, "dagu_debug_failed_run")
 }
 
@@ -114,6 +400,83 @@ func TestPromptMentionsPreviewBeforeApply(t *testing.T) {
 	text := string(data)
 	require.True(t, strings.Contains(text, "mode=preview"))
 	require.True(t, strings.Contains(text, "dagu_change"))
+}
+
+func TestWikiPagePromptsIncludeRequiredUpsertFields(t *testing.T) {
+	ctx := context.Background()
+	session := connectTestClient(t, ctx, NewServer(nil))
+
+	tests := []struct {
+		name           string
+		arguments      map[string]string
+		request        string
+		wantFieldBlock string
+	}{
+		{
+			name: "dagu_create_wiki_page",
+			arguments: map[string]string{
+				"workspace": "operations",
+				"path":      "runbooks/restart",
+				"goal":      "Describe a safe restart.",
+			},
+			request:        "Describe a safe restart.",
+			wantFieldBlock: "mode=preview, type=upsert_wiki_page, workspace=operations, path=runbooks/restart, and content set to the complete drafted Markdown",
+		},
+		{
+			name: "dagu_edit_wiki_page",
+			arguments: map[string]string{
+				"workspace": "operations",
+				"path":      "runbooks/restart",
+				"change":    "Add the rollback steps.",
+			},
+			request:        "Add the rollback steps.",
+			wantFieldBlock: "mode=preview, type=upsert_wiki_page, workspace=operations, path=runbooks/restart, and content set to the complete edited Markdown",
+		},
+		{
+			name: "dagu_create_doc",
+			arguments: map[string]string{
+				"workspace": "operations",
+				"path":      "runbooks/restart",
+				"goal":      "Describe a safe restart.",
+			},
+			request:        "Describe a safe restart.",
+			wantFieldBlock: "mode=preview, type=upsert_wiki_page, workspace=operations, path=runbooks/restart, and content set to the complete drafted Markdown",
+		},
+		{
+			name: "dagu_edit_doc",
+			arguments: map[string]string{
+				"workspace": "operations",
+				"path":      "runbooks/restart",
+				"change":    "Add the rollback steps.",
+			},
+			request:        "Add the rollback steps.",
+			wantFieldBlock: "mode=preview, type=upsert_wiki_page, workspace=operations, path=runbooks/restart, and content set to the complete edited Markdown",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := session.GetPrompt(ctx, &mcpsdk.GetPromptParams{
+				Name:      test.name,
+				Arguments: test.arguments,
+			})
+			require.NoError(t, err)
+			require.Len(t, result.Messages, 1)
+
+			data, err := result.Messages[0].Content.MarshalJSON()
+			require.NoError(t, err)
+			var content struct {
+				Text string `json:"text"`
+			}
+			require.NoError(t, json.Unmarshal(data, &content))
+
+			requestText, instruction, ok := strings.Cut(content.Text, "\n\nCall dagu_change with ")
+			require.True(t, ok)
+			require.Contains(t, requestText, test.request)
+			fieldBlock, _, ok := strings.Cut(instruction, ". Apply only ")
+			require.True(t, ok)
+			require.Equal(t, test.wantFieldBlock, fieldBlock)
+		})
+	}
 }
 
 func TestRunLogsURIWithQueryPreservesQuery(t *testing.T) {
@@ -171,4 +534,26 @@ func connectTestClient(t *testing.T, ctx context.Context, server *mcpsdk.Server)
 	t.Cleanup(func() { _ = clientSession.Close() })
 
 	return clientSession
+}
+
+func findTool(t *testing.T, tools []*mcpsdk.Tool, name string) *mcpsdk.Tool {
+	t.Helper()
+	for _, tool := range tools {
+		if tool.Name == name {
+			return tool
+		}
+	}
+	t.Fatalf("tool %q not found", name)
+	return nil
+}
+
+func findResource(t *testing.T, resources []*mcpsdk.Resource, uri string) *mcpsdk.Resource {
+	t.Helper()
+	for _, resource := range resources {
+		if resource.URI == uri {
+			return resource
+		}
+	}
+	t.Fatalf("resource %q not found", uri)
+	return nil
 }

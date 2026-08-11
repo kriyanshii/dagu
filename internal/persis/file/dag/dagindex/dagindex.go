@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dagucloud/dagu/internal/cmn/fileutil"
-	"github.com/dagucloud/dagu/internal/core"
-	"github.com/dagucloud/dagu/internal/core/spec"
-	indexv1 "github.com/dagucloud/dagu/proto/index/v1"
+	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/spec"
+	indexv1 "github.com/dagucloud/dagu/v2/proto/index/v1"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -23,14 +23,15 @@ const (
 	// IndexFileName is the name of the DAG definition index file.
 	IndexFileName = ".dag.index"
 	// IndexVersion is the current index format version.
-	IndexVersion = 2
+	IndexVersion = 3
 )
 
 // YAMLFileMeta holds stat metadata for a single YAML file.
 type YAMLFileMeta struct {
-	Name    string // filename, e.g. "my-dag.yaml"
-	Size    int64
-	ModTime int64 // UnixNano
+	Name     string // Slash-normalized path relative to the DAG directory.
+	LoadPath string // Canonical path used to read the current file.
+	Size     int64
+	ModTime  int64 // UnixNano
 }
 
 // SuspendFlags is the set of suspend flag filenames present in flagsBaseDir.
@@ -68,14 +69,14 @@ func Load(indexPath string, yamlFiles []YAMLFileMeta, flags SuspendFlags) []*ind
 		if !ok {
 			return nil
 		}
-		if e.FileSize != f.Size || e.ModTime != f.ModTime {
+		if e.FileSize != f.Size || e.ModTime != f.ModTime || e.LoadPath != f.LoadPath {
 			return nil
 		}
 	}
 
 	// Validate suspend flags.
 	for _, e := range idx.Entries {
-		_, flagged := flags[SuspendFlagName(e.Name)]
+		_, flagged := flags[SuspendFlagName(entryFileName(e.FilePath))]
 		if e.Suspended != flagged {
 			return nil
 		}
@@ -107,8 +108,9 @@ func Build(
 			FilePath: f.Name,
 			FileSize: f.Size,
 			ModTime:  f.ModTime,
+			LoadPath: f.LoadPath,
 		}
-		buildEntry(ctx, dagDir, entry, flags, loadOpts...)
+		buildEntry(ctx, yamlFilePath(dagDir, f), entry, flags, loadOpts...)
 		idx.Entries = append(idx.Entries, entry)
 	}
 
@@ -119,7 +121,7 @@ func Build(
 // recording why the file could not be read when that happens.
 func buildEntry(
 	ctx context.Context,
-	dagDir string,
+	filePath string,
 	entry *indexv1.DAGIndexEntry,
 	flags SuspendFlags,
 	loadOpts ...spec.LoadOption,
@@ -133,9 +135,10 @@ func buildEntry(
 		spec.WithAllowBuildErrors(),
 	)
 
-	dag, err := spec.Load(ctx, filepath.Join(dagDir, entry.FilePath), opts...)
+	dag, err := spec.Load(ctx, filePath, opts...)
 	if err != nil {
-		entry.Name = strings.TrimSuffix(entry.FilePath, filepath.Ext(entry.FilePath))
+		base := filepath.Base(filepath.FromSlash(entry.FilePath))
+		entry.Name = strings.TrimSuffix(base, filepath.Ext(base))
 		entry.LoadError = err.Error()
 		return
 	}
@@ -150,7 +153,7 @@ func buildEntry(
 		entry.LoadError = joinErrors(dag.BuildErrors)
 	}
 
-	_, flagged := flags[SuspendFlagName(dag.Name)]
+	_, flagged := flags[SuspendFlagName(entryFileName(entry.FilePath))]
 	entry.Suspended = flagged
 }
 
@@ -164,10 +167,16 @@ func buildEntry(
 func RefreshFailures(
 	ctx context.Context,
 	dagDir string,
+	yamlFiles []YAMLFileMeta,
 	entries []*indexv1.DAGIndexEntry,
 	flags SuspendFlags,
 	loadOpts ...spec.LoadOption,
 ) bool {
+	filesByName := make(map[string]YAMLFileMeta, len(yamlFiles))
+	for _, file := range yamlFiles {
+		filesByName[file.Name] = file
+	}
+
 	var changed bool
 	for i, entry := range entries {
 		if entry.LoadError == "" {
@@ -176,12 +185,17 @@ func RefreshFailures(
 		if ctx.Err() != nil {
 			break
 		}
+		file := filesByName[entry.FilePath]
+		if file.Name == "" {
+			file.Name = entry.FilePath
+		}
 		refreshed := &indexv1.DAGIndexEntry{
 			FilePath: entry.FilePath,
 			FileSize: entry.FileSize,
 			ModTime:  entry.ModTime,
+			LoadPath: file.LoadPath,
 		}
-		buildEntry(ctx, dagDir, refreshed, flags, loadOpts...)
+		buildEntry(ctx, yamlFilePath(dagDir, file), refreshed, flags, loadOpts...)
 		if proto.Equal(entry, refreshed) {
 			continue
 		}
@@ -189,6 +203,13 @@ func RefreshFailures(
 		changed = true
 	}
 	return changed
+}
+
+func yamlFilePath(dagDir string, file YAMLFileMeta) string {
+	if file.LoadPath != "" {
+		return file.LoadPath
+	}
+	return filepath.Join(dagDir, filepath.FromSlash(file.Name))
 }
 
 // NewIndex wraps entries in an index ready to be written.
@@ -209,15 +230,15 @@ func Write(indexPath string, idx *indexv1.DAGIndex) error {
 	return fileutil.WriteFileAtomic(indexPath, data, 0600)
 }
 
-// DAGFromEntry reconstructs a minimal core.DAG from an index entry.
+// DAGFromEntry reconstructs a minimal ir.DAG from an index entry.
 // The returned DAG is suitable for List/LabelList operations.
-func DAGFromEntry(entry *indexv1.DAGIndexEntry, baseDir string) *core.DAG {
-	dag := &core.DAG{
+func DAGFromEntry(entry *indexv1.DAGIndexEntry, baseDir string) *ir.DAG {
+	dag := &ir.DAG{
 		Name:        entry.Name,
-		Location:    filepath.Join(baseDir, entry.FilePath),
+		Location:    filepath.Join(baseDir, filepath.FromSlash(entry.FilePath)),
 		Group:       entry.Group,
 		Description: entry.Description,
-		Labels:      core.NewLabels(entry.Labels),
+		Labels:      ir.NewLabels(entry.Labels),
 	}
 
 	if entry.LoadError != "" {
@@ -236,7 +257,12 @@ func SuspendFlagName(dagName string) string {
 	return fileutil.NormalizeFilename(dagName, "-") + ".suspend"
 }
 
-func labelsToStrings(labels core.Labels) []string {
+func entryFileName(filePath string) string {
+	base := filepath.Base(filepath.FromSlash(filePath))
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+func labelsToStrings(labels ir.Labels) []string {
 	if len(labels) == 0 {
 		return nil
 	}
@@ -247,7 +273,7 @@ func labelsToStrings(labels core.Labels) []string {
 	return strs
 }
 
-func scheduleToString(schedules []core.Schedule) string {
+func scheduleToString(schedules []ir.Schedule) string {
 	if len(schedules) == 0 {
 		return ""
 	}
@@ -258,8 +284,8 @@ func scheduleToString(schedules []core.Schedule) string {
 	return string(data)
 }
 
-func parseScheduleExpressions(s string) []core.Schedule {
-	var schedules []core.Schedule
+func parseScheduleExpressions(s string) []ir.Schedule {
+	var schedules []ir.Schedule
 	if err := json.Unmarshal([]byte(s), &schedules); err == nil {
 		return schedules
 	}
@@ -270,10 +296,10 @@ func parseScheduleExpressions(s string) []core.Schedule {
 		if expr == "" {
 			continue
 		}
-		if sched, err := core.NewCronSchedule(expr); err == nil {
+		if sched, err := ir.NewCronSchedule(expr); err == nil {
 			schedules = append(schedules, sched)
 		} else {
-			schedules = append(schedules, core.Schedule{Expression: expr})
+			schedules = append(schedules, ir.Schedule{Expression: expr})
 		}
 	}
 	return schedules

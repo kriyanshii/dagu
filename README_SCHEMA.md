@@ -105,7 +105,7 @@ Common step fields:
 | `repeat_policy` | Repeat or polling behavior. |
 | `continue_on` | Continue after selected failure, skip, exit-code, or output conditions. |
 | `preconditions` | Conditions that must pass before the step starts. |
-| `worker_selector` | Required worker labels. |
+| `worker_selector` | Required worker labels. Keys and values support variable substitution (e.g. `${VAR}`); parallel sub-DAG steps can reference `${ITEM}`. |
 | `stdout`, `stderr`, `log_output` | Step log output configuration. `stdout` can also publish DAG/action outputs. |
 | `output` | Captured stdout variable or structured step-scoped output. |
 | `output_schema` | JSON Schema for stdout JSON validation. |
@@ -516,9 +516,9 @@ Implementation-level references:
 
 - `internal/cmn/schema/dag.schema.json` - generated JSON Schema used by editor
   tooling and schema navigation
-- `internal/core/spec/step_v2.go` - `run:` and `action:` normalization
-- `internal/core/spec/step_types.go` - custom `actions:` and legacy
+- `internal/spec/step_v2.go` - `run:` and `action:` normalization
+- `internal/spec/step_types.go` - custom `actions:` and legacy
   `step_types:` handling
-- `internal/core/spec/deprecation.go` - deprecated v1 syntax warnings
+- `internal/spec/deprecation.go` - deprecated v1 syntax warnings
 - [`SCHEMA_MIGRATION.md`](./SCHEMA_MIGRATION.md) - migration notes from v1
   syntax to the current schema

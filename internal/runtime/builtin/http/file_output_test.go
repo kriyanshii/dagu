@@ -13,9 +13,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dagucloud/dagu/internal/core"
-	_ "github.com/dagucloud/dagu/internal/runtime/builtin/http"
-	"github.com/dagucloud/dagu/internal/runtime/executor"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	_ "github.com/dagucloud/dagu/v2/internal/runtime/builtin/http"
+	"github.com/dagucloud/dagu/v2/internal/runtime/executor"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -169,10 +169,10 @@ func TestHTTPExecutorFileOutputWithJSONKeepsHTTPStatusOnError(t *testing.T) {
 	assert.Equal(t, "server failed", metadata["body"])
 }
 
-func httpStep(url string, cfg map[string]any) core.Step {
-	return core.Step{
-		Commands: []core.CommandEntry{{Command: "GET", Args: []string{url}}},
-		ExecutorConfig: core.ExecutorConfig{
+func httpStep(url string, cfg map[string]any) ir.Step {
+	return ir.Step{
+		Commands: []ir.CommandEntry{{Command: "GET", Args: []string{url}}},
+		ExecutorConfig: ir.ExecutorConfig{
 			Type:   "http",
 			Config: cfg,
 		},

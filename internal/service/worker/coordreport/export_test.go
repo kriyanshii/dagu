@@ -4,9 +4,9 @@
 package coordreport
 
 import (
-	"github.com/dagucloud/dagu/internal/core/exec"
-	"github.com/dagucloud/dagu/internal/service/coordinator"
-	coordinatorv1 "github.com/dagucloud/dagu/proto/coordinator/v1"
+	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
+	coordinatorv1 "github.com/dagucloud/dagu/v2/proto/coordinator/v1"
 )
 
 // LogBufferSize exposes the step log buffer threshold to black-box tests.
@@ -14,6 +14,9 @@ const LogBufferSize = logBufferSize
 
 // MaxChunkSize exposes the stream chunk limit to black-box tests.
 const MaxChunkSize = maxChunkSize
+
+// MaxRetainedStepLogSize exposes the failed-stream retention limit to black-box tests.
+const MaxRetainedStepLogSize = maxRetainedStepLogSize
 
 // StepLogWriter exposes the concrete step writer type to black-box tests.
 type StepLogWriter = stepLogWriter
@@ -40,7 +43,7 @@ type LogStreamerSnapshot struct {
 	DAGRunID  string
 	DAGName   string
 	AttemptID string
-	RootRef   exec.DAGRunRef
+	RootRef   ir.DAGRunRef
 }
 
 // SnapshotLogStreamer captures log streamer construction state.
@@ -84,8 +87,8 @@ func snapshotStepLogWriterLocked(w *StepLogWriter) StepLogWriterSnapshot {
 		StreamType:       w.streamType,
 		Streamer:         w.streamer,
 		Closed:           w.closed,
-		StreamInitFailed: w.streamInitFailed,
-		BufferLen:        len(w.buffer),
+		StreamInitFailed: w.streamingDisabled,
+		BufferLen:        len(w.buffer) + len(w.remoteBuffer) - w.remoteSent,
 		Sequence:         w.sequence,
 		HasStream:        w.stream != nil,
 	}
@@ -114,9 +117,9 @@ func FlushStepLogWriterWithBuffer(w *StepLogWriter, data []byte) StepLogWriterFl
 		Err:             err,
 		InitialSequence: initialSequence,
 		FinalSequence:   w.sequence,
-		BufferLen:       len(w.buffer),
+		BufferLen:       len(w.buffer) + len(w.remoteBuffer) - w.remoteSent,
 		HasStream:       w.stream != nil,
-		StreamFailed:    w.streamInitFailed,
+		StreamFailed:    w.streamingDisabled,
 	}
 }
 
