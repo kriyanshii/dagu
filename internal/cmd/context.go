@@ -59,7 +59,7 @@ type Context struct {
 
 	EventService              *eventstore.Service
 	EventSourceInstance       string
-	DAGRunStore               dagrun.DAGRunStore
+	DAGRunRepository          *persis.DAGRunRepository
 	DAGRunMgr                 runtime.Manager
 	ProcStore                 proc.ProcStore
 	QueueStore                queue.QueueStore
@@ -71,6 +71,7 @@ type Context struct {
 	ActiveDistributedRunStore dispatch.ActiveDistributedRunStore
 
 	DAGRepository  *persis.DAGRepository
+	Caches         []fileutil.CacheMetrics
 	Proc           proc.ProcHandle
 	LicenseManager *license.Manager
 	ContextStore   *cliContextStore
@@ -90,7 +91,7 @@ func (c *Context) WithContext(ctx context.Context) *Context {
 		Quiet:                     c.Quiet,
 		EventService:              c.EventService,
 		EventSourceInstance:       c.EventSourceInstance,
-		DAGRunStore:               c.DAGRunStore,
+		DAGRunRepository:          c.DAGRunRepository,
 		DAGRunMgr:                 c.DAGRunMgr,
 		ProcStore:                 c.ProcStore,
 		QueueStore:                c.QueueStore,
@@ -101,6 +102,7 @@ func (c *Context) WithContext(ctx context.Context) *Context {
 		DAGRunLeaseStore:          c.DAGRunLeaseStore,
 		ActiveDistributedRunStore: c.ActiveDistributedRunStore,
 		DAGRepository:             c.DAGRepository,
+		Caches:                    c.Caches,
 		Proc:                      c.Proc,
 		LicenseManager:            c.LicenseManager,
 		ContextStore:              c.ContextStore,
@@ -315,22 +317,27 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 	}
 
 	// Initialize history repository and history manager
-	hrOpts := []file.DAGRunStoreOption{}
+	hrOpts := []file.DAGRunRepositoryOption{}
+	var dagCache *fileutil.Cache[*ir.DAG]
+	var caches []fileutil.CacheMetrics
 
 	switch cmd.Name() {
 	case "server", "scheduler", "start-all", "coordinator":
-		// For long-running process, we setup file cache for better performance
+		// Long-running processes share caches across their service roles.
 		limits := cfg.Cache.Limits()
 		hc := fileutil.NewCache[*ir.DAGRunStatus]("dag_run_status", limits.DAGRun.Limit, limits.DAGRun.TTL)
 		hc.StartEviction(ctx)
 		hrOpts = append(hrOpts, file.WithDAGRunHistoryFileCache(hc))
+		dagCache = fileutil.NewCache[*ir.DAG]("dag_definition", limits.DAG.Limit, limits.DAG.TTL)
+		dagCache.StartEviction(ctx)
+		caches = append(caches, dagCache, hc)
 	}
 
 	ps := file.NewProcStore(cfg)
 	if err := ps.Validate(ctx); err != nil {
 		return nil, fmt.Errorf("failed to validate proc directory %s: %w", cfg.Paths.ProcDir, err)
 	}
-	drs := file.NewDAGRunStore(cfg, hrOpts...)
+	dagRunRepository := file.NewDAGRunRepository(cfg, hrOpts...)
 	distributedDir := filepath.Join(cfg.Paths.DataDir, "distributed")
 	// Lease and active-run stores use CompareAndSwap-based optimistic
 	// concurrency, so plain collections suffice — the previous lockRoot
@@ -339,7 +346,7 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 	activeRunCollection := file.NewCollection(filepath.Join(distributedDir, "active-runs"))
 	dagRunLeaseStore := store.NewDAGRunLeaseStore(leaseCollection)
 	activeDistributedRunStore := store.NewActiveDistributedRunStore(activeRunCollection)
-	drm := runtime.NewManager(drs, ps, cfg)
+	drm := runtime.NewManager(dagRunRepository, ps, cfg)
 	qs := store.NewQueueStore(file.NewCollection(cfg.Paths.QueueDir))
 	stateStore := store.NewDAGStateStore(file.NewCollection(cfg.Paths.DAGStateDir))
 	sm := file.NewServiceRegistry(cfg)
@@ -348,7 +355,7 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 		store.WithDispatchAdmissionLiveness(dagRunLeaseStore, activeDistributedRunStore),
 	)
 	workerHeartbeatStore := store.NewWorkerHeartbeatStore(file.NewCollection(filepath.Join(distributedDir, "workers")))
-	dagRepository, err := cmdprocess.NewDAGRepository(cfg, cmdprocess.DAGRepositoryConfig{})
+	dagRepository, err := cmdprocess.NewDAGRepository(cfg, cmdprocess.DAGRepositoryConfig{Cache: dagCache})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DAG store: %w", err)
 	}
@@ -407,7 +414,7 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 		Quiet:                     quiet,
 		EventService:              eventSvc,
 		EventSourceInstance:       eventSourceInstance,
-		DAGRunStore:               drs,
+		DAGRunRepository:          dagRunRepository,
 		DAGRunMgr:                 drm,
 		Flags:                     flags,
 		ProcStore:                 ps,
@@ -419,6 +426,7 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 		DAGRunLeaseStore:          dagRunLeaseStore,
 		ActiveDistributedRunStore: activeDistributedRunStore,
 		DAGRepository:             dagRepository,
+		Caches:                    caches,
 		LicenseManager:            licMgr,
 		ContextStore:              contextStore,
 		CLIContext:                selectedContext,
@@ -548,7 +556,9 @@ func (c *Context) NewServer(rs *resource.Service, opts ...frontend.ServerOption)
 	return cmdprocess.NewServer(cmdprocess.ServerConfig{
 		Context:              c.Context,
 		Config:               c.Config,
-		DAGRunStore:          c.DAGRunStore,
+		DAGRepository:        c.DAGRepository,
+		DAGRunRepository:     c.DAGRunRepository,
+		Caches:               c.Caches,
 		QueueStore:           c.QueueStore,
 		ProcStore:            c.ProcStore,
 		DAGRunManager:        c.DAGRunMgr,
@@ -571,7 +581,7 @@ func (c *Context) SubWorkflowRunnerFactory() func(context.Context) (runtimeexec.
 	return coordinator.NewSubWorkflowRunnerFactory(coordinator.SubWorkflowRunnerConfig{
 		DAGRunMgr:         c.DAGRunMgr,
 		DAGRepository:     c.DAGRepository,
-		DAGRunStore:       c.DAGRunStore,
+		DAGRunRepository:  c.DAGRunRepository,
 		QueueStore:        c.QueueStore,
 		StateStore:        c.StateStore,
 		SecretStore:       stores.SecretStore,
@@ -590,6 +600,8 @@ func (c *Context) NewScheduler() (*scheduler.Scheduler, error) {
 	return cmdprocess.NewScheduler(cmdprocess.SchedulerConfig{
 		Context:           c.Context,
 		Config:            c.Config,
+		DAGRepository:     c.DAGRepository,
+		DAGRunRepository:  c.DAGRunRepository,
 		QueueStore:        c.QueueStore,
 		ProcStore:         c.ProcStore,
 		ServiceRegistry:   c.ServiceRegistry,
@@ -770,16 +782,16 @@ func (c *Context) RecordEarlyFailure(dag *ir.DAG, dagRunID string, err error) er
 		return fmt.Errorf("DAG and dag-run ID are required to record failure")
 	}
 
-	// 1. Check if a DAGRunAttempt already exists for the given run-id.
+	// 1. Check whether an attempt already exists for the run ID.
 	ref := ir.NewDAGRunRef(dag.Name, dagRunID)
-	attempt, findErr := c.DAGRunStore.FindAttempt(c, ref)
+	attempt, findErr := c.DAGRunRepository.FindAttempt(c, ref)
 	if findErr != nil && !errors.Is(findErr, dagrun.ErrDAGRunIDNotFound) {
 		return fmt.Errorf("failed to check for existing attempt: %w", findErr)
 	}
 
 	if attempt == nil {
 		// 2. Create the attempt if not exists
-		att, createErr := c.DAGRunStore.CreateAttempt(c, dag, time.Now(), dagRunID, dagrun.NewDAGRunAttemptOptions{})
+		att, createErr := c.DAGRunRepository.CreateAttempt(c, dag, time.Now(), dagRunID, persis.DAGRunCreateAttemptOptions{})
 		if createErr != nil {
 			return fmt.Errorf("failed to create run to record failure: %w", createErr)
 		}

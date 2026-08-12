@@ -37,7 +37,6 @@ import (
 	cmnschema "github.com/dagucloud/dagu/v2/internal/cmn/schema"
 	"github.com/dagucloud/dagu/v2/internal/cmn/signalctx"
 	cmnvalue "github.com/dagucloud/dagu/v2/internal/cmn/value"
-	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/eventstore"
 	"github.com/dagucloud/dagu/v2/internal/gitsync"
 	"github.com/dagucloud/dagu/v2/internal/license"
@@ -271,7 +270,7 @@ func (srv *Server) RegisterRoutes(fn RouteRegistrar) {
 
 // NewServer constructs a Server from the provided configuration, stores, and services.
 // Returns an error if initialization fails (e.g., when builtin auth fails to initialize).
-func NewServer(ctx context.Context, cfg *config.Config, dr *persis.DAGRepository, drs dagrun.DAGRunStore, qs queue.QueueStore, ps proc.ProcStore, drm runtime.Manager, cc coordinator.Client, sr serviceregistry.ServiceRegistry, mr *prometheus.Registry, rs *resource.Service, stores StoreFactories, opts ...ServerOption) (*Server, error) {
+func NewServer(ctx context.Context, cfg *config.Config, dr *persis.DAGRepository, dagRunRepository *persis.DAGRunRepository, qs queue.QueueStore, ps proc.ProcStore, drm runtime.Manager, cc coordinator.Client, sr serviceregistry.ServiceRegistry, mr *prometheus.Registry, rs *resource.Service, stores StoreFactories, opts ...ServerOption) (*Server, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -694,7 +693,7 @@ func NewServer(ctx context.Context, cfg *config.Config, dr *persis.DAGRepository
 
 	allAPIOptions := append(apiOpts, srv.tunnelAPIOpts...)
 
-	srv.apiV1 = apiv1.New(dr, drs, qs, ps, drm, cfg, cc, sr, mr, rs, allAPIOptions...)
+	srv.apiV1 = apiv1.New(dr, dagRunRepository, qs, ps, drm, cfg, cc, sr, mr, rs, allAPIOptions...)
 
 	return srv, nil
 }

@@ -29,7 +29,7 @@ func TestPrepareLocalExecutionAcquiresProcWithPreparedAttempt(t *testing.T) {
 		DAGRunID:    "run-1",
 		Root:        root,
 		TriggerType: ir.TriggerTypeManual,
-		BuildAttempt: func(context.Context) (dagrun.DAGRunAttempt, error) {
+		BuildAttempt: func(context.Context) (dagrun.Attempt, error) {
 			return attempt, nil
 		},
 	})
@@ -58,11 +58,12 @@ func TestPrepareLocalExecutionRecordsFailedStatusWhenProcAcquireFails(t *testing
 	dag := newLocalDAG()
 
 	_, err := PrepareLocalExecution(context.Background(), LocalRequest{
-		ProcStore:   procStore,
-		DAG:         dag,
-		DAGRunID:    "run-1",
-		TriggerType: ir.TriggerTypeManual,
-		BuildAttempt: func(context.Context) (dagrun.DAGRunAttempt, error) {
+		ProcStore:    procStore,
+		DAG:          dag,
+		DAGRunID:     "run-1",
+		DefinitionID: "daily.yaml",
+		TriggerType:  ir.TriggerTypeManual,
+		BuildAttempt: func(context.Context) (dagrun.Attempt, error) {
 			return attempt, nil
 		},
 	})
@@ -71,6 +72,7 @@ func TestPrepareLocalExecutionRecordsFailedStatusWhenProcAcquireFails(t *testing
 	require.NotNil(t, attempt.status)
 	assert.Equal(t, ir.Failed, attempt.status.Status)
 	assert.Equal(t, "attempt-1", attempt.status.AttemptID)
+	assert.Equal(t, "daily.yaml", attempt.status.DefinitionID)
 	assert.Equal(t, "local", attempt.status.WorkerID)
 	assert.Contains(t, attempt.status.Error, "already running")
 	assert.True(t, attempt.closed)
@@ -93,7 +95,7 @@ func TestPrepareLocalExecutionReturnsFailureRecordingErrorWhenRecordFails(t *tes
 		DAG:         dag,
 		DAGRunID:    "run-1",
 		TriggerType: ir.TriggerTypeManual,
-		BuildAttempt: func(context.Context) (dagrun.DAGRunAttempt, error) {
+		BuildAttempt: func(context.Context) (dagrun.Attempt, error) {
 			return attempt, nil
 		},
 	})

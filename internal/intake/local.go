@@ -24,7 +24,7 @@ var (
 
 // LocalAttemptBuilder creates or resolves the attempt that a local execution
 // will own.
-type LocalAttemptBuilder func(context.Context) (dagrun.DAGRunAttempt, error)
+type LocalAttemptBuilder func(context.Context) (dagrun.Attempt, error)
 
 // LocalProcStore is the proc-store surface needed to claim local execution
 // ownership.
@@ -36,9 +36,10 @@ type LocalProcStore interface {
 
 // LocalRequest describes local DAG-run intake before execution starts.
 type LocalRequest struct {
-	ProcStore LocalProcStore
-	DAG       *ir.DAG
-	DAGRunID  string
+	ProcStore    LocalProcStore
+	DAG          *ir.DAG
+	DAGRunID     string
+	DefinitionID string
 
 	Root         ir.DAGRunRef
 	Parent       ir.DAGRunRef
@@ -56,7 +57,7 @@ type LocalRequest struct {
 
 // LocalPreparation is the successfully prepared local execution ownership.
 type LocalPreparation struct {
-	Attempt dagrun.DAGRunAttempt
+	Attempt dagrun.Attempt
 	Proc    proc.ProcHandle
 }
 
@@ -131,7 +132,7 @@ func (r LocalRequest) validate() error {
 func recordPreparedAttemptFailure(
 	ctx context.Context,
 	req LocalRequest,
-	attempt dagrun.DAGRunAttempt,
+	attempt dagrun.Attempt,
 	runErr error,
 ) error {
 	logFile, logErr := logpath.Generate(ctx, req.LogBaseDir, req.DAG.LogDir, req.DAG.Name, req.DAGRunID)
@@ -154,6 +155,7 @@ func recordPreparedAttemptFailure(
 
 	opts := []ir.StatusOption{
 		ir.WithAttemptID(attempt.ID()),
+		ir.WithDAGDefinitionID(req.DefinitionID),
 		ir.WithHierarchyRefs(req.Root, req.Parent),
 		ir.WithLogFilePath(logFile),
 		ir.WithArchiveDir(archiveDir),

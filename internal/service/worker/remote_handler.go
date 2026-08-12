@@ -256,6 +256,7 @@ func (h *remoteTaskHandler) reportTaskLoadFailure(ctx context.Context, run remot
 		Error:        sanitizeTaskLoadError(task.Target, loadErr),
 		Params:       task.Params,
 		ProfileName:  run.profileName,
+		DefinitionID: task.DefinitionId,
 		TriggerActor: task.TriggerActor,
 	}
 
@@ -310,6 +311,7 @@ func (h *remoteTaskHandler) reportDAGRunInitFailure(
 		Error:        initErr.Error(),
 		Params:       params,
 		ProfileName:  run.profileName,
+		DefinitionID: task.DefinitionId,
 		TriggerActor: task.TriggerActor,
 	}
 
@@ -711,6 +713,7 @@ func (h *remoteTaskHandler) executeDAGRun(
 		SecretReferenceResolver:  h.secretReferenceResolver(dag, run.owner, coordinator.SecretReferenceRun{WorkerID: h.workerID, AttemptKey: task.AttemptKey, AttemptID: attemptID}),
 		ProfileStore:             runtimeStores.ProfileStore,
 		ProfileName:              run.profileName,
+		DAGDefinitionID:          task.DefinitionId,
 		TriggerActor:             task.TriggerActor,
 		ServiceRegistry:          h.serviceRegistry,
 		SubWorkflowRunnerFactory: subWorkflowRunnerFactory,

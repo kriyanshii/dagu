@@ -24,6 +24,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/dispatch"
 	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/launcher"
+	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/proc"
 	queuedomain "github.com/dagucloud/dagu/v2/internal/queue"
 	"github.com/dagucloud/dagu/v2/internal/runtime"
@@ -39,7 +40,7 @@ type Scheduler struct {
 	entryReader         EntryReader
 	quit                chan any
 	running             atomic.Bool
-	dagRunStore         dagrun.DAGRunStore
+	dagRunRepository    *persis.DAGRunRepository
 	queueStore          queuedomain.QueueStore
 	procStore           proc.ProcStore
 	config              *config.Config
@@ -105,7 +106,8 @@ func New(
 	cfg *config.Config,
 	er EntryReader,
 	drm runtime.Manager,
-	dagRunStore dagrun.DAGRunStore,
+	dagRepository *persis.DAGRepository,
+	dagRunRepository *persis.DAGRunRepository,
 	queueStore queuedomain.QueueStore,
 	procStore proc.ProcStore,
 	reg serviceregistry.ServiceRegistry,
@@ -119,14 +121,15 @@ func New(
 			opt(&options)
 		}
 	}
-	return newScheduler(cfg, er, drm, dagRunStore, queueStore, procStore, reg, coordinatorCli, watermarkStore, schedulerHooks{}, options)
+	return newScheduler(cfg, er, drm, dagRepository, dagRunRepository, queueStore, procStore, reg, coordinatorCli, watermarkStore, schedulerHooks{}, options)
 }
 
 func newScheduler(
 	cfg *config.Config,
 	er EntryReader,
 	drm runtime.Manager,
-	dagRunStore dagrun.DAGRunStore,
+	dagRepository *persis.DAGRepository,
+	dagRunRepository *persis.DAGRunRepository,
 	queueStore queuedomain.QueueStore,
 	procStore proc.ProcStore,
 	reg serviceregistry.ServiceRegistry,
@@ -135,6 +138,12 @@ func newScheduler(
 	hooks schedulerHooks,
 	options schedulerOptions,
 ) (*Scheduler, error) {
+	if dagRepository == nil {
+		return nil, fmt.Errorf("DAG repository is required")
+	}
+	if dagRunRepository == nil {
+		return nil, fmt.Errorf("DAG-run repository is required")
+	}
 	timeLoc := cfg.Core.Location
 	if timeLoc == nil {
 		timeLoc = time.Local
@@ -147,7 +156,6 @@ func newScheduler(
 	lockDir := filepath.Join(cfg.Paths.DataDir, "scheduler", "locks")
 	dirLock := dirlock.New(lockDir, lockOpts)
 	subCmdBuilder := launcher.NewSubCmdBuilder(cfg)
-	dagRepository := er.DAGRepository()
 	workspaceBaseConfigDir := workspace.BaseConfigDir(cfg.Paths.DAGsDir)
 	dagExecutor := NewDAGExecutor(
 		coordinatorCli,
@@ -159,18 +167,12 @@ func newScheduler(
 	)
 	healthServer := NewHealthServer(cfg.Scheduler.Port)
 
-	// Resolve IsSuspended once at construction time and wire the event channel.
-	eventCh := make(chan DAGChangeEvent)
-	var isSuspended IsSuspendedFunc
-	if dagRepository != nil {
-		isSuspended = dagRepository.IsSuspended
-	}
-	if impl, ok := er.(*entryReaderImpl); ok {
-		impl.setEvents(eventCh)
-	}
+	// Resolve IsSuspended once at construction time.
+	eventCh := er.Events()
+	isSuspended := dagRepository.IsSuspended
 	processor := NewQueueProcessor(
 		queueStore,
-		dagRunStore,
+		dagRunRepository,
 		procStore,
 		dagExecutor,
 		cfg.Queues,
@@ -190,19 +192,21 @@ func newScheduler(
 			}
 			return len(items) > 0, nil
 		}
-		enqueueFunc = func(ctx context.Context, dag *ir.DAG, runID string, triggerType ir.TriggerType, scheduleTime time.Time) error {
-			profileName, err := dagExecutor.defaultProfileName(ctx, dag)
+		enqueueFunc = func(ctx context.Context, entry DAGEntry, runID string, triggerType ir.TriggerType, scheduleTime time.Time) error {
+			dag := entry.DAG
+			profileName, err := dagExecutor.defaultProfileName(ctx, entry.DefinitionID, dag)
 			if err != nil {
 				return fmt.Errorf("failed to resolve DAG profile: %w", err)
 			}
 			return EnqueueCatchupRun(
 				ctx,
-				dagRunStore,
+				dagRunRepository,
 				queueStore,
 				cfg.Paths.LogDir,
 				cfg.Paths.ArtifactDir,
 				cfg.Paths.BaseConfig,
 				workspaceBaseConfigDir,
+				entry.DefinitionID,
 				dag,
 				runID,
 				triggerType,
@@ -223,10 +227,12 @@ func newScheduler(
 			}
 			return count > 0, nil
 		},
-		GenRunID: drm.GenDAGRunID,
-		Dispatch: func(ctx context.Context, dag *ir.DAG, runID string, triggerType ir.TriggerType, scheduleTime time.Time) error {
+		GenRunID: func(context.Context) (string, error) {
+			return ir.NewDAGRunID()
+		},
+		Dispatch: func(ctx context.Context, entry DAGEntry, runID string, triggerType ir.TriggerType, scheduleTime time.Time) error {
 			return dagExecutor.HandleJob(
-				ctx, dag,
+				ctx, entry,
 				dispatch.DispatchOperationStart,
 				runID, triggerType, scheduleTime,
 			)
@@ -234,8 +240,8 @@ func newScheduler(
 		Stop: func(ctx context.Context, dag *ir.DAG) error {
 			return drm.Stop(ctx, dag, "")
 		},
-		Restart: func(ctx context.Context, dag *ir.DAG, scheduleTime time.Time) error {
-			return dagExecutor.Restart(ctx, dag, scheduleTime)
+		Restart: func(ctx context.Context, entry DAGEntry, scheduleTime time.Time) error {
+			return dagExecutor.Restart(ctx, entry, scheduleTime)
 		},
 		Clock:           defaultClock,
 		Location:        timeLoc,
@@ -245,7 +251,7 @@ func newScheduler(
 		Enqueue:         enqueueFunc,
 		IsQueued:        isQueued,
 		RunExists: func(ctx context.Context, dag *ir.DAG, runID string) (bool, error) {
-			_, err := dagRunStore.FindAttempt(ctx, ir.NewDAGRunRef(dag.Name, runID))
+			_, err := dagRunRepository.FindAttempt(ctx, ir.NewDAGRunRef(dag.Name, runID))
 			switch {
 			case err == nil:
 				return true, nil
@@ -260,7 +266,7 @@ func newScheduler(
 	})
 
 	retryScanner, err := NewRetryScanner(
-		dagRunStore,
+		dagRunRepository,
 		queueStore,
 		isSuspended,
 		cfg.Scheduler.RetryFailureWindow,
@@ -271,20 +277,20 @@ func newScheduler(
 	}
 
 	return &Scheduler{
-		quit:            make(chan any),
-		entryReader:     er,
-		dagRunStore:     dagRunStore,
-		queueStore:      queueStore,
-		procStore:       procStore,
-		config:          cfg,
-		dirLock:         dirLock,
-		dagExecutor:     dagExecutor,
-		healthServer:    healthServer,
-		serviceRegistry: reg,
-		queueProcessor:  processor,
-		retryScanner:    retryScanner,
-		planner:         planner,
-		clock:           defaultClock,
+		quit:             make(chan any),
+		entryReader:      er,
+		dagRunRepository: dagRunRepository,
+		queueStore:       queueStore,
+		procStore:        procStore,
+		config:           cfg,
+		dirLock:          dirLock,
+		dagExecutor:      dagExecutor,
+		healthServer:     healthServer,
+		serviceRegistry:  reg,
+		queueProcessor:   processor,
+		retryScanner:     retryScanner,
+		planner:          planner,
+		clock:            defaultClock,
 	}, nil
 }
 
@@ -604,7 +610,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 
 	// planner.Init is best-effort: if watermark loading fails, Init falls back
 	// to an empty state internally, so catch-up windows replay from scratch.
-	if err := s.planner.Init(ctx, s.entryReader.DAGs()); err != nil {
+	if err := s.planner.Init(ctx, s.entryReader.Entries()); err != nil {
 		logger.Error(ctx, "Failed to initialize tick planner", tag.Error(err))
 	}
 
@@ -670,7 +676,7 @@ func (s *Scheduler) startZombieDetector(ctx context.Context) {
 	default:
 	}
 	s.zombieDetector = NewZombieDetector(
-		s.dagRunStore,
+		s.dagRunRepository,
 		s.procStore,
 		s.config.Scheduler.ZombieDetectionInterval,
 		s.config.Scheduler.FailureThreshold,

@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/dispatch"
 	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/pagination"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/queue"
 	"github.com/dagucloud/dagu/v2/internal/serviceregistry"
+	"github.com/dagucloud/dagu/v2/internal/testutil"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
@@ -34,98 +34,24 @@ func (m *mockDAGLister) List(ctx context.Context, params persis.DAGListOptions) 
 }
 
 type mockDAGRunStore struct {
+	testutil.DAGRunStoreStub
 	mock.Mock
 }
 
-var _ dagrun.DAGRunStore = (*mockDAGRunStore)(nil)
-
-// RemoveDAGRun implements models.DAGRunStore.
-func (m *mockDAGRunStore) RemoveDAGRun(_ context.Context, _ ir.DAGRunRef, _ ...dagrun.RemoveDAGRunOption) error {
-	panic("unimplemented")
+func (m *mockDAGRunStore) repository() *persis.DAGRunRepository {
+	return persis.NewDAGRunRepository(m, nil, persis.DAGRunRepositoryOptions{})
 }
 
-func (m *mockDAGRunStore) CreateAttempt(ctx context.Context, dag *ir.DAG, ts time.Time, dagRunID string, opts dagrun.NewDAGRunAttemptOptions) (dagrun.DAGRunAttempt, error) {
-	args := m.Called(ctx, dag, ts, dagRunID, opts)
+func newMockDAGRunRepository() *persis.DAGRunRepository {
+	return (&mockDAGRunStore{}).repository()
+}
+
+func (m *mockDAGRunStore) QueryStatuses(ctx context.Context, query persis.DAGRunStatusQuery) (persis.DAGRunStatusPage, error) {
+	args := m.MethodCalled("ListStatuses", ctx, query)
 	if args.Get(0) == nil {
-		return nil, args.Error(1)
+		return persis.DAGRunStatusPage{}, args.Error(1)
 	}
-	return args.Get(0).(dagrun.DAGRunAttempt), args.Error(1)
-}
-
-func (m *mockDAGRunStore) RecentAttempts(ctx context.Context, name string, itemLimit int) []dagrun.DAGRunAttempt {
-	args := m.Called(ctx, name, itemLimit)
-	return args.Get(0).([]dagrun.DAGRunAttempt)
-}
-
-func (m *mockDAGRunStore) LatestAttempt(ctx context.Context, name string) (dagrun.DAGRunAttempt, error) {
-	args := m.Called(ctx, name)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(dagrun.DAGRunAttempt), args.Error(1)
-}
-
-func (m *mockDAGRunStore) ListStatuses(ctx context.Context, opts ...dagrun.ListDAGRunStatusesOption) ([]*ir.DAGRunStatus, error) {
-	args := m.Called(ctx, opts)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).([]*ir.DAGRunStatus), args.Error(1)
-}
-
-func (m *mockDAGRunStore) ListStatusesPage(ctx context.Context, opts ...dagrun.ListDAGRunStatusesOption) (dagrun.DAGRunStatusPage, error) {
-	args := m.Called(ctx, opts)
-	if args.Get(0) == nil {
-		return dagrun.DAGRunStatusPage{}, args.Error(1)
-	}
-	return args.Get(0).(dagrun.DAGRunStatusPage), args.Error(1)
-}
-
-func (m *mockDAGRunStore) CompareAndSwapLatestAttemptStatus(
-	ctx context.Context,
-	dagRun ir.DAGRunRef,
-	expectedAttemptID string,
-	expectedStatus ir.Status,
-	mutate func(*ir.DAGRunStatus) error,
-	_ ...dagrun.CompareAndSwapStatusOption,
-) (*ir.DAGRunStatus, bool, error) {
-	args := m.Called(ctx, dagRun, expectedAttemptID, expectedStatus, mutate)
-	if args.Get(0) == nil {
-		return nil, args.Bool(1), args.Error(2)
-	}
-	return args.Get(0).(*ir.DAGRunStatus), args.Bool(1), args.Error(2)
-}
-
-func (m *mockDAGRunStore) FindAttempt(ctx context.Context, dagRun ir.DAGRunRef) (dagrun.DAGRunAttempt, error) {
-	args := m.Called(ctx, dagRun)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(dagrun.DAGRunAttempt), args.Error(1)
-}
-
-func (m *mockDAGRunStore) FindSubAttempt(ctx context.Context, dagRun ir.DAGRunRef, subDAGRunID string) (dagrun.DAGRunAttempt, error) {
-	args := m.Called(ctx, dagRun, subDAGRunID)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(dagrun.DAGRunAttempt), args.Error(1)
-}
-
-func (m *mockDAGRunStore) CreateSubAttempt(ctx context.Context, rootRef ir.DAGRunRef, subDAGRunID string) (dagrun.DAGRunAttempt, error) {
-	args := m.Called(ctx, rootRef, subDAGRunID)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(dagrun.DAGRunAttempt), args.Error(1)
-}
-
-func (m *mockDAGRunStore) RemoveOldDAGRuns(ctx context.Context, name string, retentionDays int, opts ...dagrun.RemoveOldDAGRunsOption) ([]string, error) {
-	args := m.Called(ctx, name, retentionDays, opts)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).([]string), args.Error(1)
+	return persis.DAGRunStatusPage{Items: args.Get(0).([]*ir.DAGRunStatus)}, args.Error(1)
 }
 
 type mockQueueStore struct {
@@ -252,7 +178,7 @@ func TestNewCollector(t *testing.T) {
 	collector := NewCollector(
 		"1.0.0",
 		&mockDAGLister{},
-		&mockDAGRunStore{},
+		newMockDAGRunRepository(),
 		&mockQueueStore{},
 		serviceRegistry,
 	)
@@ -265,7 +191,7 @@ func TestCollector_Describe(t *testing.T) {
 	collector := NewCollector(
 		"1.0.0",
 		&mockDAGLister{},
-		&mockDAGRunStore{},
+		newMockDAGRunRepository(),
 		&mockQueueStore{},
 		nil,
 	)
@@ -285,7 +211,7 @@ func TestCollector_Describe(t *testing.T) {
 
 func TestCollector_Collect_BasicMetrics(t *testing.T) {
 	dagRepository := &mockDAGLister{}
-	dagRunStore := &mockDAGRunStore{}
+	dagRunRepository := &mockDAGRunStore{}
 	queueStore := &mockQueueStore{}
 
 	dagRepository.On("List", mock.Anything, mock.Anything).Return(
@@ -293,7 +219,7 @@ func TestCollector_Collect_BasicMetrics(t *testing.T) {
 		[]string{},
 		nil,
 	)
-	dagRunStore.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus{}, nil)
+	dagRunRepository.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus{}, nil)
 	queueStore.On("All", mock.Anything).Return([]queue.QueuedItemData{}, nil)
 
 	serviceRegistry := &mockServiceRegistry{}
@@ -302,7 +228,7 @@ func TestCollector_Collect_BasicMetrics(t *testing.T) {
 	collector := NewCollector(
 		"1.0.0",
 		dagRepository,
-		dagRunStore,
+		dagRunRepository.repository(),
 		queueStore,
 		serviceRegistry,
 	)
@@ -320,7 +246,7 @@ func TestCollector_Collect_BasicMetrics(t *testing.T) {
 
 func TestCollector_Collect_WithDAGRuns(t *testing.T) {
 	dagRepository := &mockDAGLister{}
-	dagRunStore := &mockDAGRunStore{}
+	dagRunRepository := &mockDAGRunStore{}
 	queueStore := &mockQueueStore{}
 
 	// Mock DAG store response
@@ -333,7 +259,7 @@ func TestCollector_Collect_WithDAGRuns(t *testing.T) {
 		nil,
 	)
 
-	// Mock DAG run store response
+	// Mock DAG-run repository response.
 	statuses := []*ir.DAGRunStatus{
 		{Status: ir.Succeeded},
 		{Status: ir.Succeeded},
@@ -342,7 +268,7 @@ func TestCollector_Collect_WithDAGRuns(t *testing.T) {
 		{Status: ir.Queued},
 		{Status: ir.Aborted},
 	}
-	dagRunStore.On("ListStatuses", mock.Anything, mock.Anything).Return(statuses, nil)
+	dagRunRepository.On("ListStatuses", mock.Anything, mock.Anything).Return(statuses, nil)
 
 	// Mock queue store response
 	queueStore.On("All", mock.Anything).Return([]queue.QueuedItemData{nil, nil}, nil)
@@ -353,7 +279,7 @@ func TestCollector_Collect_WithDAGRuns(t *testing.T) {
 	collector := NewCollector(
 		"1.0.0",
 		dagRepository,
-		dagRunStore,
+		dagRunRepository.repository(),
 		queueStore,
 		serviceRegistry,
 	)
@@ -419,7 +345,7 @@ func TestCollector_Collect_WithDAGRuns(t *testing.T) {
 
 func TestCollector_Collect_WithWorkerHeartbeatMetrics(t *testing.T) {
 	dagRepository := &mockDAGLister{}
-	dagRunStore := &mockDAGRunStore{}
+	dagRunRepository := &mockDAGRunStore{}
 	queueStore := &mockQueueStore{}
 
 	dagRepository.On("List", mock.Anything, mock.Anything).Return(
@@ -427,11 +353,11 @@ func TestCollector_Collect_WithWorkerHeartbeatMetrics(t *testing.T) {
 		[]string{},
 		nil,
 	)
-	dagRunStore.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus{}, nil)
+	dagRunRepository.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus{}, nil)
 	queueStore.On("All", mock.Anything).Return([]queue.QueuedItemData{}, nil)
 
 	now := time.Now().UTC()
-	collector := NewCollector("1.0.0", dagRepository, dagRunStore, queueStore, nil)
+	collector := NewCollector("1.0.0", dagRepository, dagRunRepository.repository(), queueStore, nil)
 	collector.now = func() time.Time { return now }
 	collector.SetWorkerHeartbeatStore(&mockWorkerHeartbeatStore{
 		records: []dispatch.WorkerHeartbeatRecord{
@@ -505,7 +431,7 @@ func TestCollector_Collect_WithWorkerHeartbeatMetrics(t *testing.T) {
 
 func TestCollector_Collect_WithWorkerInfoLabels(t *testing.T) {
 	dagRepository := &mockDAGLister{}
-	dagRunStore := &mockDAGRunStore{}
+	dagRunRepository := &mockDAGRunStore{}
 	queueStore := &mockQueueStore{}
 
 	dagRepository.On("List", mock.Anything, mock.Anything).Return(
@@ -513,11 +439,11 @@ func TestCollector_Collect_WithWorkerInfoLabels(t *testing.T) {
 		[]string{},
 		nil,
 	)
-	dagRunStore.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus{}, nil)
+	dagRunRepository.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus{}, nil)
 	queueStore.On("All", mock.Anything).Return([]queue.QueuedItemData{}, nil)
 
 	now := time.Now().UTC()
-	collector := NewCollector("1.0.0", dagRepository, dagRunStore, queueStore, nil)
+	collector := NewCollector("1.0.0", dagRepository, dagRunRepository.repository(), queueStore, nil)
 	collector.now = func() time.Time { return now }
 	collector.SetWorkerHeartbeatStore(&mockWorkerHeartbeatStore{
 		records: []dispatch.WorkerHeartbeatRecord{
@@ -564,7 +490,7 @@ func TestCollector_Collect_WithWorkerInfoLabels(t *testing.T) {
 
 func TestCollector_Collect_WithErrors(t *testing.T) {
 	dagRepository := &mockDAGLister{}
-	dagRunStore := &mockDAGRunStore{}
+	dagRunRepository := &mockDAGRunStore{}
 	queueStore := &mockQueueStore{}
 
 	dagRepository.On("List", mock.Anything, mock.Anything).Return(
@@ -572,13 +498,13 @@ func TestCollector_Collect_WithErrors(t *testing.T) {
 		[]string{},
 		assert.AnError,
 	)
-	dagRunStore.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus(nil), assert.AnError)
+	dagRunRepository.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus(nil), assert.AnError)
 	queueStore.On("All", mock.Anything).Return([]queue.QueuedItemData(nil), assert.AnError)
 
 	collector := NewCollector(
 		"1.0.0",
 		dagRepository,
-		dagRunStore,
+		dagRunRepository.repository(),
 		queueStore,
 		nil,
 	)
@@ -596,7 +522,7 @@ func TestCollector_Collect_WithErrors(t *testing.T) {
 
 func TestNewRegistry(t *testing.T) {
 	dagRepository := &mockDAGLister{}
-	dagRunStore := &mockDAGRunStore{}
+	dagRunRepository := &mockDAGRunStore{}
 	queueStore := &mockQueueStore{}
 
 	// Setup mocks
@@ -605,13 +531,13 @@ func TestNewRegistry(t *testing.T) {
 		[]string{},
 		nil,
 	)
-	dagRunStore.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus{}, nil)
+	dagRunRepository.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus{}, nil)
 	queueStore.On("All", mock.Anything).Return([]queue.QueuedItemData{}, nil)
 
 	collector := NewCollector(
 		"1.0.0",
 		dagRepository,
-		dagRunStore,
+		dagRunRepository.repository(),
 		queueStore,
 		nil,
 	)
@@ -634,7 +560,7 @@ func TestNewRegistry(t *testing.T) {
 
 func TestCollector_SchedulerStatus(t *testing.T) {
 	dagRepository := &mockDAGLister{}
-	dagRunStore := &mockDAGRunStore{}
+	dagRunRepository := &mockDAGRunStore{}
 	queueStore := &mockQueueStore{}
 
 	// Set up default mock responses
@@ -643,7 +569,7 @@ func TestCollector_SchedulerStatus(t *testing.T) {
 		[]string{},
 		nil,
 	)
-	dagRunStore.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus{}, nil)
+	dagRunRepository.On("ListStatuses", mock.Anything, mock.Anything).Return([]*ir.DAGRunStatus{}, nil)
 	queueStore.On("All", mock.Anything).Return([]queue.QueuedItemData{}, nil)
 
 	t.Run("ActiveScheduler", func(t *testing.T) {
@@ -653,7 +579,7 @@ func TestCollector_SchedulerStatus(t *testing.T) {
 			nil,
 		).Maybe()
 
-		collector := NewCollector("1.0.0", dagRepository, dagRunStore, queueStore, serviceRegistry)
+		collector := NewCollector("1.0.0", dagRepository, dagRunRepository.repository(), queueStore, serviceRegistry)
 
 		ch := make(chan prometheus.Metric, 100)
 		collector.Collect(ch)
@@ -679,7 +605,7 @@ func TestCollector_SchedulerStatus(t *testing.T) {
 			nil,
 		).Maybe()
 
-		collector := NewCollector("1.0.0", dagRepository, dagRunStore, queueStore, serviceRegistry)
+		collector := NewCollector("1.0.0", dagRepository, dagRunRepository.repository(), queueStore, serviceRegistry)
 
 		ch := make(chan prometheus.Metric, 100)
 		collector.Collect(ch)
@@ -705,7 +631,7 @@ func TestCollector_SchedulerStatus(t *testing.T) {
 			nil,
 		).Maybe()
 
-		collector := NewCollector("1.0.0", dagRepository, dagRunStore, queueStore, serviceRegistry)
+		collector := NewCollector("1.0.0", dagRepository, dagRunRepository.repository(), queueStore, serviceRegistry)
 
 		ch := make(chan prometheus.Metric, 100)
 		collector.Collect(ch)

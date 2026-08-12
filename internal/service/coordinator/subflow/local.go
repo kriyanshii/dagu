@@ -37,7 +37,7 @@ import (
 type Local struct {
 	dagRunMgr                runtime.Manager
 	dagRepository            *persis.DAGRepository
-	dagRunStore              dagrun.DAGRunStore
+	dagRunRepository         *persis.DAGRunRepository
 	runStateStore            runstate.Store
 	queueStore               queue.QueueStore
 	stateStore               dagrun.StateStore
@@ -69,10 +69,10 @@ func WithLocalToolInstaller(installer dagutools.Installer) LocalOption {
 	}
 }
 
-// WithLocalDAGRunStore sets the dag-run store used by child workflow agents.
-func WithLocalDAGRunStore(store dagrun.DAGRunStore) LocalOption {
+// WithLocalDAGRunRepository sets the DAG-run repository used by child workflow agents.
+func WithLocalDAGRunRepository(repository *persis.DAGRunRepository) LocalOption {
 	return func(r *Local) {
-		r.dagRunStore = store
+		r.dagRunRepository = repository
 	}
 }
 
@@ -393,7 +393,7 @@ func (r *Local) newAgent(
 	opts.SubWorkflowRunnerFactory = r.subWorkflowRunnerFactory
 	opts.LogWriterFactory = r.logWriterFactory
 	opts.RunStateStore = r.runStateStoreFromContext(ctx)
-	opts.DAGRunStore = r.dagRunStoreFromContext(ctx)
+	opts.DAGRunRepository = r.dagRunRepositoryFromContext(ctx)
 	opts.QueueStore = r.queueStoreFromContext(ctx)
 	opts.StateStore = r.stateStoreFromContext(ctx)
 	opts.MaterializationStore = rCtx.MaterializationStore
@@ -460,13 +460,13 @@ func (r *Local) dagRepositoryFromContext(_ context.Context) *persis.DAGRepositor
 	return r.dagRepository
 }
 
-func (r *Local) dagRunStoreFromContext(ctx context.Context) dagrun.DAGRunStore {
-	if r.dagRunStore != nil {
-		return r.dagRunStore
+func (r *Local) dagRunRepositoryFromContext(ctx context.Context) *persis.DAGRunRepository {
+	if r.dagRunRepository != nil {
+		return r.dagRunRepository
 	}
 	rCtx := runctx.GetContext(ctx)
-	if rCtx.DAGRunStore != nil {
-		return rCtx.DAGRunStore
+	if rCtx.DAGRunRepository != nil {
+		return rCtx.DAGRunRepository
 	}
 	return nil
 }
@@ -475,8 +475,8 @@ func (r *Local) runStateStoreFromContext(ctx context.Context) runstate.Store {
 	if r.runStateStore != nil {
 		return r.runStateStore
 	}
-	if dagRunStore := r.dagRunStoreFromContext(ctx); dagRunStore != nil {
-		return runstate.NewHistoryStore(dagRunStore)
+	if dagRunRepository := r.dagRunRepositoryFromContext(ctx); dagRunRepository != nil {
+		return runstate.NewHistoryStore(dagRunRepository)
 	}
 	return nil
 }

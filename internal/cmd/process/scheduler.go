@@ -12,12 +12,10 @@ import (
 
 	"github.com/dagucloud/dagu/v2/internal/cmn/config"
 	"github.com/dagucloud/dagu/v2/internal/cmn/crypto"
-	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/v2/internal/dispatch"
 	"github.com/dagucloud/dagu/v2/internal/eventstore"
-	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/license"
 	notificationmodel "github.com/dagucloud/dagu/v2/internal/notification"
 	"github.com/dagucloud/dagu/v2/internal/persis"
@@ -36,6 +34,8 @@ import (
 type SchedulerConfig struct {
 	Context           context.Context
 	Config            *config.Config
+	DAGRepository     *persis.DAGRepository
+	DAGRunRepository  *persis.DAGRunRepository
 	QueueStore        queue.QueueStore
 	ProcStore         proc.ProcStore
 	ServiceRegistry   serviceregistry.ServiceRegistry
@@ -45,40 +45,29 @@ type SchedulerConfig struct {
 	LicenseManager    *license.Manager
 }
 
-// NewScheduler creates the scheduler and its process-local stores, monitors, and workers.
+// NewScheduler creates the scheduler from the process repositories and services.
 func NewScheduler(cfg SchedulerConfig) (*scheduler.Scheduler, error) {
 	ctx := cfg.Context
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	limits := cfg.Config.Cache.Limits()
-	dagCache := fileutil.NewCache[*ir.DAG]("dag_definition", limits.DAG.Limit, limits.DAG.TTL)
-	dagCache.StartEviction(ctx)
-
-	dagRepository, err := NewDAGRepository(cfg.Config, DAGRepositoryConfig{Cache: dagCache})
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize DAG client: %w", err)
-	}
-
 	coordinatorClient := NewCoordinatorClient(ctx, cfg.Config, cfg.ServiceRegistry)
-	entryReader := scheduler.NewEntryReader(
+	entryReader := scheduler.NewFileEntryReader(
 		cfg.Config.Paths.DAGsDir,
-		dagRepository,
+		cfg.DAGRepository,
 		cfg.Config.DAGDiscovery.Recursive,
 	)
 	watermarkStore := scheduler.NewWatermarkStore(
 		file.NewCollection(filepath.Join(cfg.Config.Paths.DataDir, "scheduler"), file.WithIndentedJSON()),
 	)
 
-	statusCache := fileutil.NewCache[*ir.DAGRunStatus]("scheduler_dag_run_status", limits.DAGRun.Limit, limits.DAGRun.TTL)
-	statusCache.StartEviction(ctx)
-	schedulerRunStore := file.NewDAGRunStore(
+	schedulerRunManager := runtime.NewManager(
+		cfg.DAGRunRepository,
+		cfg.ProcStore,
 		cfg.Config,
-		file.WithDAGRunLatestStatusToday(false),
-		file.WithDAGRunHistoryFileCache(statusCache),
+		runtime.WithLatestStatusAllHistory(),
 	)
-	schedulerRunManager := runtime.NewManager(schedulerRunStore, cfg.ProcStore, cfg.Config)
 
 	dagSettingsStore, err := file.NewDAGSettingsStore(cfg.Config)
 	if err != nil {
@@ -90,7 +79,8 @@ func NewScheduler(cfg SchedulerConfig) (*scheduler.Scheduler, error) {
 		cfg.Config,
 		entryReader,
 		schedulerRunManager,
-		schedulerRunStore,
+		cfg.DAGRepository,
+		cfg.DAGRunRepository,
 		cfg.QueueStore,
 		cfg.ProcStore,
 		cfg.ServiceRegistry,
@@ -109,7 +99,7 @@ func NewScheduler(cfg SchedulerConfig) (*scheduler.Scheduler, error) {
 		} else {
 			sched.SetEventCollector(collector)
 		}
-		if notificationMonitor := newNotificationMonitor(ctx, cfg.Config, dagRepository, cfg.EventService); notificationMonitor != nil {
+		if notificationMonitor := newNotificationMonitor(ctx, cfg.Config, cfg.DAGRepository, cfg.EventService); notificationMonitor != nil {
 			sched.SetNotificationMonitor(notificationMonitor)
 		}
 		if incidentMonitor := newIncidentMonitor(ctx, cfg.Config, cfg.LicenseManager, cfg.EventService); incidentMonitor != nil {

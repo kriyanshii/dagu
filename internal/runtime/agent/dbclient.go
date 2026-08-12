@@ -10,7 +10,6 @@ import (
 
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
-	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/runtime"
@@ -19,17 +18,17 @@ import (
 var _ runtime.Database = &dbClient{}
 
 type dbClient struct {
-	dagLoader       dagDetailsLoader
-	drs             dagrun.DAGRunStore
-	remoteDAGLoader RemoteDAGLoader
+	dagLoader        dagDetailsLoader
+	dagRunRepository *persis.DAGRunRepository
+	remoteDAGLoader  RemoteDAGLoader
 }
 
 type dagDetailsLoader interface {
 	GetDetails(context.Context, string, persis.DAGLoadOptions) (*ir.DAG, error)
 }
 
-func newDBClient(drs dagrun.DAGRunStore, dagLoader dagDetailsLoader, remoteDAGLoader RemoteDAGLoader) *dbClient {
-	return &dbClient{drs: drs, dagLoader: dagLoader, remoteDAGLoader: remoteDAGLoader}
+func newDBClient(dagRunRepository *persis.DAGRunRepository, dagLoader dagDetailsLoader, remoteDAGLoader RemoteDAGLoader) *dbClient {
+	return &dbClient{dagRunRepository: dagRunRepository, dagLoader: dagLoader, remoteDAGLoader: remoteDAGLoader}
 }
 
 // GetDAG implements ir.DBClient.
@@ -85,7 +84,10 @@ func (o *dbClient) GetDAG(ctx context.Context, name string) (*ir.DAG, error) {
 }
 
 func (o *dbClient) RequestChildCancel(ctx context.Context, dagRunID string, rootDAGRun ir.DAGRunRef) error {
-	subAttempt, err := o.drs.FindSubAttempt(ctx, rootDAGRun, dagRunID)
+	if o.dagRunRepository == nil {
+		return errors.New("DAG-run repository is not configured")
+	}
+	subAttempt, err := o.dagRunRepository.FindSubAttempt(ctx, rootDAGRun, dagRunID)
 	if err != nil {
 		return fmt.Errorf("failed to find child attempt for dag-run ID %s: %w", dagRunID, err)
 	}

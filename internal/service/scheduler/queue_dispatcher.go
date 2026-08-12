@@ -20,6 +20,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/dispatch"
 	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/proc"
 	queuedomain "github.com/dagucloud/dagu/v2/internal/queue"
 	"google.golang.org/grpc/codes"
@@ -28,7 +29,7 @@ import (
 
 type queueDispatchDeps struct {
 	queueStore             queuedomain.QueueStore
-	dagRunStore            dagrun.DAGRunStore
+	dagRunRepository       *persis.DAGRunRepository
 	procStore              proc.ProcStore
 	dagRunLeaseStore       dispatch.DAGRunLeaseStore
 	dispatchTaskStore      dispatch.DispatchTaskStore
@@ -44,7 +45,7 @@ type queueDispatchDeps struct {
 // queueDispatcher owns queue-item dispatch decisions after a queue has capacity.
 type queueDispatcher struct {
 	queueStore             queuedomain.QueueStore
-	dagRunStore            dagrun.DAGRunStore
+	dagRunRepository       *persis.DAGRunRepository
 	procStore              proc.ProcStore
 	dagRunLeaseStore       dispatch.DAGRunLeaseStore
 	dispatchTaskStore      dispatch.DispatchTaskStore
@@ -296,7 +297,7 @@ func newQueueDispatcher(deps queueDispatchDeps) *queueDispatcher {
 	}
 	return &queueDispatcher{
 		queueStore:             deps.queueStore,
-		dagRunStore:            deps.dagRunStore,
+		dagRunRepository:       deps.dagRunRepository,
 		procStore:              deps.procStore,
 		dagRunLeaseStore:       deps.dagRunLeaseStore,
 		dispatchTaskStore:      deps.dispatchTaskStore,
@@ -345,10 +346,10 @@ func (d *queueDispatcher) newQueuedConditionStage(
 	runRef ir.DAGRunRef,
 	queueName string,
 	itemID string,
-	attempt dagrun.DAGRunAttempt,
+	attempt dagrun.Attempt,
 	status *ir.DAGRunStatus,
 ) *queuedConditionStage {
-	if d == nil || d.dagRunStore == nil || status == nil || status.Status != ir.Queued {
+	if d == nil || d.dagRunRepository == nil || status == nil || status.Status != ir.Queued {
 		return nil
 	}
 	attemptID := status.AttemptID
@@ -369,7 +370,7 @@ func (d *queueDispatcher) newQueuedConditionStageFromItem(
 	queueName string,
 	item queuedomain.QueuedItemData,
 ) *queuedConditionStage {
-	if d == nil || d.dagRunStore == nil || item == nil {
+	if d == nil || d.dagRunRepository == nil || item == nil {
 		return nil
 	}
 	runRef, err := item.Data()
@@ -414,8 +415,8 @@ func (d *queueDispatcher) newQueuedConditionStageFromItem(
 func (d *queueDispatcher) readQueuedConditionStatus(
 	ctx context.Context,
 	runRef ir.DAGRunRef,
-) (dagrun.DAGRunAttempt, *ir.DAGRunStatus, bool) {
-	attempt, err := d.dagRunStore.FindAttempt(ctx, runRef)
+) (dagrun.Attempt, *ir.DAGRunStatus, bool) {
+	attempt, err := d.dagRunRepository.FindAttempt(ctx, runRef)
 	if err != nil {
 		if errors.Is(err, dagrun.ErrDAGRunIDNotFound) {
 			return nil, nil, false
@@ -431,7 +432,7 @@ func (d *queueDispatcher) readQueuedConditionStatus(
 	}
 	status, err := attempt.ReadStatus(ctx)
 	if err != nil {
-		if errors.Is(err, dagrun.ErrNoStatusData) || errors.Is(err, dagrun.ErrCorruptedStatusFile) {
+		if errors.Is(err, dagrun.ErrNoStatusData) || errors.Is(err, dagrun.ErrCorruptedStatusData) {
 			return nil, nil, false
 		}
 		logger.Warn(ctx, "Failed to read queued DAG-run status while staging condition",
@@ -498,7 +499,7 @@ func (s *queuedConditionStage) flushErr(ctx context.Context) error {
 		return nil
 	}
 
-	_, _, err := s.dispatcher.dagRunStore.CompareAndSwapLatestAttemptStatus(
+	_, _, err := s.dispatcher.dagRunRepository.CompareAndSwapLatestAttemptStatus(
 		ctx,
 		s.runRef,
 		expectedAttemptID,
@@ -509,7 +510,7 @@ func (s *queuedConditionStage) flushErr(ctx context.Context) error {
 			}
 			latest.Conditions = mergeQueuedConditionObservations(latest.Conditions, observations)
 			return nil
-		},
+		}, persis.DAGRunCompareAndSwapOptions{},
 	)
 	if errors.Is(err, errQueuedConditionFresh) {
 		return nil
@@ -646,7 +647,7 @@ func (d *queueDispatcher) dispatchQueuedItem(
 		return true
 	}
 
-	attempt, err := d.dagRunStore.FindAttempt(ctx, runRef)
+	attempt, err := d.dagRunRepository.FindAttempt(ctx, runRef)
 	if err != nil {
 		if errors.Is(err, dagrun.ErrDAGRunIDNotFound) {
 			logger.Error(ctx, "DAG run not found, discarding")
@@ -663,7 +664,7 @@ func (d *queueDispatcher) dispatchQueuedItem(
 
 	status, err := attempt.ReadStatus(ctx)
 	if err != nil {
-		if errors.Is(err, dagrun.ErrCorruptedStatusFile) {
+		if errors.Is(err, dagrun.ErrCorruptedStatusData) {
 			logger.Error(ctx, "Status file is corrupted, marking as invalid", tag.Error(err))
 			return true
 		}
@@ -686,7 +687,7 @@ func (d *queueDispatcher) dispatchQueuedItem(
 	}
 
 	if isSchedulerManagedTriggerType(status.TriggerType) {
-		suspended, err := isSuspendedDAG(ctx, d.isSuspended, status, dag)
+		suspended, err := isSuspendedDAG(ctx, d.isSuspended, status, dag, "")
 		if err != nil {
 			logger.Error(ctx, "Failed to check DAG suspension; leaving queued run pending", tag.Error(err))
 			return false
@@ -765,7 +766,7 @@ func (d *queueDispatcher) dropSuspendedQueuedRun(
 	status *ir.DAGRunStatus,
 ) error {
 	finishedAt := stringutil.FormatTime(time.Now().UTC())
-	currentStatus, swapped, err := d.dagRunStore.CompareAndSwapLatestAttemptStatus(
+	currentStatus, swapped, err := d.dagRunRepository.CompareAndSwapLatestAttemptStatus(
 		ctx,
 		runRef,
 		attemptID,
@@ -779,7 +780,7 @@ func (d *queueDispatcher) dropSuspendedQueuedRun(
 			latest.PIDStartedAt = 0
 			latest.LeaseAt = 0
 			return nil
-		},
+		}, persis.DAGRunCompareAndSwapOptions{},
 	)
 	if err != nil {
 		return fmt.Errorf("abort suspended queued DAG run: %w", err)
@@ -903,7 +904,7 @@ func (d *queueDispatcher) reserveDistributedAdmission(
 	ctx context.Context,
 	queueName string,
 	runRef ir.DAGRunRef,
-	attempt dagrun.DAGRunAttempt,
+	attempt dagrun.Attempt,
 	input dispatchAdmissionInput,
 	conditionStage *queuedConditionStage,
 ) (string, bool) {
@@ -1051,7 +1052,7 @@ func (d *queueDispatcher) failQueuedRunBeforeStartup(
 		return errors.New("delete failed DAG run queue item: missing queue item ID")
 	}
 	if attemptID == "" {
-		attempt, err := d.dagRunStore.FindAttempt(ctx, runRef)
+		attempt, err := d.dagRunRepository.FindAttempt(ctx, runRef)
 		if err != nil {
 			return fmt.Errorf("find queued DAG run attempt: %w", err)
 		}
@@ -1059,7 +1060,7 @@ func (d *queueDispatcher) failQueuedRunBeforeStartup(
 	}
 
 	finishedAt := stringutil.FormatTime(time.Now().UTC())
-	currentStatus, swapped, err := d.dagRunStore.CompareAndSwapLatestAttemptStatus(
+	currentStatus, swapped, err := d.dagRunRepository.CompareAndSwapLatestAttemptStatus(
 		ctx,
 		runRef,
 		attemptID,
@@ -1073,7 +1074,7 @@ func (d *queueDispatcher) failQueuedRunBeforeStartup(
 			latest.PIDStartedAt = 0
 			latest.LeaseAt = 0
 			return nil
-		},
+		}, persis.DAGRunCompareAndSwapOptions{},
 	)
 	if err != nil {
 		return fmt.Errorf("mark queued DAG run as failed: %w", err)
@@ -1158,7 +1159,7 @@ func (d *queueDispatcher) checkStartupStatus(ctx context.Context, queueName stri
 		return false, errNotStarted
 	}
 
-	attempt, err := d.dagRunStore.FindAttempt(ctx, runRef)
+	attempt, err := d.dagRunRepository.FindAttempt(ctx, runRef)
 	if err != nil {
 		logger.Debug(ctx, "Failed to read attempt, keep checking")
 		return false, err
@@ -1532,7 +1533,7 @@ func (d *queueDispatcher) hasOutstandingDispatchReservation(ctx context.Context,
 		return false, nil
 	}
 
-	attempt, err := d.dagRunStore.FindAttempt(ctx, runRef)
+	attempt, err := d.dagRunRepository.FindAttempt(ctx, runRef)
 	if err != nil {
 		if errors.Is(err, dagrun.ErrDAGRunIDNotFound) {
 			return false, nil
@@ -1545,7 +1546,7 @@ func (d *queueDispatcher) hasOutstandingDispatchReservation(ctx context.Context,
 
 	status, err := attempt.ReadStatus(ctx)
 	if err != nil {
-		if errors.Is(err, dagrun.ErrNoStatusData) || errors.Is(err, dagrun.ErrCorruptedStatusFile) {
+		if errors.Is(err, dagrun.ErrNoStatusData) || errors.Is(err, dagrun.ErrCorruptedStatusData) {
 			return false, nil
 		}
 		return false, err
@@ -1597,7 +1598,7 @@ func (d *queueDispatcher) hasFreshDistributedLease(
 	ctx context.Context,
 	queueName string,
 	runRef ir.DAGRunRef,
-	attempt dagrun.DAGRunAttempt,
+	attempt dagrun.Attempt,
 	status *ir.DAGRunStatus,
 ) (bool, error) {
 	if d.dagRunLeaseStore == nil || status == nil {

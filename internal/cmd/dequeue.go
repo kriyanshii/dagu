@@ -81,7 +81,7 @@ func dequeueFirst(ctx *Context, queueName string) error {
 		}
 
 		err = withQueueProcLock(ctx, queueName, func() error {
-			if err := queue.AbortQueuedDAGRun(ctx.Context, ctx.DAGRunStore, *data); err != nil {
+			if err := queue.AbortQueuedDAGRun(ctx.Context, ctx.DAGRunRepository, *data); err != nil {
 				return err
 			}
 			if _, err := ctx.QueueStore.DeleteByItemIDs(ctx.Context, queueName, []string{item.ID()}); err != nil {
@@ -136,7 +136,7 @@ func dequeueQueuedDAGRun(ctx *Context, requestedQueueName string, dagRun ir.DAGR
 	}
 
 	err = withQueueProcLock(ctx, actualQueueName, func() error {
-		if err := queue.AbortQueuedDAGRun(ctx.Context, ctx.DAGRunStore, dagRun); err != nil {
+		if err := queue.AbortQueuedDAGRun(ctx.Context, ctx.DAGRunRepository, dagRun); err != nil {
 			return err
 		}
 		if _, err := ctx.QueueStore.DequeueByDAGRunID(ctx.Context, actualQueueName, dagRun); err != nil {
@@ -180,7 +180,7 @@ func removeQueuedDAGRunByQueueName(ctx *Context, queueName string, dagRun ir.DAG
 }
 
 func queueNameForDAGRun(ctx *Context, dagRun ir.DAGRunRef) (string, error) {
-	attempt, err := ctx.DAGRunStore.FindAttempt(ctx, dagRun)
+	attempt, err := ctx.DAGRunRepository.FindAttempt(ctx, dagRun)
 	if err != nil {
 		return "", err
 	}
@@ -222,7 +222,7 @@ func isQueueAbortSkippable(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, dagrun.ErrDAGRunIDNotFound) || errors.Is(err, dagrun.ErrNoStatusData) || errors.Is(err, dagrun.ErrCorruptedStatusFile) {
+	if errors.Is(err, dagrun.ErrDAGRunIDNotFound) || errors.Is(err, dagrun.ErrNoStatusData) || errors.Is(err, dagrun.ErrCorruptedStatusData) {
 		return true
 	}
 	var notQueuedErr *queue.DAGRunNotQueuedError
@@ -232,5 +232,5 @@ func isQueueAbortSkippable(err error) bool {
 func isQueueLookupFallbackAllowed(err error) bool {
 	return errors.Is(err, dagrun.ErrDAGRunIDNotFound) ||
 		errors.Is(err, dagrun.ErrNoStatusData) ||
-		errors.Is(err, dagrun.ErrCorruptedStatusFile)
+		errors.Is(err, dagrun.ErrCorruptedStatusData)
 }

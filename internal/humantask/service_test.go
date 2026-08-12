@@ -13,8 +13,10 @@ import (
 
 	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/proc"
 	"github.com/dagucloud/dagu/v2/internal/queue"
+	"github.com/dagucloud/dagu/v2/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -129,10 +131,10 @@ func TestResumeBoundsStatusVerificationAfterQueueFailure(t *testing.T) {
 	fixture.service.EnqueueTimeout = 10 * time.Millisecond
 
 	findCalls := 0
-	fixture.store.findAttempt = func(ctx context.Context, _ ir.DAGRunRef) (dagrun.DAGRunAttempt, error) {
+	fixture.backend.findAttempt = func(ctx context.Context, _ ir.DAGRunRef) (dagrun.Attempt, error) {
 		findCalls++
 		if findCalls == 1 {
-			return fixture.store.attempt, nil
+			return fixture.backend.attempt, nil
 		}
 		if _, ok := ctx.Deadline(); !ok {
 			return nil, errors.New("status verification context has no deadline")
@@ -154,7 +156,7 @@ func TestResumeBoundsStatusVerificationAfterQueueFailure(t *testing.T) {
 func TestCompleteDoesNotReportRetryableWhenQueueRollbackFails(t *testing.T) {
 	fixture := newServiceFixture(t, nil)
 	fixture.queue.enqueueErrors = []error{errors.New("queue unavailable")}
-	fixture.store.compareAndSwapErrors = []error{nil, nil, errors.New("rollback unavailable")}
+	fixture.backend.compareAndSwapErrors = []error{nil, nil, errors.New("rollback unavailable")}
 
 	_, err := fixture.service.Complete(t.Context(), CompleteRequest{
 		DAGName: fixture.dag.Name, DAGRunID: fixture.status.DAGRunID, StepID: "review", Input: Input{Values: map[string]any{}},
@@ -170,7 +172,7 @@ func TestCompleteDoesNotReportRetryableWhenQueueRollbackFails(t *testing.T) {
 func TestCompleteAcceptsConcurrentRetryDispatch(t *testing.T) {
 	fixture := newServiceFixture(t, nil)
 	compareAndSwapCalls := 0
-	fixture.store.beforeCompareAndSwap = func() {
+	fixture.backend.beforeCompareAndSwap = func() {
 		compareAndSwapCalls++
 		if compareAndSwapCalls == 2 {
 			fixture.status.Status = ir.Running
@@ -202,7 +204,7 @@ func TestCompleteClassifiesDAGRunLookupErrors(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newServiceFixture(t, nil)
-			fixture.store.findErr = tc.err
+			fixture.backend.findErr = tc.err
 
 			_, err := fixture.service.Complete(t.Context(), CompleteRequest{
 				DAGName:  fixture.dag.Name,
@@ -311,7 +313,7 @@ func TestWaitForCompletionReadyWaitsForLocalAttemptExit(t *testing.T) {
 
 	status, err := fixture.service.waitForCompletionReady(
 		t.Context(),
-		fixture.store.attempt,
+		fixture.backend.attempt,
 		fixture.dag,
 		fixture.status,
 		"review",
@@ -368,7 +370,7 @@ func TestWaitForCompletionReadyRejectsUnknownStep(t *testing.T) {
 type serviceFixture struct {
 	dag     *ir.DAG
 	status  *ir.DAGRunStatus
-	store   *serviceDAGRunStore
+	backend *serviceDAGRunStore
 	queue   *serviceQueueStore
 	service *Service
 }
@@ -386,28 +388,28 @@ func newServiceFixture(t *testing.T, form json.RawMessage) *serviceFixture {
 		Nodes: []*ir.Node{{Step: step, Status: ir.NodeWaiting}},
 	}
 	attempt := &serviceAttempt{dag: dag, status: status}
-	store := &serviceDAGRunStore{attempt: attempt, status: status}
+	backend := &serviceDAGRunStore{attempt: attempt, status: status}
 	queue := &serviceQueueStore{}
 	now := time.Date(2026, 7, 21, 1, 2, 3, 0, time.UTC)
 	return &serviceFixture{
-		dag: dag, status: status, store: store, queue: queue,
+		dag: dag, status: status, backend: backend, queue: queue,
 		service: &Service{
-			DAGRunStore: store,
-			QueueStore:  queue,
-			ProcStore:   serviceProcStore{},
-			Now:         func() time.Time { return now },
+			DAGRunRepository: persis.NewDAGRunRepository(backend, nil, persis.DAGRunRepositoryOptions{}),
+			QueueStore:       queue,
+			ProcStore:        serviceProcStore{},
+			Now:              func() time.Time { return now },
 		},
 	}
 }
 
 type serviceAttempt struct {
-	dagrun.DAGRunAttempt
+	dagrun.Attempt
 	dag    *ir.DAG
 	status *ir.DAGRunStatus
 }
 
 type sequenceAttempt struct {
-	dagrun.DAGRunAttempt
+	dagrun.Attempt
 	statuses []*ir.DAGRunStatus
 	calls    int
 }
@@ -429,16 +431,16 @@ func (a *serviceAttempt) ReadStatus(context.Context) (*ir.DAGRunStatus, error) {
 }
 
 type serviceDAGRunStore struct {
-	dagrun.DAGRunStore
+	testutil.DAGRunStoreStub
 	attempt              *serviceAttempt
 	status               *ir.DAGRunStatus
 	findErr              error
-	findAttempt          func(context.Context, ir.DAGRunRef) (dagrun.DAGRunAttempt, error)
+	findAttempt          func(context.Context, ir.DAGRunRef) (dagrun.Attempt, error)
 	beforeCompareAndSwap func()
 	compareAndSwapErrors []error
 }
 
-func (s *serviceDAGRunStore) FindAttempt(ctx context.Context, ref ir.DAGRunRef) (dagrun.DAGRunAttempt, error) {
+func (s *serviceDAGRunStore) FindAttempt(ctx context.Context, ref ir.DAGRunRef) (dagrun.Attempt, error) {
 	if s.findAttempt != nil {
 		return s.findAttempt(ctx, ref)
 	}
@@ -450,11 +452,7 @@ func (s *serviceDAGRunStore) FindAttempt(ctx context.Context, ref ir.DAGRunRef) 
 
 func (s *serviceDAGRunStore) CompareAndSwapLatestAttemptStatus(
 	_ context.Context,
-	_ ir.DAGRunRef,
-	expectedAttemptID string,
-	expectedStatus ir.Status,
-	mutate func(*ir.DAGRunStatus) error,
-	_ ...dagrun.CompareAndSwapStatusOption,
+	req persis.DAGRunCompareAndSwapStatusRequest,
 ) (*ir.DAGRunStatus, bool, error) {
 	if len(s.compareAndSwapErrors) > 0 {
 		err := s.compareAndSwapErrors[0]
@@ -466,10 +464,10 @@ func (s *serviceDAGRunStore) CompareAndSwapLatestAttemptStatus(
 	if s.beforeCompareAndSwap != nil {
 		s.beforeCompareAndSwap()
 	}
-	if s.status.AttemptID != expectedAttemptID || s.status.Status != expectedStatus {
+	if s.status.AttemptID != req.ExpectedAttemptID || s.status.Status != req.ExpectedStatus {
 		return s.status, false, nil
 	}
-	if err := mutate(s.status); err != nil {
+	if err := req.Mutate(s.status); err != nil {
 		return nil, false, err
 	}
 	return s.status, true, nil

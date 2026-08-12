@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/v2/internal/cmn/masking"
-	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/persis/file"
@@ -69,7 +68,7 @@ steps:
 		},
 	}))
 
-	attempt, err := th.DAGRunStore.CreateAttempt(th.Context, dag, scheduledAt, runID, dagrun.NewDAGRunAttemptOptions{})
+	attempt, err := th.DAGRunRepository.CreateAttempt(th.Context, dag, scheduledAt, runID, persis.DAGRunCreateAttemptOptions{})
 	require.NoError(t, err)
 	initialStatus := ir.InitialStatus(dag)
 	initialStatus.DAGRunID = runID
@@ -84,7 +83,8 @@ steps:
 		th.Config,
 		th.EntryReader,
 		th.DAGRunMgr,
-		th.DAGRunStore,
+		th.DAGRepository,
+		th.DAGRunRepository,
 		th.QueueStore,
 		th.ProcStore,
 		th.ServiceRegistry,
@@ -95,7 +95,7 @@ steps:
 	sc.SetClock(func() time.Time { return scheduledAt })
 
 	var dispatchCount atomic.Int32
-	sc.SetDispatchFunc(func(context.Context, *ir.DAG, string, ir.TriggerType, time.Time) error {
+	sc.SetDispatchFunc(func(context.Context, scheduler.DAGEntry, string, ir.TriggerType, time.Time) error {
 		dispatchCount.Add(1)
 		return nil
 	})
@@ -120,7 +120,9 @@ steps:
 	})
 
 	assert.Equal(t, int32(0), dispatchCount.Load())
-	assert.Len(t, th.DAGRunStore.RecentAttempts(th.Context, dag.Name, 10), 1)
+	statuses, err := th.DAGRunRepository.RecentStatuses(th.Context, dag.Name, 10)
+	require.NoError(t, err)
+	assert.Len(t, statuses, 1)
 
 	probe.Stop(context.Background(), cancel, 5*time.Second)
 }
@@ -167,7 +169,10 @@ steps:
 	probe := h.StartScheduler(ctx, sc, th.EntryReader)
 
 	probe.RequireEventually("expected one-off env secret run to succeed", 30*time.Second, func() bool {
-		statuses := th.DAGRunMgr.ListRecentStatus(th.Context, dag.Name, 5)
+		statuses, err := th.DAGRunRepository.RecentStatuses(th.Context, dag.Name, 5)
+		if err != nil {
+			return false
+		}
 		return len(statuses) > 0 && statuses[0].Status == ir.Succeeded
 	})
 

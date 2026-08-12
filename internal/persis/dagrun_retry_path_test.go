@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yota Hamada
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package dagrun_test
+package persis_test
 
 import (
 	"context"
@@ -11,13 +11,15 @@ import (
 
 	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/persis"
 	filedagrun "github.com/dagucloud/dagu/v2/internal/persis/file/dagrun"
 	"github.com/stretchr/testify/require"
 )
 
 func TestResolveRetryPathNestedRun(t *testing.T) {
 	ctx := context.Background()
-	store := filedagrun.New(filepath.Join(t.TempDir(), "dag-runs"))
+	baseDir := filepath.Join(t.TempDir(), "dag-runs")
+	repository := newRetryPathRepository(baseDir)
 	rootRef := ir.NewDAGRunRef("root", "root-run")
 
 	rootStep := ir.Step{Name: "run-middle", SubDAG: &ir.SubDAG{Name: "middle"}, Parallel: &ir.ParallelConfig{}}
@@ -25,7 +27,7 @@ func TestResolveRetryPathNestedRun(t *testing.T) {
 	targetStep := ir.Step{Name: "target-step"}
 
 	rootDAG := &ir.DAG{Name: rootRef.Name, Steps: []ir.Step{rootStep}}
-	rootAttempt := createRetryTestAttempt(t, ctx, store, rootDAG, rootRef.ID, nil, ir.DAGRunStatus{
+	rootAttempt := createRetryTestAttempt(t, ctx, repository, rootDAG, rootRef.ID, ir.DAGRunRef{}, ir.DAGRunStatus{
 		Name:     rootRef.Name,
 		DAGRunID: rootRef.ID,
 		Status:   ir.Failed,
@@ -40,7 +42,7 @@ func TestResolveRetryPathNestedRun(t *testing.T) {
 	})
 
 	middleDAG := &ir.DAG{Name: "middle", Steps: []ir.Step{middleStep}}
-	createRetryTestAttempt(t, ctx, store, middleDAG, "middle-target", &rootRef, ir.DAGRunStatus{
+	createRetryTestAttempt(t, ctx, repository, middleDAG, "middle-target", rootRef, ir.DAGRunStatus{
 		Root:     rootRef,
 		Parent:   rootRef,
 		Name:     middleDAG.Name,
@@ -54,7 +56,7 @@ func TestResolveRetryPathNestedRun(t *testing.T) {
 	})
 
 	leafDAG := &ir.DAG{Name: "leaf", Steps: []ir.Step{targetStep}}
-	createRetryTestAttempt(t, ctx, store, leafDAG, "leaf-target", &rootRef, ir.DAGRunStatus{
+	createRetryTestAttempt(t, ctx, repository, leafDAG, "leaf-target", rootRef, ir.DAGRunStatus{
 		Root:     rootRef,
 		Parent:   ir.NewDAGRunRef(middleDAG.Name, "middle-target"),
 		Name:     leafDAG.Name,
@@ -63,7 +65,7 @@ func TestResolveRetryPathNestedRun(t *testing.T) {
 		Nodes:    []*ir.Node{{Step: targetStep, Status: ir.NodeSucceeded}},
 	})
 
-	path, targetStatus, err := dagrun.ResolveRetryPath(ctx, store, rootRef, "leaf-target", "target-step")
+	path, targetStatus, err := repository.ResolveRetryPath(ctx, rootRef, "leaf-target", "target-step")
 	require.NoError(t, err)
 	require.Equal(t, ir.Succeeded, targetStatus.Status)
 	require.Equal(t, "target-step", path.Step)
@@ -118,12 +120,13 @@ func resolveRetryPathForChild(
 ) (dagrun.RetryPath, *ir.DAGRunStatus, error) {
 	t.Helper()
 	ctx := context.Background()
-	store := filedagrun.New(filepath.Join(t.TempDir(), "dag-runs"))
+	baseDir := filepath.Join(t.TempDir(), "dag-runs")
+	repository := newRetryPathRepository(baseDir)
 	rootRef := ir.NewDAGRunRef("root", "root-run")
 	targetStep := ir.Step{Name: "target-step"}
 
 	rootDAG := &ir.DAG{Name: rootRef.Name, Steps: []ir.Step{rootStep}}
-	createRetryTestAttempt(t, ctx, store, rootDAG, rootRef.ID, nil, ir.DAGRunStatus{
+	createRetryTestAttempt(t, ctx, repository, rootDAG, rootRef.ID, ir.DAGRunRef{}, ir.DAGRunStatus{
 		Name:     rootRef.Name,
 		DAGRunID: rootRef.ID,
 		Status:   ir.Failed,
@@ -131,7 +134,7 @@ func resolveRetryPathForChild(
 	})
 
 	childDAG := &ir.DAG{Name: "child", Steps: []ir.Step{targetStep}}
-	createRetryTestAttempt(t, ctx, store, childDAG, "child-target", &rootRef, ir.DAGRunStatus{
+	createRetryTestAttempt(t, ctx, repository, childDAG, "child-target", rootRef, ir.DAGRunStatus{
 		Root:     rootRef,
 		Parent:   rootRef,
 		Name:     childDAG.Name,
@@ -140,20 +143,28 @@ func resolveRetryPathForChild(
 		Nodes:    []*ir.Node{{Step: targetStep, Status: ir.NodeFailed}},
 	})
 
-	return dagrun.ResolveRetryPath(ctx, store, rootRef, "child-target", targetStep.Name)
+	return repository.ResolveRetryPath(ctx, rootRef, "child-target", targetStep.Name)
+}
+
+func newRetryPathRepository(baseDir string) *persis.DAGRunRepository {
+	return persis.NewDAGRunRepository(
+		filedagrun.NewStore(baseDir),
+		filedagrun.NewDAGRunWorkspaceStore(baseDir),
+		persis.DAGRunRepositoryOptions{LatestStatusToday: true},
+	)
 }
 
 func createRetryTestAttempt(
 	t *testing.T,
 	ctx context.Context,
-	store dagrun.DAGRunStore,
+	repository *persis.DAGRunRepository,
 	dag *ir.DAG,
 	runID string,
-	root *ir.DAGRunRef,
+	root ir.DAGRunRef,
 	status ir.DAGRunStatus,
-) dagrun.DAGRunAttempt {
+) dagrun.Attempt {
 	t.Helper()
-	attempt, err := store.CreateAttempt(ctx, dag, time.Now(), runID, dagrun.NewDAGRunAttemptOptions{RootDAGRun: root})
+	attempt, err := repository.CreateAttempt(ctx, dag, time.Now(), runID, persis.DAGRunCreateAttemptOptions{RootDAGRun: root})
 	require.NoError(t, err)
 	status.AttemptID = attempt.ID()
 	require.NoError(t, attempt.Open(ctx))

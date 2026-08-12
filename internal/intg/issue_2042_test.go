@@ -11,8 +11,9 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
-	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/persis"
+	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
 	"github.com/dagucloud/dagu/v2/internal/test"
 	"github.com/dagucloud/dagu/v2/internal/test/intgharness"
 	"github.com/stretchr/testify/require"
@@ -33,8 +34,9 @@ func TestIssue2042_EditedSuspendedScheduleDispatchesWithSkipIfSuccessful(t *test
 	h := intgharness.New(t, th.Helper)
 
 	dispatchedAt := make(chan time.Time, 4)
-	dispatchStub := func(ctx context.Context, dag *ir.DAG, runID string, trigger ir.TriggerType, scheduleTime time.Time) error {
-		attempt, err := th.DAGRunStore.CreateAttempt(ctx, dag, scheduleTime, runID, dagrun.NewDAGRunAttemptOptions{})
+	dispatchStub := func(ctx context.Context, entry scheduler.DAGEntry, runID string, trigger ir.TriggerType, scheduleTime time.Time) error {
+		dag := entry.DAG
+		attempt, err := th.DAGRunRepository.CreateAttempt(ctx, dag, scheduleTime, runID, persis.DAGRunCreateAttemptOptions{})
 		if err != nil {
 			return err
 		}

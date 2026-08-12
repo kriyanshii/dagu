@@ -85,6 +85,9 @@ func runLs(ctx *Context, args []string) error {
 	if ctx.DAGRepository == nil {
 		return fmt.Errorf("DAG store is not available")
 	}
+	if showHistory && ctx.DAGRunRepository == nil {
+		return fmt.Errorf("DAG-run repository is not available")
+	}
 
 	now := time.Now()
 	pg := pagination.NewPaginator(1, math.MaxInt)
@@ -125,7 +128,9 @@ func runLs(ctx *Context, args []string) error {
 			row.nextRun = nextRunProjection(item.DAG, now)
 		}
 		if needEnrich {
-			enrichLsRow(ctx, &row, showLast || sortLast, showHistory)
+			if err := enrichLsRow(ctx, &row, showLast || sortLast, showHistory); err != nil {
+				return err
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -175,7 +180,7 @@ func sortLsRowsByLastRun(rows []lsRow, reverse bool) {
 	})
 }
 
-func enrichLsRow(ctx *Context, row *lsRow, wantLast, wantHistory bool) {
+func enrichLsRow(ctx *Context, row *lsRow, wantLast, wantHistory bool) error {
 	if wantLast {
 		st, err := ctx.DAGRunMgr.GetLatestStatus(ctx, row.dag)
 		if err == nil && st.Status != ir.NotStarted {
@@ -191,10 +196,15 @@ func enrichLsRow(ctx *Context, row *lsRow, wantLast, wantHistory bool) {
 	}
 
 	if wantHistory {
-		statuses := ctx.DAGRunMgr.ListRecentStatus(ctx, row.dag.Name, 5)
+		statuses, err := ctx.DAGRunRepository.RecentStatuses(ctx, row.dag.Name, 5)
+		if err != nil {
+			_, _ = fmt.Fprintf(ctx.Command.ErrOrStderr(), "warning: failed to load recent DAG-run history for %s: %s\n", row.dag.Name, err)
+			row.history = "-"
+			return nil
+		}
 		if len(statuses) == 0 {
 			row.history = "-"
-			return
+			return nil
 		}
 		parts := make([]string, 0, len(statuses))
 		for _, st := range statuses {
@@ -202,6 +212,7 @@ func enrichLsRow(ctx *Context, row *lsRow, wantLast, wantHistory bool) {
 		}
 		row.history = strings.Join(parts, ",")
 	}
+	return nil
 }
 
 func renderLsTable(out io.Writer, rows []lsRow, showNext, showLast, showHistory bool) error {
