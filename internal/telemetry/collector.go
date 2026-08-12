@@ -18,9 +18,10 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
 	"github.com/dagucloud/dagu/v2/internal/dagrun"
-	"github.com/dagucloud/dagu/v2/internal/dagstore"
 	"github.com/dagucloud/dagu/v2/internal/dispatch"
 	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/pagination"
+	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/queue"
 	"github.com/dagucloud/dagu/v2/internal/serviceregistry"
 )
@@ -40,7 +41,7 @@ var _ prometheus.Collector = (*Collector)(nil)
 type Collector struct {
 	startTime            time.Time
 	version              string
-	dagStore             dagstore.DAGStore
+	dagRepository        dagLister
 	dagRunStore          dagrun.DAGRunStore
 	queueStore           queue.QueueStore
 	serviceRegistry      serviceregistry.ServiceRegistry
@@ -79,10 +80,14 @@ type Collector struct {
 	mu sync.RWMutex
 }
 
+type dagLister interface {
+	List(context.Context, persis.DAGListOptions) (pagination.PaginatedResult[persis.DAGListItem], []string, error)
+}
+
 // NewCollector creates a new metrics collector
 func NewCollector(
 	version string,
-	dagStore dagstore.DAGStore,
+	dagRepository dagLister,
 	dagRunStore dagrun.DAGRunStore,
 	queueStore queue.QueueStore,
 	serviceRegistry serviceregistry.ServiceRegistry,
@@ -90,7 +95,7 @@ func NewCollector(
 	return &Collector{
 		startTime:       time.Now(),
 		version:         version,
-		dagStore:        dagStore,
+		dagRepository:   dagRepository,
 		dagRunStore:     dagRunStore,
 		queueStore:      queueStore,
 		serviceRegistry: serviceRegistry,
@@ -444,7 +449,7 @@ func (c *Collector) collectDAGRunMetrics(ctx context.Context, ch chan<- promethe
 
 func (c *Collector) collectDAGMetrics(ctx context.Context, ch chan<- prometheus.Metric) {
 	// Get all DAGs using List with empty options to get all
-	result, _, err := c.dagStore.List(ctx, dagstore.ListDAGsOptions{})
+	result, _, err := c.dagRepository.List(ctx, persis.DAGListOptions{})
 	if err != nil {
 		return
 	}

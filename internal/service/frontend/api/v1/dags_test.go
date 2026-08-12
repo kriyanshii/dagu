@@ -6,7 +6,6 @@ package api_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/dagucloud/dagu/v2/api/v1"
 	"github.com/dagucloud/dagu/v2/internal/cmn/config"
-	"github.com/dagucloud/dagu/v2/internal/dagstore"
 	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
 	localapi "github.com/dagucloud/dagu/v2/internal/service/frontend/api/v1"
@@ -993,26 +991,6 @@ func (stubSchedulerStateStore) Save(context.Context, *scheduler.SchedulerState) 
 	return nil
 }
 
-var errLoadSpecFatal = errors.New("load spec fatal")
-
-type loadSpecErrorDAGStore struct {
-	dagstore.DAGStore
-	updateCalled bool
-}
-
-func (s *loadSpecErrorDAGStore) GetDetails(context.Context, string, dagstore.DAGLoadOptions) (*ir.DAG, error) {
-	return &ir.DAG{Name: "load-spec-error"}, nil
-}
-
-func (s *loadSpecErrorDAGStore) LoadSpec(context.Context, []byte, string, dagstore.DAGLoadOptions) (*ir.DAG, error) {
-	return nil, errLoadSpecFatal
-}
-
-func (s *loadSpecErrorDAGStore) UpdateSpec(context.Context, string, []byte) error {
-	s.updateCalled = true
-	return nil
-}
-
 func TestListDAGsDataPreservesNextRunAcrossSSEPath(t *testing.T) {
 	t.Parallel()
 
@@ -1042,7 +1020,7 @@ steps:
 	}
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1098,7 +1076,7 @@ steps:
 	}
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1141,7 +1119,7 @@ steps:
 	}
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1182,7 +1160,7 @@ func TestNextRunProjectionUsesConfiguredLocation(t *testing.T) {
 	}
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1218,7 +1196,7 @@ steps:
 `)
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1271,10 +1249,10 @@ name: active-filter-unscheduled
 steps:
   - run: echo unscheduled
 `)
-	require.NoError(t, helper.DAGStore.ToggleSuspend(context.Background(), suspended.FileName(), true))
+	require.NoError(t, helper.DAGRepository.SetSuspended(context.Background(), suspended.FileName(), true))
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1319,7 +1297,7 @@ func TestGetDAGDetails_InvalidYAML_Returns200WithErrors(t *testing.T) {
 	fileName = fileName[:len(fileName)-len(".yaml")]
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1355,7 +1333,7 @@ steps:
 `))
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1424,7 +1402,7 @@ steps:
 `))
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1468,7 +1446,7 @@ steps:
 `))
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1504,36 +1482,6 @@ steps:
 	require.Contains(t, resp.Errors[0], `fields "with" and "config" cannot be used together`)
 }
 
-func TestUpdateDAGSpec_ReturnsFatalLoadSpecError(t *testing.T) {
-	t.Parallel()
-
-	helper := test.Setup(t, test.WithStatusPersistence())
-	dagStore := &loadSpecErrorDAGStore{}
-	apiImpl := localapi.New(
-		dagStore,
-		helper.DAGRunStore,
-		helper.QueueStore,
-		helper.ProcStore,
-		helper.DAGRunMgr,
-		helper.Config,
-		nil,
-		helper.ServiceRegistry,
-		nil,
-		nil,
-	)
-
-	respObj, err := apiImpl.UpdateDAGSpec(context.Background(), api.UpdateDAGSpecRequestObject{
-		FileName: "load-spec-error",
-		Body: &api.UpdateDAGSpecJSONRequestBody{
-			Spec: "steps:\n  - command: echo updated\n",
-		},
-	})
-
-	require.ErrorIs(t, err, errLoadSpecFatal)
-	require.Nil(t, respObj)
-	require.False(t, dagStore.updateCalled)
-}
-
 func TestUpdateDAGSpec_NotifiesDAGMutation(t *testing.T) {
 	t.Parallel()
 
@@ -1547,7 +1495,7 @@ steps:
 
 	var notified []string
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1594,7 +1542,7 @@ steps:
 
 	var notified []string
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1668,7 +1616,7 @@ steps:
 `)
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1749,7 +1697,7 @@ steps:
 `)
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1805,7 +1753,7 @@ step_types:
 	fileName = fileName[:len(fileName)-len(".yaml")]
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1836,7 +1784,7 @@ func TestGetDAGDetails_NonExistent_Returns404(t *testing.T) {
 	helper := test.Setup(t, test.WithStatusPersistence())
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1886,7 +1834,7 @@ steps:
 	}
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1934,7 +1882,7 @@ steps:
 `)
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -1978,7 +1926,7 @@ steps:
 `)
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
@@ -2014,7 +1962,7 @@ steps:
 `)
 
 	apiImpl := localapi.New(
-		helper.DAGStore,
+		helper.DAGRepository,
 		helper.DAGRunStore,
 		helper.QueueStore,
 		helper.ProcStore,
