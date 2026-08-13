@@ -20,7 +20,6 @@ import (
 	notificationmodel "github.com/dagucloud/dagu/v2/internal/notification"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/persis/file"
-	"github.com/dagucloud/dagu/v2/internal/proc"
 	"github.com/dagucloud/dagu/v2/internal/queue"
 	"github.com/dagucloud/dagu/v2/internal/runtime"
 	"github.com/dagucloud/dagu/v2/internal/service/chatbridge"
@@ -37,7 +36,7 @@ type SchedulerConfig struct {
 	DAGRepository     *persis.DAGRepository
 	DAGRunRepository  *persis.DAGRunRepository
 	QueueStore        queue.QueueStore
-	ProcStore         proc.ProcStore
+	ProcRepository    *persis.ProcRepository
 	ServiceRegistry   serviceregistry.ServiceRegistry
 	DispatchTaskStore dispatch.DispatchTaskStore
 	DAGRunLeaseStore  dispatch.DAGRunLeaseStore
@@ -64,7 +63,7 @@ func NewScheduler(cfg SchedulerConfig) (*scheduler.Scheduler, error) {
 
 	schedulerRunManager := runtime.NewManager(
 		cfg.DAGRunRepository,
-		cfg.ProcStore,
+		cfg.ProcRepository,
 		cfg.Config,
 		runtime.WithLatestStatusAllHistory(),
 	)
@@ -82,7 +81,7 @@ func NewScheduler(cfg SchedulerConfig) (*scheduler.Scheduler, error) {
 		cfg.DAGRepository,
 		cfg.DAGRunRepository,
 		cfg.QueueStore,
-		cfg.ProcStore,
+		cfg.ProcRepository,
 		cfg.ServiceRegistry,
 		coordinatorClient,
 		watermarkStore,

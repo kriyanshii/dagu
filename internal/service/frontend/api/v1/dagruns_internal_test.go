@@ -89,9 +89,7 @@ type stopDAGRunAttempt struct {
 	aborted bool
 }
 
-type stopDAGRunProcStore struct {
-	proc.ProcStore
-}
+type stopDAGRunProcRepository struct{}
 
 func (s *pagedStopDAGRunStore) QueryStatuses(_ context.Context, query persis.DAGRunStatusQuery) (persis.DAGRunStatusPage, error) {
 	s.queries = append(s.queries, query)
@@ -117,8 +115,20 @@ func (a *stopDAGRunAttempt) Abort(context.Context) error {
 	return nil
 }
 
-func (stopDAGRunProcStore) IsRunAlive(context.Context, string, ir.DAGRunRef) (bool, error) {
+func (stopDAGRunProcRepository) IsRunAlive(context.Context, string, ir.DAGRunRef) (bool, error) {
 	return false, nil
+}
+
+func (stopDAGRunProcRepository) ListAlive(context.Context, string) ([]ir.DAGRunRef, error) {
+	return nil, nil
+}
+
+func (stopDAGRunProcRepository) IsAttemptAlive(context.Context, string, ir.DAGRunRef, string) (bool, error) {
+	return false, nil
+}
+
+func (stopDAGRunProcRepository) LatestFreshEntryByDAGName(context.Context, string, string) (*proc.ProcEntry, error) {
+	return nil, nil
 }
 
 func (s failingHistoryDAGRunStore) RecentStatuses(context.Context, string, int) ([]ir.DAGRunStatus, error) {
@@ -193,7 +203,7 @@ func TestStopAllDAGRunsProcessesBoundedPages(t *testing.T) {
 	a := &API{
 		dagRepository:    persis.NewDAGRepository(historyDAGDefinitionStore{}, persis.DAGRepositoryOptions{}),
 		dagRunRepository: repository,
-		dagRunMgr:        runtimepkg.NewManager(repository, stopDAGRunProcStore{}, cfg),
+		dagRunMgr:        runtimepkg.NewManager(repository, stopDAGRunProcRepository{}, cfg),
 		config:           cfg,
 	}
 
@@ -446,14 +456,25 @@ func (a *manualStepAttempt) ReadStatus(context.Context) (*ir.DAGRunStatus, error
 	return a.statuses[idx], nil
 }
 
-type manualStepProcStore struct {
-	proc.ProcStore
+type manualStepProcRepository struct {
 	alive bool
 	err   error
 }
 
-func (s *manualStepProcStore) IsAttemptAlive(context.Context, string, ir.DAGRunRef, string) (bool, error) {
+func (s *manualStepProcRepository) WithLock(_ context.Context, _ string, fn func() error) error {
+	return fn()
+}
+
+func (s *manualStepProcRepository) CountAliveByDAGName(context.Context, string, string) (int, error) {
+	return 0, nil
+}
+
+func (s *manualStepProcRepository) IsAttemptAlive(context.Context, string, ir.DAGRunRef, string) (bool, error) {
 	return s.alive, s.err
+}
+
+func (s *manualStepProcRepository) ListAllAlive(context.Context) (map[string][]ir.DAGRunRef, error) {
+	return nil, nil
 }
 
 type failingManualCASStore struct {
@@ -498,7 +519,7 @@ func TestWaitForManualStepMutationReadyFailsClosedOnLivenessError(t *testing.T) 
 		WorkerID:  "local",
 	}
 	livenessErr := errors.New("liveness unavailable")
-	a := &API{procStore: &manualStepProcStore{err: livenessErr}}
+	a := &API{procRepository: &manualStepProcRepository{err: livenessErr}}
 	attempt := &manualStepAttempt{dag: &ir.DAG{Name: status.Name}}
 
 	updated, err := a.waitForManualStepMutationReady(t.Context(), attempt, status)
@@ -517,7 +538,7 @@ func TestWaitForManualStepMutationReadyHonorsCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	a := &API{procStore: &manualStepProcStore{alive: true}}
+	a := &API{procRepository: &manualStepProcRepository{alive: true}}
 	attempt := &manualStepAttempt{dag: &ir.DAG{Name: status.Name}}
 
 	updated, err := a.waitForManualStepMutationReady(ctx, attempt, status)
@@ -559,7 +580,7 @@ func TestWaitForManualStepMutationReadyWaitsForLocalPersistence(t *testing.T) {
 		dag:      &ir.DAG{Name: status.Name},
 		statuses: []*ir.DAGRunStatus{status, &finalized},
 	}
-	a := &API{procStore: &manualStepProcStore{}}
+	a := &API{procRepository: &manualStepProcRepository{}}
 
 	updated, err := a.waitForManualStepMutationReady(t.Context(), attempt, status)
 
@@ -599,7 +620,7 @@ func TestApproveDAGRunStepReturnsInternalErrorWhenStatusWriteFails(t *testing.T)
 	a := &API{
 		dagRunRepository: repository,
 		dagRunMgr:        runtimepkg.NewManager(repository, nil, cfg),
-		procStore:        &manualStepProcStore{},
+		procRepository:   &manualStepProcRepository{},
 		config:           cfg,
 	}
 

@@ -21,7 +21,6 @@ import (
 	filedagrun "github.com/dagucloud/dagu/v2/internal/persis/file/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/persis/file/proc"
 	"github.com/dagucloud/dagu/v2/internal/persis/store"
-	procdomain "github.com/dagucloud/dagu/v2/internal/proc"
 	queuedomain "github.com/dagucloud/dagu/v2/internal/queue"
 	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
 	"github.com/stretchr/testify/require"
@@ -30,6 +29,11 @@ import (
 )
 
 const conditionTestStaleThreshold = time.Hour
+
+type processRepository interface {
+	CountAlive(ctx context.Context, groupName string) (int, error)
+	IsRunAlive(ctx context.Context, groupName string, dagRun ir.DAGRunRef) (bool, error)
+}
 
 func TestLocalLaunchFailedOnlyClassifiesExecutionPathErrors(t *testing.T) {
 	t.Parallel()
@@ -72,10 +76,10 @@ func TestQueueProcessorSkipsQueuedConditionRefreshWhenLivenessUnavailable(t *tes
 		nil,
 		&queueConditionDispatcher{},
 		queueConditionFixtureConfig{
-			procStore: func(store procdomain.ProcStore) procdomain.ProcStore {
-				return &queueConditionProcStore{
-					ProcStore:     store,
-					isRunAliveErr: errors.New("liveness unavailable"),
+			procRepository: func(store processRepository) processRepository {
+				return &queueConditionProcRepository{
+					processRepository: store,
+					isRunAliveErr:     errors.New("liveness unavailable"),
 				}
 			},
 		},
@@ -400,10 +404,10 @@ func TestQueueProcessorFinalizesLaunchFailure(t *testing.T) {
 		&queueConditionDispatcher{},
 		queueConditionFixtureConfig{
 			executable: filepath.Join(t.TempDir(), "missing-dagu"),
-			procStore: func(base procdomain.ProcStore) procdomain.ProcStore {
-				return &queueConditionProcStore{
-					ProcStore:       base,
-					isRunAliveDelay: 50 * time.Millisecond,
+			procRepository: func(base processRepository) processRepository {
+				return &queueConditionProcRepository{
+					processRepository: base,
+					isRunAliveDelay:   50 * time.Millisecond,
 				}
 			},
 		},
@@ -442,10 +446,10 @@ func TestQueueProcessorPreservesRetryPublishedDuringFailureCleanup(t *testing.T)
 		&queueConditionDispatcher{},
 		queueConditionFixtureConfig{
 			executable: filepath.Join(t.TempDir(), "missing-dagu"),
-			procStore: func(base procdomain.ProcStore) procdomain.ProcStore {
-				return &queueConditionProcStore{
-					ProcStore:       base,
-					isRunAliveDelay: 50 * time.Millisecond,
+			procRepository: func(base processRepository) processRepository {
+				return &queueConditionProcRepository{
+					processRepository: base,
+					isRunAliveDelay:   50 * time.Millisecond,
 				}
 			},
 			queueStore: func(base queuedomain.QueueStore) queuedomain.QueueStore {
@@ -512,9 +516,9 @@ func TestQueueProcessorRecordsRunLivenessUnavailableCondition(t *testing.T) {
 		nil,
 		&queueConditionDispatcher{},
 		queueConditionFixtureConfig{
-			procStore: func(base procdomain.ProcStore) procdomain.ProcStore {
-				return &queueConditionProcStore{
-					ProcStore:          base,
+			procRepository: func(base processRepository) processRepository {
+				return &queueConditionProcRepository{
+					processRepository:  base,
 					isRunAliveErrAfter: 1,
 					isRunAliveErr:      errors.New("proc store unavailable"),
 				}
@@ -539,10 +543,10 @@ func TestQueueProcessorRecordsQueueStateUnavailableConditionOnCountError(t *test
 		nil,
 		&queueConditionDispatcher{},
 		queueConditionFixtureConfig{
-			procStore: func(base procdomain.ProcStore) procdomain.ProcStore {
-				return &queueConditionProcStore{
-					ProcStore:     base,
-					countAliveErr: errors.New("count alive failed"),
+			procRepository: func(base processRepository) processRepository {
+				return &queueConditionProcRepository{
+					processRepository: base,
+					countAliveErr:     errors.New("count alive failed"),
 				}
 			},
 		},
@@ -567,9 +571,9 @@ type queueConditionFixture struct {
 }
 
 type queueConditionFixtureConfig struct {
-	executable string
-	procStore  func(procdomain.ProcStore) procdomain.ProcStore
-	queueStore func(queuedomain.QueueStore) queuedomain.QueueStore
+	executable     string
+	procRepository func(processRepository) processRepository
+	queueStore     func(queuedomain.QueueStore) queuedomain.QueueStore
 }
 
 func newQueueConditionFixture(
@@ -619,10 +623,10 @@ func newQueueConditionFixtureWithConfig(
 		file.NewCollection(filepath.Join(tmp, "dispatch")),
 		store.WithDispatchReservationTTL(conditionTestStaleThreshold),
 	)
-	procStore := proc.New(filepath.Join(tmp, "proc"))
-	var processorProcStore procdomain.ProcStore = procStore
-	if fixtureConfig.procStore != nil {
-		processorProcStore = fixtureConfig.procStore(procStore)
+	procRepository := persis.NewProcRepository(proc.New(filepath.Join(tmp, "proc")))
+	var processorProcRepository processRepository = procRepository
+	if fixtureConfig.procRepository != nil {
+		processorProcRepository = fixtureConfig.procRepository(procRepository)
 	}
 	executable := fixtureConfig.executable
 	if executable == "" {
@@ -652,7 +656,7 @@ func newQueueConditionFixtureWithConfig(
 	processor := scheduler.NewQueueProcessor(
 		queueStore,
 		dagRunRepository.repository,
-		processorProcStore,
+		processorProcRepository,
 		executor,
 		config.Queues{
 			Enabled: true,
@@ -1153,8 +1157,8 @@ func (a *queueConditionAttempt) ReadDAG(ctx context.Context) (*ir.DAG, error) {
 	return a.Attempt.ReadDAG(ctx)
 }
 
-type queueConditionProcStore struct {
-	procdomain.ProcStore
+type queueConditionProcRepository struct {
+	processRepository
 
 	mu                 sync.Mutex
 	countAliveErr      error
@@ -1164,14 +1168,14 @@ type queueConditionProcStore struct {
 	isRunAliveCalls    int
 }
 
-func (s *queueConditionProcStore) CountAlive(ctx context.Context, groupName string) (int, error) {
+func (s *queueConditionProcRepository) CountAlive(ctx context.Context, groupName string) (int, error) {
 	if s.countAliveErr != nil {
 		return 0, s.countAliveErr
 	}
-	return s.ProcStore.CountAlive(ctx, groupName)
+	return s.processRepository.CountAlive(ctx, groupName)
 }
 
-func (s *queueConditionProcStore) IsRunAlive(ctx context.Context, groupName string, dagRun ir.DAGRunRef) (bool, error) {
+func (s *queueConditionProcRepository) IsRunAlive(ctx context.Context, groupName string, dagRun ir.DAGRunRef) (bool, error) {
 	s.mu.Lock()
 	s.isRunAliveCalls++
 	calls := s.isRunAliveCalls
@@ -1189,5 +1193,5 @@ func (s *queueConditionProcStore) IsRunAlive(ctx context.Context, groupName stri
 		case <-time.After(s.isRunAliveDelay):
 		}
 	}
-	return s.ProcStore.IsRunAlive(ctx, groupName, dagRun)
+	return s.processRepository.IsRunAlive(ctx, groupName, dagRun)
 }

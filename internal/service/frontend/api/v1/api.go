@@ -33,7 +33,6 @@ import (
 	notificationmodel "github.com/dagucloud/dagu/v2/internal/notification"
 	"github.com/dagucloud/dagu/v2/internal/pagination"
 	"github.com/dagucloud/dagu/v2/internal/persis"
-	"github.com/dagucloud/dagu/v2/internal/proc"
 	profilepkg "github.com/dagucloud/dagu/v2/internal/profile"
 	"github.com/dagucloud/dagu/v2/internal/queue"
 	"github.com/dagucloud/dagu/v2/internal/remotenode"
@@ -67,7 +66,7 @@ type API struct {
 	dagRunRepository     *persis.DAGRunRepository
 	dagRunMgr            runtime.Manager
 	queueStore           queue.QueueStore
-	procStore            proc.ProcStore
+	procRepository       processRepository
 	dagRunLeaseStore     dispatch.DAGRunLeaseStore
 	workerHeartbeatStore dispatch.WorkerHeartbeatStore
 	remoteNodeResolver   *remotenode.Resolver
@@ -104,6 +103,13 @@ type API struct {
 	wikiMutationNotifier func()
 	baseConfigFactory    WorkspaceBaseConfigStoreFactory
 	oidcRoleMapping      func() config.OIDCRoleMapping
+}
+
+type processRepository interface {
+	WithLock(ctx context.Context, groupName string, fn func() error) error
+	CountAliveByDAGName(ctx context.Context, groupName, dagName string) (int, error)
+	IsAttemptAlive(ctx context.Context, groupName string, dagRun ir.DAGRunRef, attemptID string) (bool, error)
+	ListAllAlive(ctx context.Context) (map[string][]ir.DAGRunRef, error)
 }
 
 type WorkspaceBaseConfigStoreFactory func(dagsDir, workspaceName string) (dagsettings.BaseConfigStore, error)
@@ -364,7 +370,7 @@ func New(
 	dr *persis.DAGRepository,
 	dagRunRepository *persis.DAGRunRepository,
 	qs queue.QueueStore,
-	ps proc.ProcStore,
+	processes *persis.ProcRepository,
 	drm runtime.Manager,
 	cfg *config.Config,
 	cc coordinator.Client,
@@ -377,7 +383,7 @@ func New(
 		dagRepository:       dr,
 		dagRunRepository:    dagRunRepository,
 		queueStore:          qs,
-		procStore:           ps,
+		procRepository:      processes,
 		dagRunMgr:           drm,
 		logEncodingCharset:  cfg.UI.LogEncodingCharset,
 		subCmdBuilder:       launcher.NewSubCmdBuilder(cfg),

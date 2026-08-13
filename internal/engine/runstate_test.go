@@ -183,9 +183,13 @@ func memoryPersistenceFactory(runStateStore *memstore.Store) engine.PersistenceF
 		if err != nil {
 			return engine.Persistence{}, err
 		}
+		procStore, err := store.NewProcStore(backend.Collection("proc"))
+		if err != nil {
+			return engine.Persistence{}, err
+		}
 		persistence := engine.Persistence{
 			DAGRepository:   dagRepository,
-			ProcStore:       store.NewProcStore(backend.Collection("proc")),
+			ProcRepository:  persis.NewProcRepository(procStore),
 			StateStore:      store.NewDAGStateStore(backend.Collection("dag_state")),
 			ServiceRegistry: file.NewServiceRegistry(cfg),
 			DAGRepositoryFactory: func(_ context.Context, cfg *config.Config, opts engine.DAGRepositoryFactoryOptions) (*persis.DAGRepository, error) {

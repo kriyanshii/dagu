@@ -13,7 +13,6 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/license"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/persis/file"
-	"github.com/dagucloud/dagu/v2/internal/proc"
 	"github.com/dagucloud/dagu/v2/internal/queue"
 	"github.com/dagucloud/dagu/v2/internal/runtime"
 	"github.com/dagucloud/dagu/v2/internal/service/frontend"
@@ -32,7 +31,7 @@ type ServerConfig struct {
 	DAGRunRepository     *persis.DAGRunRepository
 	Caches               []fileutil.CacheMetrics
 	QueueStore           queue.QueueStore
-	ProcStore            proc.ProcStore
+	ProcRepository       *persis.ProcRepository
 	DAGRunManager        runtime.Manager
 	ServiceRegistry      serviceregistry.ServiceRegistry
 	DAGRunLeaseStore     dispatch.DAGRunLeaseStore
@@ -84,7 +83,7 @@ func NewServer(cfg ServerConfig, opts ...frontend.ServerOption) (*frontend.Serve
 		cfg.DAGRepository,
 		cfg.DAGRunRepository,
 		cfg.QueueStore,
-		cfg.ProcStore,
+		cfg.ProcRepository,
 		cfg.DAGRunManager,
 		coordinatorClient,
 		cfg.ServiceRegistry,

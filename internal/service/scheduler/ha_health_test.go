@@ -16,7 +16,6 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/persis/file"
 	filedagrun "github.com/dagucloud/dagu/v2/internal/persis/file/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/persis/store"
-	procdomain "github.com/dagucloud/dagu/v2/internal/proc"
 	queuedomain "github.com/dagucloud/dagu/v2/internal/queue"
 	"github.com/dagucloud/dagu/v2/internal/runtime"
 	"github.com/dagucloud/dagu/v2/internal/testutil"
@@ -65,7 +64,7 @@ type haSchedulerFixture struct {
 	dagRepository    *persis.DAGRepository
 	dagRunRepository *persis.DAGRunRepository
 	queueStore       queuedomain.QueueStore
-	procStore        procdomain.ProcStore
+	procRepository   *persis.ProcRepository
 	dagRunMgr        runtime.Manager
 }
 
@@ -105,15 +104,15 @@ func newHASchedulerFixture(t *testing.T) *haSchedulerFixture {
 		filedagrun.WithArtifactDir(cfg.Paths.ArtifactDir),
 	)
 	queueStore := store.NewQueueStore(file.NewCollection(cfg.Paths.QueueDir))
-	procStore := newSchedulerTestProcStore(cfg.Paths.ProcDir, cfg)
+	procRepository := newSchedulerTestProcRepository(cfg.Paths.ProcDir, cfg)
 
 	return &haSchedulerFixture{
 		cfg:              cfg,
 		dagRepository:    testutil.NewFileDAGRepository(cfg.Paths.DAGsDir),
 		dagRunRepository: dagRunRepository,
 		queueStore:       queueStore,
-		procStore:        procStore,
-		dagRunMgr:        runtime.NewManager(dagRunRepository, procStore, cfg),
+		procRepository:   procRepository,
+		dagRunMgr:        runtime.NewManager(dagRunRepository, procRepository, cfg),
 	}
 }
 
@@ -127,7 +126,7 @@ func newHASchedulerForTest(t *testing.T, fixture *haSchedulerFixture, hooks Test
 		fixture.dagRepository,
 		fixture.dagRunRepository,
 		fixture.queueStore,
-		fixture.procStore,
+		fixture.procRepository,
 		nil,
 		nil,
 		nil,
