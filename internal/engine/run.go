@@ -456,7 +456,7 @@ func (e *Engine) runLocal(ctx context.Context, dag *ir.DAG, runID string, opts R
 			RunStateStore:            e.runStateStore,
 			DAGRunRepository:         e.dagRunRepository,
 			StateStore:               e.stateStore,
-			MaterializationStore:     filematerialization.New(filepath.Join(e.cfg.Paths.DataDir, "materializations")),
+			MaterializationStore:     stores.MaterializationStore,
 			NoReuse:                  opts.NoReuse,
 			SecretStore:              stores.SecretStore,
 			ProfileStore:             stores.ProfileStore,
@@ -700,10 +700,14 @@ func (e *Engine) artifactDir(ctx context.Context, dag *ir.DAG, runID string) (st
 }
 
 func (e *Engine) runtimeStores(ctx context.Context) RuntimeStores {
-	if e.runtimeStoresFactory == nil {
-		return RuntimeStores{}
+	var stores RuntimeStores
+	if e.runtimeStoresFactory != nil {
+		stores = e.runtimeStoresFactory(ctx, e.cfg)
 	}
-	return e.runtimeStoresFactory(ctx, e.cfg)
+	if stores.MaterializationStore == nil {
+		stores.MaterializationStore = filematerialization.New(filepath.Join(e.cfg.Paths.DataDir, "materializations"))
+	}
+	return stores
 }
 
 func preparedAttempt(prepared *localPreparation) dagrun.Attempt {

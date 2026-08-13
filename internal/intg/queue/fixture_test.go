@@ -18,7 +18,9 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	persiststore "github.com/dagucloud/dagu/v2/internal/persis/store"
 	"github.com/dagucloud/dagu/v2/internal/queue"
+	"github.com/dagucloud/dagu/v2/internal/schedulerstate"
 	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
 	"github.com/dagucloud/dagu/v2/internal/spec"
 	"github.com/dagucloud/dagu/v2/internal/test"
@@ -555,15 +557,14 @@ func (f *fixture) cleanup() {
 func (f *fixture) seedWatermark(lastTick, lastScheduledTime time.Time) {
 	f.t.Helper()
 
-	wmBackend, err := file.New(f.th.Config.Paths.DataDir)
+	stateBackend, err := file.New(f.th.Config.Paths.DataDir)
 	require.NoError(f.t, err)
-	store := scheduler.NewWatermarkStore(wmBackend.Collection("scheduler"))
-	state := &scheduler.SchedulerState{
-		Version:  1,
+	stateStore := persiststore.NewSchedulerStateStore(stateBackend.Collection("scheduler"))
+	state := &schedulerstate.State{
 		LastTick: lastTick,
-		DAGs: map[string]scheduler.DAGWatermark{
+		DAGs: map[string]schedulerstate.DAGWatermark{
 			f.dag.Name: {LastScheduledTime: lastScheduledTime},
 		},
 	}
-	require.NoError(f.t, store.Save(f.th.Context, state))
+	require.NoError(f.t, stateStore.Save(f.th.Context, state))
 }

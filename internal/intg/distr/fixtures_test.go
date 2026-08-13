@@ -20,7 +20,9 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/launcher"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	persiststore "github.com/dagucloud/dagu/v2/internal/persis/store"
 	"github.com/dagucloud/dagu/v2/internal/queue"
+	"github.com/dagucloud/dagu/v2/internal/schedulerstate"
 	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
 	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
 	"github.com/dagucloud/dagu/v2/internal/service/worker"
@@ -297,10 +299,10 @@ func (f *testFixture) startSchedulerWithClock(timeout time.Duration, clock sched
 	f.startSchedulerWithOptions(
 		timeout,
 		clock,
-		func() scheduler.WatermarkStore {
-			wmBackend, err := file.New(f.coord.Config.Paths.DataDir)
+		func() schedulerstate.Store {
+			stateBackend, err := file.New(f.coord.Config.Paths.DataDir)
 			require.NoError(f.t, err)
-			return scheduler.NewWatermarkStore(wmBackend.Collection("scheduler"))
+			return persiststore.NewSchedulerStateStore(stateBackend.Collection("scheduler"))
 		}(),
 	)
 }
@@ -308,7 +310,7 @@ func (f *testFixture) startSchedulerWithClock(timeout time.Duration, clock sched
 func (f *testFixture) startSchedulerWithOptions(
 	timeout time.Duration,
 	clock scheduler.Clock,
-	watermarkStore scheduler.WatermarkStore,
+	stateStore schedulerstate.Store,
 ) {
 	f.t.Helper()
 
@@ -328,7 +330,7 @@ func (f *testFixture) startSchedulerWithOptions(
 		f.coord.ProcRepository,
 		f.coord.ServiceRegistry,
 		f.coordinatorClient,
-		watermarkStore,
+		stateStore,
 	)
 	require.NoError(f.t, err)
 	schedulerInst.SetDAGRunLeaseStore(f.coord.DAGRunLeaseStore)

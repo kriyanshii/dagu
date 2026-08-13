@@ -16,6 +16,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
 	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/schedulerstate"
 )
 
 // DAGChangeType identifies the kind of DAG lifecycle event.
@@ -84,7 +85,7 @@ type RunExistsFunc func(ctx context.Context, dag *ir.DAG, runID string) (bool, e
 
 // TickPlannerConfig holds the dependencies for creating a TickPlanner.
 type TickPlannerConfig struct {
-	WatermarkStore  WatermarkStore
+	StateStore      schedulerstate.Store
 	IsSuspended     IsSuspendedFunc
 	GetLatestStatus GetLatestStatusFunc
 	IsRunning       IsRunningFunc
@@ -129,7 +130,7 @@ type TickPlanner struct {
 
 	// watermark state (protected by mu)
 	mu             sync.RWMutex
-	watermarkState *SchedulerState
+	watermarkState *schedulerstate.State
 
 	// per-DAG tracking (protected by entryMu)
 	entryMu      sync.Mutex
@@ -180,8 +181,8 @@ type activeDAGSchedules struct {
 // Nil config fields are replaced with no-op defaults, except RunExists which
 // fails closed when it is not configured.
 func NewTickPlanner(cfg TickPlannerConfig) *TickPlanner {
-	if cfg.WatermarkStore == nil {
-		cfg.WatermarkStore = noopWatermarkStore{}
+	if cfg.StateStore == nil {
+		cfg.StateStore = noopStateStore{}
 	}
 	if cfg.IsSuspended == nil {
 		cfg.IsSuspended = func(context.Context, string) (bool, error) { return false, nil }
@@ -327,16 +328,13 @@ func (tp *TickPlanner) Init(ctx context.Context, entries []DAGEntry) error {
 		tp.entries[entry.DAG.Name] = &plannerEntry{DAGEntry: entry}
 	}
 
-	state, err := tp.cfg.WatermarkStore.Load(ctx)
+	state, err := tp.cfg.StateStore.Load(ctx)
 	if err != nil {
 		logger.Error(ctx, "Failed to load watermark state", tag.Error(err))
-		state = &SchedulerState{Version: SchedulerStateVersion, DAGs: make(map[string]DAGWatermark)}
-	}
-	if state.Version == 0 {
-		state.Version = SchedulerStateVersion
+		state = &schedulerstate.State{DAGs: make(map[string]schedulerstate.DAGWatermark)}
 	}
 	if state.DAGs == nil {
-		state.DAGs = make(map[string]DAGWatermark)
+		state.DAGs = make(map[string]schedulerstate.DAGWatermark)
 	}
 
 	// Prune stale DAG entries that no longer exist on disk.
@@ -409,7 +407,7 @@ func (tp *TickPlanner) initBuffers(ctx context.Context, entries []DAGEntry, acti
 	// reading the shared DAGs map outside the lock.
 	tp.mu.RLock()
 	lastTick := tp.watermarkState.LastTick
-	dagWatermarks := make(map[string]DAGWatermark, len(tp.watermarkState.DAGs))
+	dagWatermarks := make(map[string]schedulerstate.DAGWatermark, len(tp.watermarkState.DAGs))
 	maps.Copy(dagWatermarks, tp.watermarkState.DAGs)
 	tp.mu.RUnlock()
 
@@ -952,17 +950,17 @@ func (tp *TickPlanner) shouldRunOneOff(ctx context.Context, dag *ir.DAG) bool {
 	return latestStatus.Status != ir.Running
 }
 
-func (tp *TickPlanner) pendingOneOffState(dagName, fingerprint string) (OneOffScheduleState, bool) {
+func (tp *TickPlanner) pendingOneOffState(dagName, fingerprint string) (schedulerstate.OneOffScheduleState, bool) {
 	tp.mu.RLock()
 	defer tp.mu.RUnlock()
 
 	dagState, ok := tp.watermarkState.DAGs[dagName]
 	if !ok || dagState.OneOffs == nil {
-		return OneOffScheduleState{}, false
+		return schedulerstate.OneOffScheduleState{}, false
 	}
 	oneOff, ok := dagState.OneOffs[fingerprint]
-	if !ok || oneOff.Status != OneOffStatusPending {
-		return OneOffScheduleState{}, false
+	if !ok || oneOff.Status != schedulerstate.OneOffStatusPending {
+		return schedulerstate.OneOffScheduleState{}, false
 	}
 	return oneOff, true
 }
@@ -1055,7 +1053,7 @@ func (tp *TickPlanner) Advance(now time.Time) {
 		if !run.Schedule.IsCron() {
 			continue
 		}
-		dagState := cloneDAGWatermark(tp.watermarkState.DAGs[run.DAG.Name])
+		dagState := schedulerstate.CloneDAGWatermark(tp.watermarkState.DAGs[run.DAG.Name])
 		dagState.LastScheduledTime = run.ScheduledTime
 		tp.watermarkState.DAGs[run.DAG.Name] = dagState
 	}
@@ -1080,7 +1078,7 @@ func (tp *TickPlanner) advanceDAGWatermark(dagName string, scheduledTime time.Ti
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 
-	dagState := cloneDAGWatermark(tp.watermarkState.DAGs[dagName])
+	dagState := schedulerstate.CloneDAGWatermark(tp.watermarkState.DAGs[dagName])
 	if dagState.LastScheduledTime.Equal(scheduledTime) {
 		return false
 	}
@@ -1097,20 +1095,20 @@ func (tp *TickPlanner) markOneOffConsumed(dagName, fingerprint string, scheduled
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 
-	dagState := cloneDAGWatermark(tp.watermarkState.DAGs[dagName])
+	dagState := schedulerstate.CloneDAGWatermark(tp.watermarkState.DAGs[dagName])
 	if dagState.OneOffs == nil {
-		dagState.OneOffs = make(map[string]OneOffScheduleState)
+		dagState.OneOffs = make(map[string]schedulerstate.OneOffScheduleState)
 	}
 
 	state := dagState.OneOffs[fingerprint]
 	if state.ScheduledTime.IsZero() {
 		state.ScheduledTime = scheduledTime
 	}
-	if state.Status == OneOffStatusConsumed {
+	if state.Status == schedulerstate.OneOffStatusConsumed {
 		return false
 	}
 
-	state.Status = OneOffStatusConsumed
+	state.Status = schedulerstate.OneOffStatusConsumed
 	dagState.OneOffs[fingerprint] = state
 	tp.watermarkState.DAGs[dagName] = dagState
 	return true
@@ -1125,17 +1123,16 @@ func (tp *TickPlanner) Flush(ctx context.Context) {
 		tp.mu.RUnlock()
 		return
 	}
-	snapshot := &SchedulerState{
-		Version:  tp.watermarkState.Version,
+	snapshot := &schedulerstate.State{
 		LastTick: tp.watermarkState.LastTick,
-		DAGs:     make(map[string]DAGWatermark, len(tp.watermarkState.DAGs)),
+		DAGs:     make(map[string]schedulerstate.DAGWatermark, len(tp.watermarkState.DAGs)),
 	}
 	for dagName, dagState := range tp.watermarkState.DAGs {
-		snapshot.DAGs[dagName] = cloneDAGWatermark(dagState)
+		snapshot.DAGs[dagName] = schedulerstate.CloneDAGWatermark(dagState)
 	}
 	tp.mu.RUnlock()
 
-	if err := tp.cfg.WatermarkStore.Save(ctx, snapshot); err != nil {
+	if err := tp.cfg.StateStore.Save(ctx, snapshot); err != nil {
 		logger.Error(ctx, "Failed to flush watermark state", tag.Error(err))
 	}
 }

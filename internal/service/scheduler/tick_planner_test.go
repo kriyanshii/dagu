@@ -12,52 +12,56 @@ import (
 	"time"
 
 	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/schedulerstate"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-type mockWatermarkStore struct {
-	state   *SchedulerState
+type mockStateStore struct {
+	state   *schedulerstate.State
 	loadErr error
 	saveErr error
 	mu      sync.Mutex
-	saved   []*SchedulerState
+	saved   []*schedulerstate.State
 }
 
-func (m *mockWatermarkStore) Load(_ context.Context) (*SchedulerState, error) {
+func (m *mockStateStore) Load(_ context.Context) (*schedulerstate.State, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.loadErr != nil {
 		return nil, m.loadErr
 	}
 	if m.state == nil {
-		return &SchedulerState{Version: SchedulerStateVersion, DAGs: make(map[string]DAGWatermark)}, nil
+		return &schedulerstate.State{
+			DAGs: make(map[string]schedulerstate.DAGWatermark),
+		}, nil
 	}
-	return m.state, nil
+	return schedulerstate.Clone(m.state), nil
 }
 
-func (m *mockWatermarkStore) Save(_ context.Context, state *SchedulerState) error {
+func (m *mockStateStore) Save(_ context.Context, state *schedulerstate.State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.saveErr != nil {
 		return m.saveErr
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.saved = append(m.saved, state)
+	m.saved = append(m.saved, schedulerstate.Clone(state))
 	return nil
 }
 
-func (m *mockWatermarkStore) lastSaved() *SchedulerState {
+func (m *mockStateStore) lastSaved() *schedulerstate.State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.saved) == 0 {
 		return nil
 	}
-	return m.saved[len(m.saved)-1]
+	return schedulerstate.Clone(m.saved[len(m.saved)-1])
 }
 
-func newMockWatermarkState(lastTick time.Time) *SchedulerState {
-	return &SchedulerState{
-		Version:  SchedulerStateVersion,
+func newMockState(lastTick time.Time) *schedulerstate.State {
+	return &schedulerstate.State{
 		LastTick: lastTick,
-		DAGs:     make(map[string]DAGWatermark),
+		DAGs:     make(map[string]schedulerstate.DAGWatermark),
 	}
 }
 
@@ -98,11 +102,11 @@ func mustParseProfileSchedule(t *testing.T, expr, profile string) ir.Schedule {
 	return schedule
 }
 
-func newTestTickPlanner(store WatermarkStore) (*TickPlanner, chan DAGChangeEvent) {
+func newTestTickPlanner(store schedulerstate.Store) (*TickPlanner, chan DAGChangeEvent) {
 	eventCh := make(chan DAGChangeEvent, 256)
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
-		QueuesEnabled:  true,
+		StateStore:    store,
+		QueuesEnabled: true,
 		IsSuspended: func(_ context.Context, _ string) (bool, error) {
 			return false, nil
 		},
@@ -129,7 +133,7 @@ func newTestTickPlanner(store WatermarkStore) (*TickPlanner, chan DAGChangeEvent
 	return tp, eventCh
 }
 
-func TestTickPlanner_InitNoWatermarkStore(t *testing.T) {
+func TestTickPlanner_InitNoStateStore(t *testing.T) {
 	t.Parallel()
 	tp := NewTickPlanner(TickPlannerConfig{})
 	err := tp.Init(context.Background(), nil)
@@ -138,7 +142,7 @@ func TestTickPlanner_InitNoWatermarkStore(t *testing.T) {
 
 func TestTickPlanner_InitLoadError(t *testing.T) {
 	t.Parallel()
-	store := &mockWatermarkStore{loadErr: errors.New("disk error")}
+	store := &mockStateStore{loadErr: errors.New("disk error")}
 	tp, _ := newTestTickPlanner(store)
 
 	err := tp.Init(context.Background(), nil)
@@ -146,14 +150,14 @@ func TestTickPlanner_InitLoadError(t *testing.T) {
 	// Falls back to empty state on load error
 	tp.mu.RLock()
 	require.NotNil(t, tp.watermarkState)
-	require.Equal(t, SchedulerStateVersion, tp.watermarkState.Version)
+	require.NotNil(t, tp.watermarkState.DAGs)
 	tp.mu.RUnlock()
 }
 
 func TestTickPlanner_InitSkipsEntriesWithoutDAGs(t *testing.T) {
 	t.Parallel()
 
-	tp, _ := newTestTickPlanner(&mockWatermarkStore{})
+	tp, _ := newTestTickPlanner(&mockStateStore{})
 	require.NoError(t, tp.Init(context.Background(), []DAGEntry{{DefinitionID: "invalid.yaml"}}))
 	assert.Empty(t, tp.entries)
 	assert.Empty(t, tp.buffers)
@@ -162,8 +166,8 @@ func TestTickPlanner_InitSkipsEntriesWithoutDAGs(t *testing.T) {
 func TestTickPlanner_InitWithMissedRuns(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
 	}
 	tp, _ := newTestTickPlanner(store)
 
@@ -179,7 +183,7 @@ func TestTickPlanner_InitWithMissedRuns(t *testing.T) {
 func TestTickPlanner_Advance(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	tp, _ := newTestTickPlanner(store)
 	require.NoError(t, tp.Init(context.Background(), nil))
 
@@ -204,7 +208,7 @@ func TestTickPlanner_AdvanceBeforeInit(t *testing.T) {
 func TestTickPlanner_FlushWritesSnapshot(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	tp, _ := newTestTickPlanner(store)
 	require.NoError(t, tp.Init(context.Background(), nil))
 
@@ -220,7 +224,7 @@ func TestTickPlanner_FlushWritesSnapshot(t *testing.T) {
 func TestTickPlanner_FlushHandlesSaveError(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{saveErr: errors.New("write error")}
+	store := &mockStateStore{saveErr: errors.New("write error")}
 	tp, _ := newTestTickPlanner(store)
 	require.NoError(t, tp.Init(context.Background(), nil))
 
@@ -233,7 +237,7 @@ func TestTickPlanner_FlushHandlesSaveError(t *testing.T) {
 func TestTickPlanner_FlushWritesCurrentSnapshot(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	tp, _ := newTestTickPlanner(store)
 	require.NoError(t, tp.Init(context.Background(), nil))
 
@@ -244,8 +248,8 @@ func TestTickPlanner_FlushWritesCurrentSnapshot(t *testing.T) {
 func TestTickPlanner_PlanCatchupDispatches(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)),
 	}
 	tp, _ := newTestTickPlanner(store)
 
@@ -264,14 +268,14 @@ func TestTickPlanner_PlanCatchupDispatches(t *testing.T) {
 func TestTickPlanner_PlanCatchupSkipOverlap(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)),
 	}
 
 	eventCh := make(chan DAGChangeEvent, 256)
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
-		QueuesEnabled:  true,
+		StateStore:    store,
+		QueuesEnabled: true,
 		IsSuspended: func(_ context.Context, _ string) (bool, error) {
 			return false, nil
 		},
@@ -393,13 +397,13 @@ func TestTickPlanner_PlanSuspendedCatchupDropsBufferAndAdvancesWatermark(t *test
 	t.Parallel()
 
 	now := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
 	}
 	eventCh := make(chan DAGChangeEvent, 256)
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
-		QueuesEnabled:  true,
+		StateStore:    store,
+		QueuesEnabled: true,
 		IsSuspended: func(_ context.Context, _ string) (bool, error) {
 			return true, nil
 		},
@@ -438,7 +442,7 @@ func TestTickPlanner_PlanSuspendedCatchupDropsBufferAndAdvancesWatermark(t *test
 func TestTickPlanner_HandleEvent_Added(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	tp, _ := newTestTickPlanner(store)
 	require.NoError(t, tp.Init(context.Background(), nil))
 
@@ -469,7 +473,7 @@ func TestTickPlanner_HandleEvent_Added(t *testing.T) {
 func TestTickPlanner_HandleEvent_Deleted(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	tp, _ := newTestTickPlanner(store)
 
 	dag := &ir.DAG{
@@ -507,10 +511,10 @@ func TestTickPlanner_DeletedWatermarkExpiresAfterGraceWindow(t *testing.T) {
 	now := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
 	clock := now
 	eventCh := make(chan DAGChangeEvent, 256)
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
-		QueuesEnabled:  true,
+		StateStore:    store,
+		QueuesEnabled: true,
 		IsSuspended: func(_ context.Context, _ string) (bool, error) {
 			return false, nil
 		},
@@ -571,8 +575,8 @@ func TestTickPlanner_DeletedWatermarkExpiresAfterGraceWindow(t *testing.T) {
 func TestTickPlanner_HandleEvent_Updated(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
 	}
 	tp, _ := newTestTickPlanner(store)
 
@@ -606,8 +610,8 @@ func TestTickPlanner_HandleEvent_Updated(t *testing.T) {
 func TestTickPlanner_HandleEvent_UpdatedFlushesWatermarkMutationsImmediately(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
 	}
 	tp, _ := newTestTickPlanner(store)
 
@@ -639,7 +643,7 @@ func TestTickPlanner_HandleEvent_UpdatedFlushesWatermarkMutationsImmediately(t *
 func TestTickPlanner_ConcurrentFlushAndAdvance(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	tp, _ := newTestTickPlanner(store)
 	require.NoError(t, tp.Init(context.Background(), nil))
 
@@ -661,13 +665,13 @@ func TestTickPlanner_ConcurrentFlushAndAdvance(t *testing.T) {
 func TestTickPlanner_PrunesStaleDAGEntries(t *testing.T) {
 	t.Parallel()
 
-	state := newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC))
-	state.DAGs = map[string]DAGWatermark{
+	state := newMockState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC))
+	state.DAGs = map[string]schedulerstate.DAGWatermark{
 		"active-dag":  {LastScheduledTime: time.Date(2026, 2, 7, 8, 0, 0, 0, time.UTC)},
 		"deleted-dag": {LastScheduledTime: time.Date(2026, 2, 7, 7, 0, 0, 0, time.UTC)},
 		"gone-dag":    {LastScheduledTime: time.Date(2026, 2, 7, 6, 0, 0, 0, time.UTC)},
 	}
-	store := &mockWatermarkStore{state: state}
+	store := &mockStateStore{state: state}
 	tp, _ := newTestTickPlanner(store)
 
 	dags := []*ir.DAG{{Name: "active-dag"}}
@@ -684,7 +688,7 @@ func TestTickPlanner_PrunesStaleDAGEntries(t *testing.T) {
 	assert.False(t, hasGone, "gone-dag should be pruned")
 }
 
-func TestTickPlanner_NilWatermarkStoreFullPath(t *testing.T) {
+func TestTickPlanner_NilStateStoreFullPath(t *testing.T) {
 	t.Parallel()
 
 	eventCh := make(chan DAGChangeEvent, 256)
@@ -707,7 +711,7 @@ func TestTickPlanner_NilWatermarkStoreFullPath(t *testing.T) {
 func TestTickPlanner_AdvanceUpdatesPerDAGWatermarks(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	tp, _ := newTestTickPlanner(store)
 	require.NoError(t, tp.Init(context.Background(), nil))
 
@@ -735,8 +739,8 @@ func TestTickPlanner_AdvanceUpdatesPerDAGWatermarks(t *testing.T) {
 func TestTickPlanner_PlanBufferCleansEmpty(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)),
 	}
 	tp, _ := newTestTickPlanner(store)
 
@@ -942,7 +946,7 @@ func TestTickPlanner_PlanSuspendedStopSkipped(t *testing.T) {
 func TestTickPlanner_AdvanceIgnoresStopRestartWatermarks(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	tp, _ := newTestTickPlanner(store)
 	require.NoError(t, tp.Init(context.Background(), nil))
 
@@ -1025,14 +1029,14 @@ func TestTickPlanner_PlanStopRestartWithNonUTCTimezone(t *testing.T) {
 func TestTickPlanner_IsRunningErrorAssumesNotRunning(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)),
 	}
 
 	eventCh := make(chan DAGChangeEvent, 256)
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
-		QueuesEnabled:  true,
+		StateStore:    store,
+		QueuesEnabled: true,
 		IsSuspended: func(_ context.Context, _ string) (bool, error) {
 			return false, nil
 		},
@@ -1064,14 +1068,14 @@ func TestTickPlanner_IsRunningErrorAssumesNotRunning(t *testing.T) {
 func TestTickPlanner_IsQueuedErrorDefersCatchupWithoutDroppingState(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)),
 	}
 
 	eventCh := make(chan DAGChangeEvent, 256)
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
-		QueuesEnabled:  true,
+		StateStore:    store,
+		QueuesEnabled: true,
 		IsSuspended: func(_ context.Context, _ string) (bool, error) {
 			return false, nil
 		},
@@ -1308,14 +1312,14 @@ func TestTickPlanner_StopRestartRunsHaveEmptyRunID(t *testing.T) {
 func TestTickPlanner_CatchupBlocksStopRestartSchedules(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
 	}
 
 	eventCh := make(chan DAGChangeEvent, 256)
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
-		QueuesEnabled:  true,
+		StateStore:    store,
+		QueuesEnabled: true,
 		IsSuspended: func(_ context.Context, _ string) (bool, error) {
 			return false, nil
 		},
@@ -1355,10 +1359,10 @@ func TestTickPlanner_CatchupBlocksStopRestartSchedules(t *testing.T) {
 func TestTickPlanner_ConcurrentPlanAndEvents(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	eventCh := make(chan DAGChangeEvent, 256)
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
+		StateStore: store,
 		IsSuspended: func(_ context.Context, _ string) (bool, error) {
 			return false, nil
 		},
@@ -1659,11 +1663,11 @@ func TestTickPlanner_ProfileScopedStopRestartSchedules(t *testing.T) {
 func TestTickPlanner_ProfileScopedCatchupSchedules(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
 	}
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore:  store,
+		StateStore:      store,
 		QueuesEnabled:   true,
 		ProfileResolver: &testProfileResolver{profile: "dev"},
 		GetLatestStatus: func(_ context.Context, _ *ir.DAG) (ir.DAGRunStatus, error) {
@@ -1699,12 +1703,12 @@ func TestTickPlanner_ProfileChangeDropsInactiveCatchupSchedules(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
 	}
 	resolver := &testProfileResolver{profile: "dev"}
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore:  store,
+		StateStore:      store,
 		QueuesEnabled:   true,
 		ProfileResolver: resolver,
 		GetLatestStatus: func(_ context.Context, _ *ir.DAG) (ir.DAGRunStatus, error) {
@@ -1924,12 +1928,12 @@ func TestTickPlanner_DispatchRunCatchupSuspensionReadErrorRequeues(t *testing.T)
 func TestTickPlanner_DispatchRunSuspendedCatchupAdvancesWatermark(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	enqueued := false
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
-		QueuesEnabled:  true,
-		IsSuspended:    func(_ context.Context, _ string) (bool, error) { return true, nil },
+		StateStore:    store,
+		QueuesEnabled: true,
+		IsSuspended:   func(_ context.Context, _ string) (bool, error) { return true, nil },
 		Enqueue: func(_ context.Context, _ DAGEntry, _ string, _ ir.TriggerType, _ time.Time) error {
 			enqueued = true
 			return nil
@@ -1959,15 +1963,15 @@ func TestTickPlanner_DispatchRunSuspendedCatchupAdvancesWatermark(t *testing.T) 
 func TestTickPlanner_DispatchRunLegacyCatchupAttemptAdvancesWatermark(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{}
+	store := &mockStateStore{}
 	scheduledTime := time.Date(2026, 2, 7, 11, 0, 0, 0, time.UTC)
 	dag := newHourlyCatchupDAG(t, "legacy.catchup-dag")
 	legacyRunID := generateLegacyCatchupRunID(dag.Name, scheduledTime)
 	var checkedRunIDs []string
 
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
-		QueuesEnabled:  true,
+		StateStore:    store,
+		QueuesEnabled: true,
 		Enqueue: func(_ context.Context, _ DAGEntry, _ string, _ ir.TriggerType, _ time.Time) error {
 			t.Fatal("enqueue should not be called when the legacy run already exists")
 			return nil
@@ -2018,7 +2022,7 @@ func TestTickPlanner_DispatchRunRestartForwardsScheduledTime(t *testing.T) {
 func TestTickPlanner_StartStop(t *testing.T) {
 	t.Parallel()
 
-	tp, _ := newTestTickPlanner(&mockWatermarkStore{})
+	tp, _ := newTestTickPlanner(&mockStateStore{})
 	require.NoError(t, tp.Init(context.Background(), nil))
 
 	ctx := context.Background()
@@ -2045,8 +2049,8 @@ func TestTickPlanner_InitBuffersLatestCollapse(t *testing.T) {
 
 	// Watermark at 06:00, now at 12:00, hourly cron → 6 missed intervals.
 	// With "latest" policy, buffer should collapse to 1 item (12:00).
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 6, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 6, 0, 0, 0, time.UTC)),
 	}
 	tp, _ := newTestTickPlanner(store)
 
@@ -2079,14 +2083,14 @@ func TestTickPlanner_InitBuffersLatestCollapse(t *testing.T) {
 func TestTickPlanner_PlanLatestNotRunning(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
 	}
 
 	eventCh := make(chan DAGChangeEvent, 256)
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
-		QueuesEnabled:  true,
+		StateStore:    store,
+		QueuesEnabled: true,
 		IsSuspended: func(_ context.Context, _ string) (bool, error) {
 			return false, nil
 		},
@@ -2133,14 +2137,14 @@ func TestTickPlanner_PlanLatestNotRunning(t *testing.T) {
 func TestTickPlanner_PlanLatestRunning(t *testing.T) {
 	t.Parallel()
 
-	store := &mockWatermarkStore{
-		state: newMockWatermarkState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
+	store := &mockStateStore{
+		state: newMockState(time.Date(2026, 2, 7, 9, 0, 0, 0, time.UTC)),
 	}
 
 	eventCh := make(chan DAGChangeEvent, 256)
 	tp := NewTickPlanner(TickPlannerConfig{
-		WatermarkStore: store,
-		QueuesEnabled:  true,
+		StateStore:    store,
+		QueuesEnabled: true,
 		IsSuspended: func(_ context.Context, _ string) (bool, error) {
 			return false, nil
 		},

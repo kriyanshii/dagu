@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Yota Hamada
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-package scheduler_test
+package store_test
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,14 +19,14 @@ import (
 
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	"github.com/dagucloud/dagu/v2/internal/persis/store"
 	"github.com/dagucloud/dagu/v2/internal/persis/testutil"
-	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
+	"github.com/dagucloud/dagu/v2/internal/schedulerstate"
 )
 
-func newWatermarkStore(t *testing.T) scheduler.WatermarkStore {
+func newSchedulerStateStore(t *testing.T) schedulerstate.Store {
 	t.Helper()
-	col := testutil.NewMemoryBackend().Collection("watermark")
-	return scheduler.NewWatermarkStore(col)
+	return store.NewSchedulerStateStore(testutil.NewMemoryBackend().Collection("scheduler"))
 }
 
 var errCheckpointSave = errors.New("checkpoint save failed")
@@ -49,29 +50,25 @@ func (c *checkpointFailCollection) RecordVersion(ctx context.Context, id string)
 	return versioned.RecordVersion(ctx, id)
 }
 
-func TestWatermarkLoad_Empty(t *testing.T) {
+func TestSchedulerStateLoadEmpty(t *testing.T) {
 	ctx := context.Background()
-	s := newWatermarkStore(t)
+	s := newSchedulerStateStore(t)
 
 	state, err := s.Load(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, scheduler.SchedulerStateVersion, state.Version)
 	assert.NotNil(t, state.DAGs)
 	assert.Empty(t, state.DAGs)
 }
 
-func TestWatermarkSaveAndLoad(t *testing.T) {
+func TestSchedulerStateSaveAndLoad(t *testing.T) {
 	ctx := context.Background()
-	s := newWatermarkStore(t)
+	s := newSchedulerStateStore(t)
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	state := &scheduler.SchedulerState{
-		Version:  scheduler.SchedulerStateVersion,
+	state := &schedulerstate.State{
 		LastTick: now,
-		DAGs: map[string]scheduler.DAGWatermark{
-			"my-dag": {
-				LastScheduledTime: now,
-			},
+		DAGs: map[string]schedulerstate.DAGWatermark{
+			"my-dag": {LastScheduledTime: now},
 		},
 	}
 
@@ -79,22 +76,108 @@ func TestWatermarkSaveAndLoad(t *testing.T) {
 
 	got, err := s.Load(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, scheduler.SchedulerStateVersion, got.Version)
 	assert.Equal(t, now, got.LastTick)
 	assert.Contains(t, got.DAGs, "my-dag")
 	assert.Equal(t, now, got.DAGs["my-dag"].LastScheduledTime)
 }
 
-func TestWatermarkSaveFileLayoutCompatibility(t *testing.T) {
+func TestSchedulerStateStoreCopiesMutableState(t *testing.T) {
+	ctx := context.Background()
+	s := newSchedulerStateStore(t)
+
+	scheduledAt := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	nextRun := scheduledAt
+	state := &schedulerstate.State{
+		DAGs: map[string]schedulerstate.DAGWatermark{
+			"my-dag": {
+				NextRun: &nextRun,
+				OneOffs: map[string]schedulerstate.OneOffScheduleState{
+					"schedule": {
+						ScheduledTime: scheduledAt,
+						Status:        schedulerstate.OneOffStatusPending,
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, s.Save(ctx, state))
+
+	mutated := state.DAGs["my-dag"]
+	*mutated.NextRun = scheduledAt.Add(time.Hour)
+	mutated.OneOffs["schedule"] = schedulerstate.OneOffScheduleState{
+		ScheduledTime: scheduledAt,
+		Status:        schedulerstate.OneOffStatusConsumed,
+	}
+	state.DAGs["my-dag"] = mutated
+	loaded, err := s.Load(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, scheduledAt, *loaded.DAGs["my-dag"].NextRun)
+	assert.Equal(t, schedulerstate.OneOffStatusPending, loaded.DAGs["my-dag"].OneOffs["schedule"].Status)
+
+	mutated = loaded.DAGs["my-dag"]
+	*mutated.NextRun = scheduledAt.Add(2 * time.Hour)
+	mutated.OneOffs["schedule"] = schedulerstate.OneOffScheduleState{
+		ScheduledTime: scheduledAt,
+		Status:        schedulerstate.OneOffStatusConsumed,
+	}
+	loaded.DAGs["my-dag"] = mutated
+	reloaded, err := s.Load(ctx)
+	require.NoError(t, err)
+	require.Contains(t, reloaded.DAGs, "my-dag")
+	assert.Equal(t, scheduledAt, *reloaded.DAGs["my-dag"].NextRun)
+	assert.Equal(t, schedulerstate.OneOffStatusPending, reloaded.DAGs["my-dag"].OneOffs["schedule"].Status)
+}
+
+func TestSchedulerStateStoreConcurrentLoadSave(t *testing.T) {
+	ctx := context.Background()
+	s := newSchedulerStateStore(t)
+
+	const iterations = 100
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range iterations {
+			if err := s.Save(ctx, &schedulerstate.State{
+				LastTick: time.Unix(int64(i), 0).UTC(),
+				DAGs:     map[string]schedulerstate.DAGWatermark{"my-dag": {}},
+			}); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range iterations {
+			state, err := s.Load(ctx)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if state.DAGs == nil {
+				errCh <- errors.New("loaded state has a nil DAG map")
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+}
+
+func TestSchedulerStateFileLayoutCompatibility(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	col := file.NewCollection(filepath.Join(root, "scheduler"), file.WithIndentedJSON())
-	s := scheduler.NewWatermarkStore(col)
+	s := store.NewSchedulerStateStore(col)
 	now := time.Now().UTC()
-	state := &scheduler.SchedulerState{
-		Version:  scheduler.SchedulerStateVersion,
+	state := &schedulerstate.State{
 		LastTick: now,
-		DAGs: map[string]scheduler.DAGWatermark{
+		DAGs: map[string]schedulerstate.DAGWatermark{
 			"my-dag": {},
 		},
 	}
@@ -110,6 +193,9 @@ func TestWatermarkSaveFileLayoutCompatibility(t *testing.T) {
 	assert.NotContains(t, body, "lastTick")
 	assert.Contains(t, body, "version")
 	assert.Contains(t, body, "dags")
+	var version int
+	require.NoError(t, json.Unmarshal(body["version"], &version))
+	assert.Equal(t, 4, version)
 
 	rawCheckpoint, err := os.ReadFile(filepath.Join(root, "scheduler", "checkpoint.json"))
 	require.NoError(t, err)
@@ -118,7 +204,7 @@ func TestWatermarkSaveFileLayoutCompatibility(t *testing.T) {
 	assert.Contains(t, checkpoint, "lastTick")
 }
 
-func TestWatermarkLoadMigratesLegacyLastTickToCheckpoint(t *testing.T) {
+func TestSchedulerStateLoadMigratesLegacyLastTickToCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	storeDir := filepath.Join(root, "scheduler")
@@ -128,11 +214,10 @@ func TestWatermarkLoadMigratesLegacyLastTickToCheckpoint(t *testing.T) {
 	rawState := fmt.Appendf(nil, `{"version":3,"lastTick":%q,"dags":{"my-dag":{}}}`, lastTick.Format(time.RFC3339))
 	require.NoError(t, os.WriteFile(filepath.Join(storeDir, "state.json"), rawState, 0o600))
 
-	s := scheduler.NewWatermarkStore(file.NewCollection(storeDir, file.WithIndentedJSON()))
+	s := store.NewSchedulerStateStore(file.NewCollection(storeDir, file.WithIndentedJSON()))
 
 	got, err := s.Load(ctx)
 	require.NoError(t, err)
-	require.Equal(t, scheduler.SchedulerStateVersion, got.Version)
 	require.Equal(t, lastTick, got.LastTick)
 	require.Contains(t, got.DAGs, "my-dag")
 
@@ -153,15 +238,14 @@ func TestWatermarkLoadMigratesLegacyLastTickToCheckpoint(t *testing.T) {
 	assert.Equal(t, lastTick, checkpoint.LastTick)
 }
 
-func TestWatermarkSaveSkipsStateWriteForCheckpointOnlyChange(t *testing.T) {
+func TestSchedulerStateSaveSkipsStateWriteForCheckpointOnlyChange(t *testing.T) {
 	ctx := context.Background()
-	col := testutil.NewMemoryBackend().Collection("watermark")
-	s := scheduler.NewWatermarkStore(col)
+	col := testutil.NewMemoryBackend().Collection("scheduler")
+	s := store.NewSchedulerStateStore(col)
 
-	state := &scheduler.SchedulerState{
-		Version:  scheduler.SchedulerStateVersion,
+	state := &schedulerstate.State{
 		LastTick: time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC),
-		DAGs: map[string]scheduler.DAGWatermark{
+		DAGs: map[string]schedulerstate.DAGWatermark{
 			"my-dag": {},
 		},
 	}
@@ -184,15 +268,14 @@ func TestWatermarkSaveSkipsStateWriteForCheckpointOnlyChange(t *testing.T) {
 	assert.Equal(t, state.LastTick, got.LastTick)
 }
 
-func TestWatermarkSaveSkipsSameCheckpoint(t *testing.T) {
+func TestSchedulerStateSaveSkipsSameCheckpoint(t *testing.T) {
 	ctx := context.Background()
-	col := testutil.NewMemoryBackend().Collection("watermark")
-	s := scheduler.NewWatermarkStore(col)
+	col := testutil.NewMemoryBackend().Collection("scheduler")
+	s := store.NewSchedulerStateStore(col)
 
-	state := &scheduler.SchedulerState{
-		Version:  scheduler.SchedulerStateVersion,
+	state := &schedulerstate.State{
 		LastTick: time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC),
-		DAGs: map[string]scheduler.DAGWatermark{
+		DAGs: map[string]schedulerstate.DAGWatermark{
 			"my-dag": {},
 		},
 	}
@@ -210,24 +293,22 @@ func TestWatermarkSaveSkipsSameCheckpoint(t *testing.T) {
 	assert.Equal(t, checkpointVersion, nextCheckpointVersion)
 }
 
-func TestWatermarkSaveDoesNotAdvanceStateCacheWhenCheckpointWriteFails(t *testing.T) {
+func TestSchedulerStateSaveDoesNotAdvanceCacheWhenCheckpointWriteFails(t *testing.T) {
 	ctx := context.Background()
-	col := &checkpointFailCollection{Collection: testutil.NewMemoryBackend().Collection("watermark")}
-	s := scheduler.NewWatermarkStore(col)
+	col := &checkpointFailCollection{Collection: testutil.NewMemoryBackend().Collection("scheduler")}
+	s := store.NewSchedulerStateStore(col)
 
 	initialTick := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
-	initialState := &scheduler.SchedulerState{
-		Version:  scheduler.SchedulerStateVersion,
+	initialState := &schedulerstate.State{
 		LastTick: initialTick,
-		DAGs:     map[string]scheduler.DAGWatermark{"dag-a": {}},
+		DAGs:     map[string]schedulerstate.DAGWatermark{"dag-a": {}},
 	}
 	require.NoError(t, s.Save(ctx, initialState))
 
 	col.failCheckpoint = true
-	nextState := &scheduler.SchedulerState{
-		Version:  scheduler.SchedulerStateVersion,
+	nextState := &schedulerstate.State{
 		LastTick: initialTick.Add(time.Minute),
-		DAGs:     map[string]scheduler.DAGWatermark{"dag-b-longer-name": {}},
+		DAGs:     map[string]schedulerstate.DAGWatermark{"dag-b-longer-name": {}},
 	}
 	require.ErrorIs(t, s.Save(ctx, nextState), errCheckpointSave)
 
@@ -239,22 +320,20 @@ func TestWatermarkSaveDoesNotAdvanceStateCacheWhenCheckpointWriteFails(t *testin
 	assert.NotContains(t, got.DAGs, "dag-a")
 }
 
-func TestWatermarkSave_Overwrite(t *testing.T) {
+func TestSchedulerStateSaveOverwrite(t *testing.T) {
 	ctx := context.Background()
-	s := newWatermarkStore(t)
+	s := newSchedulerStateStore(t)
 
 	now := time.Now().UTC()
-	state1 := &scheduler.SchedulerState{
-		Version:  scheduler.SchedulerStateVersion,
+	state1 := &schedulerstate.State{
 		LastTick: now,
-		DAGs:     map[string]scheduler.DAGWatermark{"dag-a": {}},
+		DAGs:     map[string]schedulerstate.DAGWatermark{"dag-a": {}},
 	}
 	require.NoError(t, s.Save(ctx, state1))
 
-	state2 := &scheduler.SchedulerState{
-		Version:  scheduler.SchedulerStateVersion,
+	state2 := &schedulerstate.State{
 		LastTick: now.Add(time.Minute),
-		DAGs:     map[string]scheduler.DAGWatermark{"dag-b": {}},
+		DAGs:     map[string]schedulerstate.DAGWatermark{"dag-b": {}},
 	}
 	require.NoError(t, s.Save(ctx, state2))
 
@@ -265,13 +344,13 @@ func TestWatermarkSave_Overwrite(t *testing.T) {
 	assert.NotContains(t, got.DAGs, "dag-a")
 }
 
-func TestWatermarkLoad_MigratesLegacyVersions(t *testing.T) {
+func TestSchedulerStateLoadMigratesLegacyVersions(t *testing.T) {
 	ctx := context.Background()
 
 	for _, legacyVersion := range []int{0, 1, 2} {
 		t.Run(fmt.Sprintf("version_%d", legacyVersion), func(t *testing.T) {
-			col := testutil.NewMemoryBackend().Collection("watermark")
-			s := scheduler.NewWatermarkStore(col)
+			col := testutil.NewMemoryBackend().Collection("scheduler")
+			s := store.NewSchedulerStateStore(col)
 
 			rawJSON := fmt.Appendf(nil, `{"version":%d,"dags":{}}`, legacyVersion)
 			now := time.Now().UTC()
@@ -284,16 +363,24 @@ func TestWatermarkLoad_MigratesLegacyVersions(t *testing.T) {
 
 			got, err := s.Load(ctx)
 			require.NoError(t, err)
-			assert.Equal(t, scheduler.SchedulerStateVersion, got.Version,
-				"version %d should be migrated to current version", legacyVersion)
+			assert.NotNil(t, got.DAGs)
+			require.NoError(t, s.Save(ctx, got))
+
+			rec, err := col.Get(ctx, "state")
+			require.NoError(t, err)
+			var persisted struct {
+				Version int `json:"version"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Data, &persisted))
+			assert.Equal(t, 4, persisted.Version)
 		})
 	}
 }
 
-func TestWatermarkLoad_UnknownVersionFallsBackToEmpty(t *testing.T) {
+func TestSchedulerStateLoadUnknownVersionFallsBackToEmpty(t *testing.T) {
 	ctx := context.Background()
-	col := testutil.NewMemoryBackend().Collection("watermark")
-	s := scheduler.NewWatermarkStore(col)
+	col := testutil.NewMemoryBackend().Collection("scheduler")
+	s := store.NewSchedulerStateStore(col)
 
 	rawJSON := []byte(`{"version":999,"dags":{}}`)
 	now := time.Now().UTC()
@@ -306,14 +393,13 @@ func TestWatermarkLoad_UnknownVersionFallsBackToEmpty(t *testing.T) {
 
 	got, err := s.Load(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, scheduler.SchedulerStateVersion, got.Version)
 	assert.Empty(t, got.DAGs)
 }
 
-func TestWatermarkLoad_CorruptDataFallsBackToEmpty(t *testing.T) {
+func TestSchedulerStateLoadCorruptDataFallsBackToEmpty(t *testing.T) {
 	ctx := context.Background()
-	col := testutil.NewMemoryBackend().Collection("watermark")
-	s := scheduler.NewWatermarkStore(col)
+	col := testutil.NewMemoryBackend().Collection("scheduler")
+	s := store.NewSchedulerStateStore(col)
 
 	now := time.Now().UTC()
 	require.NoError(t, col.Put(ctx, &persis.Record{
@@ -325,6 +411,14 @@ func TestWatermarkLoad_CorruptDataFallsBackToEmpty(t *testing.T) {
 
 	got, err := s.Load(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, scheduler.SchedulerStateVersion, got.Version)
 	assert.Empty(t, got.DAGs)
+
+	lastTick := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	got.LastTick = lastTick
+	require.NoError(t, s.Save(ctx, got))
+
+	reloaded, err := store.NewSchedulerStateStore(col).Load(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, lastTick, reloaded.LastTick)
+	assert.Empty(t, reloaded.DAGs)
 }

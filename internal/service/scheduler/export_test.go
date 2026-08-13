@@ -11,6 +11,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	queuedomain "github.com/dagucloud/dagu/v2/internal/queue"
 	"github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/schedulerstate"
 	"github.com/dagucloud/dagu/v2/internal/serviceregistry"
 )
 
@@ -29,7 +30,7 @@ func NewWithHooksForTest(
 	procRepository processRepository,
 	reg serviceregistry.ServiceRegistry,
 	coordinatorCli dispatch.Dispatcher,
-	watermarkStore WatermarkStore,
+	stateStore schedulerstate.Store,
 	hooks TestHooks,
 ) (*Scheduler, error) {
 	return newScheduler(
@@ -42,7 +43,7 @@ func NewWithHooksForTest(
 		procRepository,
 		reg,
 		coordinatorCli,
-		watermarkStore,
+		stateStore,
 		schedulerHooks{onLockWait: hooks.OnLockWait},
 		schedulerOptions{},
 	)
