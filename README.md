@@ -926,7 +926,23 @@ The table lists the most common commands. The binary ships 31 in total, includin
 | `DAGU_DATA_DIR` | `~/.local/share/dagu/data` | Application state |
 | `DAGU_TOOLS_DIR` | `{DAGU_DATA_DIR}/tools` | Managed DAG tool cache |
 | `DAGU_DAG_STATE_DIR` | `{DAGU_DATA_DIR}/dag-state` | Persistent DAG state files |
+| `DAGU_DAG_RUN_WORK_DIR` | `{DAGU_DATA_DIR}/dag-run-work` | Per-run working directories |
 | `DAGU_BASE_CONFIG` | — | Shared base configuration applied to all DAGs |
+
+Set the per-run work root in `config.yaml`, or use the corresponding environment variable above:
+
+```yaml
+paths:
+  dag_run_work_dir: /mnt/dagu/dag-run-work
+```
+
+`DAGU_DAG_RUN_WORK_DIR` configures this root for Dagu processes. Workflow code should use the runtime `DAG_RUN_WORK_DIR` variable for its assigned per-run directory instead of constructing paths under DAG-run history.
+
+Processes sharing DAG runs must use the same work root.
+
+Backups that select individual data subdirectories must include both `paths.dag_runs_dir` and `paths.dag_run_work_dir`. A backup of the complete `paths.data_dir` includes both default locations. The Helm chart's default `/data/dag-run-work` path uses its existing `/data` volume and does not need an additional volume.
+
+When upgrading a deployment whose processes share a durable work root, do not let old and new Dagu versions execute the same run concurrently: drain or stop the processes, upgrade them together, and then resume execution. Mixed-version processes can otherwise choose the old nested directory and the new separate directory for one run.
 
 Recursive discovery can also be enabled in `config.yaml`:
 
