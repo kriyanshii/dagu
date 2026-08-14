@@ -22,9 +22,8 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/persis/testutil"
 )
 
-// RunCollectionContract runs the full Collection contract against any backend.
-// Used by both the file and memory backend tests.
-func RunCollectionContract(t *testing.T, col persis.Collection, freshCollection func(t *testing.T) persis.Collection) {
+// runCollectionContract runs the full Collection contract against an implementation.
+func runCollectionContract(t *testing.T, col persis.Collection, freshCollection func(t *testing.T) persis.Collection) {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -325,16 +324,11 @@ func TestFileCollection(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	b, err := file.New(root)
-	require.NoError(t, err)
-
 	freshCollection := func(t *testing.T) persis.Collection {
-		b2, err := file.New(t.TempDir())
-		require.NoError(t, err)
-		return b2.Collection("test")
+		return file.NewCollection(filepath.Join(t.TempDir(), "test"))
 	}
 
-	RunCollectionContract(t, b.Collection("test"), freshCollection)
+	runCollectionContract(t, file.NewCollection(filepath.Join(root, "test")), freshCollection)
 }
 
 func TestFileCollectionWritesRawJSONBody(t *testing.T) {
@@ -438,7 +432,7 @@ func TestFileCollectionIndentedContract(t *testing.T) {
 	freshCollection := func(t *testing.T) persis.Collection {
 		return file.NewCollection(t.TempDir(), file.WithIndentedJSON())
 	}
-	RunCollectionContract(t, file.NewCollection(t.TempDir(), file.WithIndentedJSON()), freshCollection)
+	runCollectionContract(t, file.NewCollection(t.TempDir(), file.WithIndentedJSON()), freshCollection)
 }
 
 func TestFileCollectionPutNilReturnsError(t *testing.T) {
@@ -482,11 +476,7 @@ func TestFileCollectionListingIgnoresLockMetadata(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(lockDir, "metadata.json"), []byte(`{}`), 0o600))
 	}
 
-	recordIDs, ok := col.(interface {
-		RecordIDs(context.Context, string) ([]string, error)
-	})
-	require.True(t, ok)
-	ids, err := recordIDs.RecordIDs(ctx, "queue/")
+	ids, err := col.RecordIDs(ctx, "queue/")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"queue/item"}, ids)
 
@@ -548,5 +538,5 @@ func TestMemoryCollection(t *testing.T) {
 		return testutil.NewMemoryBackend().Collection("test")
 	}
 
-	RunCollectionContract(t, b.Collection("test"), freshCollection)
+	runCollectionContract(t, b.Collection("test"), freshCollection)
 }

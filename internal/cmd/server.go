@@ -14,6 +14,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/v2/internal/service/frontend"
+	frontendfile "github.com/dagucloud/dagu/v2/internal/service/frontend/file"
 	"github.com/dagucloud/dagu/v2/internal/service/resource"
 	"github.com/dagucloud/dagu/v2/internal/tunnel"
 	"github.com/spf13/cobra"
@@ -49,6 +50,31 @@ Example:
 
 var serverFlags = []commandLineFlag{dagsFlag, hostFlag, portFlag, tunnelFlag, tunnelTokenFlag, tunnelFunnelFlag, tunnelHTTPSFlag}
 
+func newServer(ctx *Context, rs *resource.Service, stores frontend.Stores, opts ...frontend.ServerOption) (*frontend.Server, error) {
+	coordinatorClient, err := ctx.NewCoordinatorClient()
+	if err != nil {
+		return nil, err
+	}
+	return frontend.NewServer(frontend.ServerConfig{
+		Context:              ctx.Context,
+		Config:               ctx.Config,
+		DAGRepository:        ctx.Persistence.DAGRepository,
+		DAGRunRepository:     ctx.Persistence.DAGRunRepository,
+		ProcRepository:       ctx.Persistence.ProcRepository,
+		QueueStore:           ctx.Persistence.QueueStore,
+		DAGRunManager:        ctx.DAGRunMgr,
+		CoordinatorClient:    coordinatorClient,
+		ServiceRegistry:      ctx.Persistence.ServiceRegistry,
+		DAGRunLeaseStore:     ctx.Persistence.DAGRunLeaseStore,
+		WorkerHeartbeatStore: ctx.Persistence.WorkerHeartbeatStore,
+		SchedulerStateStore:  ctx.Persistence.SchedulerStateStore,
+		Caches:               ctx.Caches,
+		LicenseManager:       ctx.LicenseManager,
+		ResourceService:      rs,
+		Stores:               stores,
+	}, opts...)
+}
+
 // runServer initializes and runs the web UI server and its resource monitoring service.
 // It logs startup info, starts the resource service (deferring its shutdown and logging any stop errors),
 // constructs the server with that resource service, and then begins serving.
@@ -66,6 +92,12 @@ func runServer(ctx *Context, _ []string, serverOpts ...frontend.ServerOption) er
 	if ctx.LicenseManager != nil {
 		defer ctx.LicenseManager.Stop()
 	}
+
+	stores, err := frontendfile.NewStores(serviceCtx, serviceCtx.Config)
+	if err != nil {
+		return err
+	}
+	serviceCtx = serviceCtx.withEvent(stores.Event)
 
 	logger.Info(serviceCtx, "Server initialization",
 		tag.Host(serviceCtx.Config.Server.Host),
@@ -102,7 +134,7 @@ func runServer(ctx *Context, _ []string, serverOpts ...frontend.ServerOption) er
 
 	// Initialize server (includes auth setup). Use serviceCtx so auth providers can
 	// respond to termination signals during potentially slow network operations.
-	server, err := serviceCtx.NewServer(resourceService, serverOpts...)
+	server, err := newServer(serviceCtx, resourceService, stores, serverOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to initialize server: %w", err)
 	}
