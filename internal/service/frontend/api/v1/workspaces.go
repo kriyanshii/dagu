@@ -26,22 +26,6 @@ func workspaceStoreUnavailable() *Error {
 	}
 }
 
-type workspaceWikiStore interface {
-	PathExists(ctx context.Context, id string) (fileExists, directoryExists bool, err error)
-	RenameDirectory(ctx context.Context, oldID, newID string) error
-}
-
-func (a *API) workspaceWikiStore() (workspaceWikiStore, error) {
-	if a.wikiStore == nil {
-		return nil, nil
-	}
-	store, ok := a.wikiStore.(workspaceWikiStore)
-	if !ok {
-		return nil, errors.New("wiki page store does not support workspace lifecycle operations")
-	}
-	return store, nil
-}
-
 // ListWorkspaces returns all workspaces.
 func (a *API) ListWorkspaces(ctx context.Context, _ api.ListWorkspacesRequestObject) (api.ListWorkspacesResponseObject, error) {
 	if a.workspaceStore == nil {
@@ -90,16 +74,13 @@ func (a *API) CreateWorkspace(ctx context.Context, request api.CreateWorkspaceRe
 	a.workspaceWikiMu.Lock()
 	defer a.workspaceWikiMu.Unlock()
 
-	wikiStore, err := a.workspaceWikiStore()
-	if err != nil {
-		return nil, err
-	}
+	wikiStore := a.wikiStore
 	if wikiStore != nil {
-		fileExists, directoryExists, err := wikiStore.PathExists(ctx, body.Name)
+		pageExists, directoryExists, err := wikiStore.PathExists(ctx, body.Name)
 		if err != nil {
 			return nil, fmt.Errorf("failed to inspect workspace Wiki page path: %w", err)
 		}
-		if fileExists || directoryExists {
+		if pageExists || directoryExists {
 			return api.CreateWorkspace409JSONResponse{
 				Code:    api.ErrorCodeAlreadyExists,
 				Message: "Workspace name conflicts with an existing Wiki page path",
@@ -199,28 +180,25 @@ func (a *API) UpdateWorkspace(ctx context.Context, request api.UpdateWorkspaceRe
 
 	updated.UpdatedAt = time.Now().UTC()
 
-	wikiStore, err := a.workspaceWikiStore()
-	if err != nil {
-		return nil, err
-	}
+	wikiStore := a.wikiStore
 	wikiMoved := false
 	if wikiStore != nil && updated.Name != existing.Name {
-		oldFileExists, oldDirectoryExists, err := wikiStore.PathExists(ctx, existing.Name)
+		oldPageExists, oldDirectoryExists, err := wikiStore.PathExists(ctx, existing.Name)
 		if err != nil {
 			return nil, fmt.Errorf("failed to inspect current workspace Wiki page path: %w", err)
 		}
-		newFileExists, newDirectoryExists, err := wikiStore.PathExists(ctx, updated.Name)
+		newPageExists, newDirectoryExists, err := wikiStore.PathExists(ctx, updated.Name)
 		if err != nil {
 			return nil, fmt.Errorf("failed to inspect new workspace Wiki page path: %w", err)
 		}
-		if oldFileExists || newFileExists || newDirectoryExists {
+		if oldPageExists || newPageExists || newDirectoryExists {
 			return api.UpdateWorkspace409JSONResponse{
 				Code:    api.ErrorCodeAlreadyExists,
 				Message: "Workspace rename conflicts with an existing Wiki page path",
 			}, nil
 		}
 		if oldDirectoryExists {
-			if err := wikiStore.RenameDirectory(ctx, existing.Name, updated.Name); err != nil {
+			if err := wikiStore.Rename(ctx, existing.Name, updated.Name); err != nil {
 				if errors.Is(err, wiki.ErrPageAlreadyExists) || errors.Is(err, wiki.ErrPagePathConflict) {
 					return api.UpdateWorkspace409JSONResponse{
 						Code:    api.ErrorCodeAlreadyExists,
@@ -235,7 +213,7 @@ func (a *API) UpdateWorkspace(ctx context.Context, request api.UpdateWorkspaceRe
 
 	if err := a.workspaceStore.Update(ctx, &updated); err != nil {
 		if wikiMoved {
-			if rollbackErr := wikiStore.RenameDirectory(ctx, updated.Name, existing.Name); rollbackErr != nil {
+			if rollbackErr := wikiStore.Rename(ctx, updated.Name, existing.Name); rollbackErr != nil {
 				logger.Error(ctx, "Failed to restore workspace Wiki pages after update failure",
 					tag.String("current-page-id", updated.Name),
 					tag.String("restore-page-id", existing.Name),
@@ -293,16 +271,13 @@ func (a *API) DeleteWorkspace(ctx context.Context, request api.DeleteWorkspaceRe
 		}, nil
 	}
 
-	wikiStore, err := a.workspaceWikiStore()
-	if err != nil {
-		return nil, err
-	}
+	wikiStore := a.wikiStore
 	if wikiStore != nil {
-		fileExists, directoryExists, err := wikiStore.PathExists(ctx, ws.Name)
+		pageExists, directoryExists, err := wikiStore.PathExists(ctx, ws.Name)
 		if err != nil {
 			return nil, fmt.Errorf("failed to inspect workspace Wiki page path: %w", err)
 		}
-		if fileExists || directoryExists {
+		if pageExists || directoryExists {
 			return api.DeleteWorkspace409JSONResponse{
 				Code:    api.ErrorCodeConflict,
 				Message: "Delete workspace Wiki pages before deleting the workspace",

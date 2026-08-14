@@ -16,6 +16,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/cmn/logpath"
 	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/dispatch"
+	"github.com/dagucloud/dagu/v2/internal/intake"
 	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	profilepkg "github.com/dagucloud/dagu/v2/internal/profile"
@@ -58,6 +59,7 @@ type Local struct {
 }
 
 var _ executor.SubWorkflowRunner = (*Local)(nil)
+var _ executor.Enqueuer = (*Local)(nil)
 
 // LocalOption configures Local.
 type LocalOption func(*Local)
@@ -172,6 +174,9 @@ func NewLocal(dagRunMgr runtime.Manager, dagRepository *persis.DAGRepository, op
 	for _, opt := range opts {
 		opt(r)
 	}
+	if r.runStateStore == nil && r.dagRunRepository != nil {
+		r.runStateStore = persis.NewRunStateStore(r.dagRunRepository, nil)
+	}
 	return r
 }
 
@@ -235,6 +240,58 @@ func (r *Local) Run(ctx context.Context, req executor.SubWorkflowRequest) (*ir.R
 	return r.runAgent(ctx, req.RunID, child)
 }
 
+// Enqueue admits a child workflow to the local control-plane queue.
+func (r *Local) Enqueue(ctx context.Context, req executor.EnqueueRequest) (executor.EnqueueResult, error) {
+	if r.dagRunRepository == nil {
+		return executor.EnqueueResult{}, fmt.Errorf("dag.enqueue requires a DAG-run repository")
+	}
+	if r.queueStore == nil {
+		return executor.EnqueueResult{}, fmt.Errorf("dag.enqueue requires a queue store")
+	}
+
+	ref := ir.NewDAGRunRef(req.DAG.Name, req.RunID)
+	attempt, err := r.dagRunRepository.FindAttempt(ctx, ref)
+	switch {
+	case errors.Is(err, dagrun.ErrNoStatusData):
+		return executor.EnqueueResult{Status: ir.Queued, AlreadyExists: true}, nil
+	case err == nil:
+		status := ir.Queued
+		if existing, readErr := attempt.ReadStatus(ctx); readErr == nil && existing != nil {
+			status = existing.Status
+		}
+		return executor.EnqueueResult{Status: status, AlreadyExists: true}, nil
+	case !errors.Is(err, dagrun.ErrDAGRunIDNotFound):
+		return executor.EnqueueResult{}, fmt.Errorf("failed to check existing DAG run: %w", err)
+	}
+
+	rCtx := runctx.GetContext(ctx)
+	logDir := r.dagRunLogDir
+	if logDir == "" {
+		logDir = rCtx.DAGRunLogDir
+	}
+	artifactDir := r.dagRunArtifactDir
+	if artifactDir == "" {
+		artifactDir = rCtx.DAGRunArtifactDir
+	}
+	_, err = intake.EnqueueRun(ctx, intake.QueueRequest{
+		DAGRunRepository: r.dagRunRepository,
+		QueueStore:       r.queueStore,
+		DAG:              req.DAG,
+		DAGRunID:         req.RunID,
+		QueueName:        req.QueueName,
+		LogBaseDir:       logDir,
+		ArtifactBaseDir:  artifactDir,
+		TriggerType:      ir.TriggerTypeSubDAG,
+		TriggerActor:     req.TriggerActor,
+		ParallelItem:     req.ParallelItem,
+		ProfileName:      req.ProfileName,
+	})
+	if err != nil {
+		return executor.EnqueueResult{}, fmt.Errorf("failed to enqueue DAG run: %w", err)
+	}
+	return executor.EnqueueResult{Status: ir.Queued}, nil
+}
+
 // Retry retries a child workflow step in the current process.
 func (r *Local) Retry(ctx context.Context, req executor.SubWorkflowRetryRequest) (*ir.RunStatus, error) {
 	if err := validateInProcessRequest(req.SubWorkflowRequest); err != nil {
@@ -282,7 +339,7 @@ func (r *Local) existingChildRetryTarget(
 ) (*ir.DAGRunStatus, error) {
 	retryTarget, err := r.existingChildStatus(ctx, req)
 	if err != nil {
-		if errors.Is(err, dagrun.ErrDAGRunIDNotFound) || errors.Is(err, errNoRunDatabase) {
+		if errors.Is(err, dagrun.ErrDAGRunIDNotFound) || errors.Is(err, errNoRunStateStore) {
 			return nil, nil
 		}
 		return nil, err
@@ -309,7 +366,7 @@ func (r *Local) existingChildStatus(
 
 	runStateStore := r.runStateStoreFromContext(ctx)
 	if runStateStore == nil {
-		return nil, errNoRunDatabase
+		return nil, errNoRunStateStore
 	}
 	attempt, err := runStateStore.OpenChildAttempt(ctx, req.RootDAGRun, req.RunID)
 	if err != nil {
@@ -386,6 +443,7 @@ func (r *Local) newAgent(
 	opts.ParentDAGRun = req.ParentDAGRun
 	opts.RootDAGRun = req.RootDAGRun
 	opts.TriggerActor = req.TriggerActor
+	opts.ParallelItem = req.ParallelItem
 	opts.RetryPath = req.RetryPath
 	opts.ExtraEnvs = append(inProcessExtraEnvs(rCtx, req), toolEnvs...)
 	opts.WorkerID = r.workerID
@@ -393,8 +451,6 @@ func (r *Local) newAgent(
 	opts.SubWorkflowRunnerFactory = r.subWorkflowRunnerFactory
 	opts.LogWriterFactory = r.logWriterFactory
 	opts.RunStateStore = r.runStateStoreFromContext(ctx)
-	opts.DAGRunRepository = r.dagRunRepositoryFromContext(ctx)
-	opts.QueueStore = r.queueStoreFromContext(ctx)
 	opts.StateStore = r.stateStoreFromContext(ctx)
 	opts.MaterializationStore = rCtx.MaterializationStore
 	opts.NoReuse = rCtx.NoReuse
@@ -419,7 +475,7 @@ func (r *Local) newAgent(
 		logDir,
 		logFile,
 		r.dagRunMgr,
-		r.dagRepositoryFromContext(ctx),
+		r.dagRepository,
 		opts,
 	), nil
 }
@@ -456,36 +512,11 @@ func (r *Local) runAgent(ctx context.Context, runID string, child *rtagent.Agent
 	return result, nil
 }
 
-func (r *Local) dagRepositoryFromContext(_ context.Context) *persis.DAGRepository {
-	return r.dagRepository
-}
-
-func (r *Local) dagRunRepositoryFromContext(ctx context.Context) *persis.DAGRunRepository {
-	if r.dagRunRepository != nil {
-		return r.dagRunRepository
-	}
-	rCtx := runctx.GetContext(ctx)
-	if rCtx.DAGRunRepository != nil {
-		return rCtx.DAGRunRepository
-	}
-	return nil
-}
-
 func (r *Local) runStateStoreFromContext(ctx context.Context) runstate.Store {
 	if r.runStateStore != nil {
 		return r.runStateStore
 	}
-	if dagRunRepository := r.dagRunRepositoryFromContext(ctx); dagRunRepository != nil {
-		return runstate.NewHistoryStore(dagRunRepository)
-	}
-	return nil
-}
-
-func (r *Local) queueStoreFromContext(ctx context.Context) queue.QueueStore {
-	if r.queueStore != nil {
-		return r.queueStore
-	}
-	return runctx.GetContext(ctx).QueueStore
+	return runctx.GetContext(ctx).RunStateStore
 }
 
 func (r *Local) stateStoreFromContext(ctx context.Context) dagrun.StateStore {
@@ -593,6 +624,9 @@ func inProcessLoadOptions(
 
 func inProcessExtraEnvs(rCtx runctx.Context, req executor.SubWorkflowRequest) []string {
 	envs := inheritedEnvForLocalRunner(rCtx.AllEnvs())
+	if req.ParallelItem != "" {
+		envs = append(envs, ir.ParallelItemVariable+"="+req.ParallelItem)
+	}
 	if req.ExternalStepRetry {
 		envs = append(envs, runenv.EnvKeyExternalStepRetry+"=1")
 	}

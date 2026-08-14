@@ -68,6 +68,79 @@ func TestRouterFallsBackToLocalRunner(t *testing.T) {
 	assert.Equal(t, 1, local.runCount)
 }
 
+func TestRouterEnqueueUsesSelectedLocalRunner(t *testing.T) {
+	t.Parallel()
+
+	enqueuer := &stubEnqueuer{stubRunner: &stubRunner{shouldRun: true}}
+	router := subflow.NewRouter(&stubRunner{}, enqueuer)
+
+	got, err := router.Enqueue(context.Background(), executor.EnqueueRequest{
+		DAG:        &ir.DAG{Name: "child"},
+		RootDAGRun: ir.NewDAGRunRef("root", "root-run"),
+		RunID:      "child-run",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ir.Queued, got.Status)
+	assert.Equal(t, 1, enqueuer.enqueueCount)
+}
+
+func TestRouterEnqueueUsesControlPlaneAdmissionForDistributedSelection(t *testing.T) {
+	t.Parallel()
+
+	distributed := &stubRunner{shouldRun: true}
+	local := &stubEnqueuer{stubRunner: &stubRunner{shouldRun: true}}
+	router := subflow.NewRouter(distributed, local)
+
+	result, err := router.Enqueue(context.Background(), executor.EnqueueRequest{
+		DAG:        &ir.DAG{Name: "child"},
+		RootDAGRun: ir.NewDAGRunRef("root", "root-run"),
+		RunID:      "child-run",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, ir.Queued, result.Status)
+	assert.Equal(t, 1, local.enqueueCount)
+}
+
+func TestRouterEnqueueRoutesWorkerSelectorThroughExecutionPolicy(t *testing.T) {
+	t.Parallel()
+
+	distributed := &stubRunner{
+		shouldRunFunc: func(req executor.SubWorkflowRequest) bool {
+			return len(req.WorkerSelector) > 0
+		},
+	}
+	local := &stubEnqueuer{stubRunner: &stubRunner{shouldRun: true}}
+	router := subflow.NewRouter(distributed, local)
+
+	result, err := router.Enqueue(context.Background(), executor.EnqueueRequest{
+		DAG:            &ir.DAG{Name: "child"},
+		RootDAGRun:     ir.NewDAGRunRef("root", "root-run"),
+		RunID:          "child-run",
+		WorkerSelector: map[string]string{"gpu": "true"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, ir.Queued, result.Status)
+	assert.Equal(t, 1, local.enqueueCount)
+}
+
+func TestRouterEnqueueRejectsRequestWithoutMatchingRunner(t *testing.T) {
+	t.Parallel()
+
+	local := &stubEnqueuer{stubRunner: &stubRunner{shouldRun: false}}
+	router := subflow.NewRouter(local)
+
+	_, err := router.Enqueue(context.Background(), executor.EnqueueRequest{
+		DAG:        &ir.DAG{Name: "child"},
+		RootDAGRun: ir.NewDAGRunRef("root", "root-run"),
+		RunID:      "child-run",
+	})
+
+	require.EqualError(t, err, "no child workflow runner matched request")
+	assert.Equal(t, 0, local.enqueueCount)
+}
+
 func TestRouterCancelRoutesToSelectedRunner(t *testing.T) {
 	t.Parallel()
 
@@ -161,13 +234,27 @@ func validSubWorkflowRequest() executor.SubWorkflowRequest {
 }
 
 type stubRunner struct {
-	shouldRun   bool
-	result      *ir.RunStatus
-	runCount    int
-	cancelCount int
+	shouldRun     bool
+	shouldRunFunc func(executor.SubWorkflowRequest) bool
+	result        *ir.RunStatus
+	runCount      int
+	cancelCount   int
 }
 
-func (r *stubRunner) ShouldRun(context.Context, executor.SubWorkflowRequest) bool {
+type stubEnqueuer struct {
+	*stubRunner
+	enqueueCount int
+}
+
+func (r *stubEnqueuer) Enqueue(context.Context, executor.EnqueueRequest) (executor.EnqueueResult, error) {
+	r.enqueueCount++
+	return executor.EnqueueResult{Status: ir.Queued}, nil
+}
+
+func (r *stubRunner) ShouldRun(_ context.Context, req executor.SubWorkflowRequest) bool {
+	if r.shouldRunFunc != nil {
+		return r.shouldRunFunc(req)
+	}
 	return r.shouldRun
 }
 

@@ -84,7 +84,7 @@ func TestRestoreRetryExecutionContext_BackfillsStoredWorkingDirSnapshot(t *testi
 	status := &ir.DAGRunStatus{}
 
 	require.NoError(t, restoreRetryExecutionContext(
-		context.Background(), nil, dag, status, dagrun.DAGRunWorkspaceRef{},
+		context.Background(), nil, dag, status, dagrun.WorkDirRef{},
 	))
 
 	assert.Equal(t, workDir, status.WorkingDir)
@@ -92,7 +92,7 @@ func TestRestoreRetryExecutionContext_BackfillsStoredWorkingDirSnapshot(t *testi
 	assert.True(t, dag.WorkingDirExplicit)
 }
 
-func TestRestoreRetryExecutionContext_BackfillsWorkspaceSnapshot(t *testing.T) {
+func TestRestoreRetryExecutionContext_BackfillsWorkDirSnapshot(t *testing.T) {
 	t.Parallel()
 
 	dagDir := t.TempDir()
@@ -105,13 +105,13 @@ func TestRestoreRetryExecutionContext_BackfillsWorkspaceSnapshot(t *testing.T) {
 	status := &ir.DAGRunStatus{}
 	repository := persis.NewDAGRunRepository(
 		testutil.DAGRunStoreStub{},
-		&retryDAGRunWorkspaceStore{dir: attemptWorkDir},
+		&retryWorkDirStore{dir: attemptWorkDir},
 		persis.DAGRunRepositoryOptions{},
 	)
 
 	require.NoError(t, restoreRetryExecutionContext(
 		context.Background(), repository, dag, status,
-		dagrun.DAGRunWorkspaceRef{DAGRun: ir.NewDAGRunRef(dag.Name, "run-1")},
+		dagrun.WorkDirRef{DAGRun: ir.NewDAGRunRef(dag.Name, "run-1")},
 	))
 
 	assert.Equal(t, attemptWorkDir, status.WorkingDir)
@@ -119,19 +119,19 @@ func TestRestoreRetryExecutionContext_BackfillsWorkspaceSnapshot(t *testing.T) {
 	assert.True(t, dag.WorkingDirExplicit)
 }
 
-type retryDAGRunWorkspaceStore struct {
+type retryWorkDirStore struct {
 	dir string
 }
 
-func (s *retryDAGRunWorkspaceStore) Materialize(context.Context, dagrun.DAGRunWorkspaceRef) (string, error) {
+func (s *retryWorkDirStore) Materialize(context.Context, dagrun.WorkDirRef) (string, error) {
 	return s.dir, nil
 }
 
-func (*retryDAGRunWorkspaceStore) Snapshot(context.Context, dagrun.DAGRunWorkspaceRef, string) error {
+func (*retryWorkDirStore) Snapshot(context.Context, dagrun.WorkDirRef, string) error {
 	return nil
 }
 
-func (*retryDAGRunWorkspaceStore) Remove(context.Context, dagrun.DAGRunWorkspaceRef) error {
+func (*retryWorkDirStore) Remove(context.Context, dagrun.WorkDirRef) error {
 	return nil
 }
 

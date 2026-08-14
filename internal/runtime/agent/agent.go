@@ -43,7 +43,6 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/proc"
 	profilepkg "github.com/dagucloud/dagu/v2/internal/profile"
-	"github.com/dagucloud/dagu/v2/internal/queue"
 	"github.com/dagucloud/dagu/v2/internal/runctx"
 	"github.com/dagucloud/dagu/v2/internal/runtime"
 	"github.com/dagucloud/dagu/v2/internal/runtime/builtin/docker"
@@ -88,17 +87,8 @@ type Agent struct {
 	// dagLoader resolves DAG definitions for runtime lookups.
 	dagLoader dagDetailsLoader
 
-	// dagRunRepository persists DAG-run history.
-	dagRunRepository *persis.DAGRunRepository
-
 	// runStateStore opens execution state for this run.
 	runStateStore runstate.Store
-
-	// dagRunWorkspaceStore persists workspaces when execution history is remote.
-	dagRunWorkspaceStore persis.DAGRunWorkspaceStore
-
-	// queueStore is the database to store queued dag-run items.
-	queueStore queue.QueueStore
 
 	// stateStore is the persistent state store shared across DAG runs.
 	stateStore dagrun.StateStore
@@ -200,6 +190,8 @@ type Agent struct {
 	triggerType ir.TriggerType
 	// triggerActor identifies the attributable actor that initiated the DAG run.
 	triggerActor string
+	// parallelItem is the value bound to ITEM for a parallel child run.
+	parallelItem string
 
 	// defaultExecMode is the server-level default execution mode.
 	defaultExecMode config.ExecutionMode
@@ -329,20 +321,10 @@ type Options struct {
 	// instead of creating a new one. This is used for distributed execution
 	// where the dag-run directory was already created by the scheduler.
 	QueuedRun bool
-	// AttemptID is the attempt ID from the coordinator.
-	// When set, the agent creates an attempt with this ID instead of generating a new one.
+	// AttemptID uses a caller-assigned attempt identifier when non-empty.
 	AttemptID string
-	// PreparedAttempt is an exact attempt that was created or reopened before proc acquisition.
-	// This is used for local execution so the proc heartbeat can include the final attempt ID.
-	PreparedAttempt dagrun.Attempt
 	// RunStateStore records execution state for this DAG run.
 	RunStateStore runstate.Store
-	// DAGRunRepository provides access to DAG-run data. Nil for remote worker execution.
-	DAGRunRepository *persis.DAGRunRepository
-	// DAGRunWorkspaceStore persists workspaces when DAG-run history is remote.
-	DAGRunWorkspaceStore persis.DAGRunWorkspaceStore
-	// QueueStore is the store for queued dag-run items. Nil when queues are unavailable.
-	QueueStore queue.QueueStore
 	// StateStore is the persistent state store shared across DAG runs.
 	StateStore dagrun.StateStore
 	// MaterializationStore coordinates build file materializations.
@@ -368,6 +350,8 @@ type Options struct {
 	TriggerType ir.TriggerType
 	// TriggerActor identifies the attributable actor that initiated the DAG run.
 	TriggerActor string
+	// ParallelItem is the value bound to ITEM for a parallel child run.
+	ParallelItem string
 	// DefaultExecMode is the server-level default execution mode.
 	DefaultExecMode config.ExecutionMode
 	// ScheduleTime is the RFC 3339 timestamp of when this run was scheduled.
@@ -404,20 +388,6 @@ func New(
 		dagLoader = dagRepository
 	}
 
-	runStateStore := opts.RunStateStore
-	if runStateStore == nil && opts.PreparedAttempt != nil {
-		runStateStore = runstate.NewHistoryStore(
-			opts.DAGRunRepository,
-			runstate.WithPreparedAttempt(opts.PreparedAttempt),
-			runstate.WithDAGRunWorkspaceStore(opts.DAGRunWorkspaceStore),
-		)
-	} else if runStateStore == nil {
-		runStateStore = runstate.NewHistoryStore(
-			opts.DAGRunRepository,
-			runstate.WithDAGRunWorkspaceStore(opts.DAGRunWorkspaceStore),
-		)
-	}
-
 	a := &Agent{
 		rootDAGRun:               opts.RootDAGRun,
 		parentDAGRun:             opts.ParentDAGRun,
@@ -432,10 +402,7 @@ func New(
 		artifactFinalizer:        opts.ArtifactFinalizer,
 		dagRunMgr:                drm,
 		dagLoader:                dagLoader,
-		dagRunRepository:         opts.DAGRunRepository,
-		runStateStore:            runStateStore,
-		dagRunWorkspaceStore:     opts.DAGRunWorkspaceStore,
-		queueStore:               opts.QueueStore,
+		runStateStore:            opts.RunStateStore,
 		stateStore:               opts.StateStore,
 		materializationStore:     opts.MaterializationStore,
 		secretStore:              opts.SecretStore,
@@ -456,6 +423,7 @@ func New(
 		attemptID:                opts.AttemptID,
 		triggerType:              opts.TriggerType,
 		triggerActor:             opts.TriggerActor,
+		parallelItem:             opts.ParallelItem,
 		defaultExecMode:          opts.DefaultExecMode,
 		scheduleTime:             opts.ScheduleTime,
 		dagRunLogDir:             opts.DAGRunLogDir,
@@ -472,9 +440,7 @@ func New(
 		a.progressDisplay = createProgressReporter(dag, dagRunID, dag.Params)
 	}
 
-	if opts.PreparedAttempt != nil {
-		a.dagRunAttemptID = opts.PreparedAttempt.ID()
-	} else if opts.AttemptID != "" {
+	if opts.AttemptID != "" {
 		a.dagRunAttemptID = opts.AttemptID
 	}
 
@@ -668,7 +634,7 @@ func (a *Agent) Run(ctx context.Context) (runErr error) {
 	a.lock.Unlock()
 
 	// Create a new environment for the dag-run.
-	dbClient := newDBClient(a.dagRunRepository, a.dagLoader, a.remoteDAGLoader)
+	dagLoader := newDAGLoader(a.dagLoader, a.remoteDAGLoader)
 
 	subWorkflowRunner, err := a.createSubWorkflowRunner(ctx)
 	if err != nil {
@@ -676,7 +642,8 @@ func (a *Agent) Run(ctx context.Context) (runErr error) {
 	}
 
 	contextOpts := []runtime.ContextOption{
-		runtime.WithDatabase(dbClient),
+		runtime.WithDAGLoader(dagLoader),
+		runtime.WithRunStateStore(a.runStateStore),
 		runtime.WithRootDAGRun(a.rootDAGRun),
 		runtime.WithRetryPath(a.retryPath),
 		runtime.WithAttemptID(a.dagRunAttemptID),
@@ -705,12 +672,6 @@ func (a *Agent) Run(ctx context.Context) (runErr error) {
 	}
 	if a.artifactDir != "" {
 		contextOpts = append(contextOpts, runtime.WithArtifactDir(a.artifactDir))
-	}
-	if a.dagRunRepository != nil {
-		contextOpts = append(contextOpts, runtime.WithDAGRunRepository(a.dagRunRepository))
-	}
-	if a.queueStore != nil {
-		contextOpts = append(contextOpts, runtime.WithQueueStore(a.queueStore))
 	}
 	if a.stateStore != nil {
 		contextOpts = append(contextOpts, runtime.WithStateStore(a.stateStore))
@@ -783,8 +744,8 @@ func (a *Agent) Run(ctx context.Context) (runErr error) {
 				st.FinishedAt = stringutil.FormatTime(time.Now())
 			}
 			if a.workDir != "" {
-				if err := attempt.SnapshotWorkspace(context.WithoutCancel(ctx), a.workDir); err != nil {
-					snapshotErr := fmt.Errorf("snapshot DAG-run workspace: %w", err)
+				if err := attempt.SnapshotWorkDir(context.WithoutCancel(ctx), a.workDir); err != nil {
+					snapshotErr := fmt.Errorf("snapshot DAG-run work directory: %w", err)
 					st.Error = appendDAGRunError(st.Error, snapshotErr)
 					runErr = errors.Join(runErr, snapshotErr)
 				}
@@ -1191,8 +1152,8 @@ func (a *Agent) Run(ctx context.Context) (runErr error) {
 			logger.Error(ctx, "Failed to write outputs", tag.Error(err))
 		}
 	}
-	if err := attempt.SnapshotWorkspace(context.WithoutCancel(ctx), a.workDir); err != nil {
-		snapshotErr := fmt.Errorf("snapshot DAG-run workspace: %w", err)
+	if err := attempt.SnapshotWorkDir(context.WithoutCancel(ctx), a.workDir); err != nil {
+		snapshotErr := fmt.Errorf("snapshot DAG-run work directory: %w", err)
 		if finishedStatus.Status.IsSuccess() {
 			finishedStatus.Status = ir.Failed
 		}
@@ -1423,6 +1384,10 @@ func (a *Agent) Status(ctx context.Context) ir.DAGRunStatus {
 	defer a.lock.RUnlock()
 
 	source := a.statusSourceTarget()
+	parallelItem := a.parallelItem
+	if parallelItem == "" && source != nil {
+		parallelItem = source.ParallelItem
+	}
 
 	// Handle case where runner wasn't initialized (early failure in Run())
 	if a.runner == nil {
@@ -1433,6 +1398,7 @@ func (a *Agent) Status(ctx context.Context) ir.DAGRunStatus {
 			ir.WithArchiveDir(a.artifactDir),
 			ir.WithTriggerType(a.triggerType),
 			ir.WithTriggerActor(a.triggerActor),
+			ir.WithParallelItem(parallelItem),
 			ir.WithAutoRetryCount(a.currentAutoRetryCount()),
 			ir.WithPIDStartedAt(currentPIDStartedAt()),
 			ir.WithRuntimeProfile(a.profileName, a.profileResolvedAt, a.profileEntries),
@@ -1482,6 +1448,7 @@ func (a *Agent) Status(ctx context.Context) ir.DAGRunStatus {
 		ir.WithWorkerID(a.workerID),
 		ir.WithTriggerType(a.triggerType),
 		ir.WithTriggerActor(a.triggerActor),
+		ir.WithParallelItem(parallelItem),
 		ir.WithAutoRetryCount(a.currentAutoRetryCount()),
 		ir.WithPIDStartedAt(currentPIDStartedAt()),
 		ir.WithRuntimeProfile(a.profileName, a.profileResolvedAt, a.profileEntries),
@@ -1572,9 +1539,9 @@ func (a *Agent) prepareWorkDir(ctx context.Context, attempt runstate.Attempt) (f
 	}
 
 	var err error
-	a.workDir, err = attempt.MaterializeWorkspace(ctx)
+	a.workDir, err = attempt.MaterializeWorkDir(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("materialize DAG-run workspace: %w", err)
+		return nil, fmt.Errorf("materialize DAG-run work directory: %w", err)
 	}
 	if a.workDir != "" {
 		return nil, nil
@@ -2152,9 +2119,10 @@ func (a *Agent) dryRun(ctx context.Context) error {
 		}
 	}()
 
-	db := newDBClient(a.dagRunRepository, a.dagLoader, a.remoteDAGLoader)
+	dagLoader := newDAGLoader(a.dagLoader, a.remoteDAGLoader)
 	contextOpts := []runtime.ContextOption{
-		runtime.WithDatabase(db),
+		runtime.WithDAGLoader(dagLoader),
+		runtime.WithRunStateStore(a.runStateStore),
 		runtime.WithRootDAGRun(a.rootDAGRun),
 		runtime.WithRetryPath(a.retryPath),
 		runtime.WithAttemptID(a.dagRunAttemptID),
@@ -2168,12 +2136,6 @@ func (a *Agent) dryRun(ctx context.Context) error {
 	}
 	if a.artifactDir != "" {
 		contextOpts = append(contextOpts, runtime.WithArtifactDir(a.artifactDir))
-	}
-	if a.dagRunRepository != nil {
-		contextOpts = append(contextOpts, runtime.WithDAGRunRepository(a.dagRunRepository))
-	}
-	if a.queueStore != nil {
-		contextOpts = append(contextOpts, runtime.WithQueueStore(a.queueStore))
 	}
 	if a.stateStore != nil {
 		contextOpts = append(contextOpts, runtime.WithStateStore(a.stateStore))
@@ -2356,26 +2318,17 @@ func (a *Agent) setupDefaultRetryPlan(ctx context.Context, nodes []*runtime.Node
 }
 
 func (a *Agent) setupAttempt(ctx context.Context) (runstate.Attempt, error) {
-	if a.runStateStore == nil {
-		a.runStateStore = runstate.NewHistoryStore(
-			a.dagRunRepository,
-			runstate.WithDAGRunWorkspaceStore(a.dagRunWorkspaceStore),
-		)
-	}
-	if a.attemptID != "" && a.dagRunAttemptID != "" && a.attemptID != a.dagRunAttemptID {
-		return nil, fmt.Errorf(
-			"prepared attempt ID %q does not match requested attempt ID %q",
-			a.dagRunAttemptID,
-			a.attemptID,
-		)
-	}
-	return a.runStateStore.BeginAttempt(ctx, runstate.BeginAttemptRequest{
+	req := runstate.BeginAttemptRequest{
 		DAG:        a.dag,
 		RunID:      a.dagRunID,
 		AttemptID:  a.attemptID,
 		Retry:      a.retryTarget != nil || a.queuedRun,
 		RootDAGRun: a.rootDAGRun,
-	})
+	}
+	if a.runStateStore == nil {
+		return runstate.NewNoopAttempt(req), nil
+	}
+	return a.runStateStore.BeginAttempt(ctx, req)
 }
 
 // setupSocketServer creates a socket server instance.

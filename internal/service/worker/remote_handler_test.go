@@ -1166,6 +1166,18 @@ func TestTaskExtraEnvs(t *testing.T) {
 	assert.Equal(t, []string{runenv.EnvKeyExternalStepRetry + "=1"}, taskExtraEnvs(&coordinatorv1.Task{
 		ExternalStepRetry: true,
 	}))
+	assert.Equal(t, []string{
+		runenv.EnvKeyExternalStepRetry + "=1",
+		ir.ParallelItemVariable + "=item-1",
+	}, taskExtraEnvs(&coordinatorv1.Task{
+		ExternalStepRetry: true,
+		ParallelItem:      "item-1",
+	}))
+	assert.Equal(t, []string{
+		ir.ParallelItemVariable + "=item-1",
+	}, taskExtraEnvs(&coordinatorv1.Task{
+		ParallelItem: "item-1",
+	}))
 }
 
 func TestHandleStart_ExternalStepRetryQueuesPendingRetry(t *testing.T) {

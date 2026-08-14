@@ -235,6 +235,7 @@ func runStart(ctx *Context, args []string) error {
 		attemptID:    attemptID,
 		triggerType:  triggerType,
 		triggerActor: triggerActor,
+		parallelItem: parallelItemFromEnv(dag.Env),
 		scheduleTime: scheduleTime,
 		profileName:  profileName,
 		definitionID: dagDefinitionIDFromEnv(),
@@ -272,7 +273,10 @@ func tryExecuteDAG(ctx *Context, dag *ir.DAG, dagRunID string, opts runOptions) 
 	// Check for dispatch to coordinator for distributed execution.
 	// Skip if already running on a worker (workerID != "local").
 	if opts.workerID == "local" {
-		coordinatorCli := ctx.NewCoordinatorClient()
+		coordinatorCli, err := ctx.NewCoordinatorClient()
+		if err != nil {
+			return err
+		}
 		if dispatch.ShouldDispatchToCoordinator(dag, coordinatorCli != nil, ctx.Config.DefaultExecMode) {
 			if dag.Type == ir.TypeBuild {
 				return dispatch.ErrBuildRequiresLocal
@@ -500,6 +504,7 @@ func handleSubDAGRun(ctx *Context, dag *ir.DAG, dagRunID string, params string, 
 	retry.parent = status.Parent
 	retry.triggerType = queue.PreservedQueueTriggerType(status)
 	retry.triggerActor = status.TriggerActor
+	retry.parallelItem = status.ParallelItem
 	retry.scheduleTime = status.ScheduleTime
 
 	return withPreparedLocalExecution(
@@ -571,11 +576,9 @@ func executeDAGRun(ctx *Context, d *ir.DAG, dagRunID string, opts runOptions) er
 			ProgressDisplay:          shouldEnableProgress(ctx),
 			ExtraEnvs:                extraEnvs,
 			WorkerID:                 opts.workerID,
-			AttemptID:                opts.attemptID,
+			AttemptID:                agentAttemptID(opts.attemptID, opts.preparedAttempt),
 			QueuedRun:                queuedRun,
-			PreparedAttempt:          opts.preparedAttempt,
-			DAGRunRepository:         ctx.Persistence.DAGRunRepository,
-			QueueStore:               ctx.Persistence.QueueStore,
+			RunStateStore:            persis.NewRunStateStore(ctx.Persistence.DAGRunRepository, opts.preparedAttempt),
 			StateStore:               ctx.Persistence.StateStore,
 			MaterializationStore:     as.MaterializationStore,
 			NoReuse:                  opts.noReuse,
@@ -589,6 +592,7 @@ func executeDAGRun(ctx *Context, d *ir.DAG, dagRunID string, opts runOptions) er
 			PeerConfig:               ctx.Config.Core.Peer,
 			TriggerType:              opts.triggerType,
 			TriggerActor:             opts.triggerActor,
+			ParallelItem:             opts.parallelItem,
 			DefaultExecMode:          ctx.Config.DefaultExecMode,
 			ScheduleTime:             opts.scheduleTime,
 			ArtifactDir:              artifactDir,
