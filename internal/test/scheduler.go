@@ -61,16 +61,16 @@ func SetupScheduler(t *testing.T, opts ...HelperOption) *Scheduler {
 	// Create additional stores needed for scheduler
 	ds, err := file.NewDAGRepository(helper.Config, file.WithDAGSkipExamples(true))
 	require.NoError(t, err)
-	drs := file.NewDAGRunStore(helper.Config)
-	ps := newProcStore(helper.Config)
+	dagRunRepository := file.NewDAGRunRepository(helper.Config)
+	ps := newProcRepository(helper.Config)
 	qs := store.NewQueueStore(file.NewCollection(helper.Config.Paths.QueueDir))
 
 	// Create DAG run manager
-	drm := runtime.NewManager(drs, ps, helper.Config)
+	drm := runtime.NewManager(dagRunRepository, ps, helper.Config)
 
 	// Create entry reader
 	coordinatorCli := coordinator.New(helper.ServiceRegistry, coordinator.DefaultConfig())
-	em := scheduler.NewEntryReader(
+	em := scheduler.NewFileEntryReader(
 		helper.Config.Paths.DAGsDir,
 		ds,
 		helper.Config.DAGDiscovery.Recursive,
@@ -78,8 +78,8 @@ func SetupScheduler(t *testing.T, opts ...HelperOption) *Scheduler {
 
 	// Update helper with scheduler-specific stores
 	helper.DAGRepository = ds
-	helper.DAGRunStore = drs
-	helper.ProcStore = ps
+	helper.DAGRunRepository = dagRunRepository
+	helper.ProcRepository = ps
 	helper.DAGRunMgr = drm
 
 	sch := &Scheduler{
@@ -96,17 +96,16 @@ func SetupScheduler(t *testing.T, opts ...HelperOption) *Scheduler {
 func (s *Scheduler) NewSchedulerInstance(t *testing.T) (*scheduler.Scheduler, error) {
 	t.Helper()
 
-	return scheduler.New(
-		s.Config,
-		s.EntryReader,
-		s.DAGRunMgr,
-		s.DAGRunStore,
-		s.QueueStore,
-		s.ProcStore,
-		s.ServiceRegistry,
-		s.CoordinatorCli,
-		nil,
-	)
+	return scheduler.New(s.Config, scheduler.Dependencies{
+		EntryReader:       s.EntryReader,
+		DAGRunManager:     s.DAGRunMgr,
+		DAGRepository:     s.DAGRepository,
+		DAGRunRepository:  s.DAGRunRepository,
+		QueueStore:        s.QueueStore,
+		ProcRepository:    s.ProcRepository,
+		ServiceRegistry:   s.ServiceRegistry,
+		CoordinatorClient: s.CoordinatorCli,
+	})
 }
 
 // Start starts the scheduler instance

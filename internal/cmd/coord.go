@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 
-	cmdprocess "github.com/dagucloud/dagu/v2/internal/cmd/process"
 	"github.com/dagucloud/dagu/v2/internal/cmn/config"
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
@@ -102,14 +101,14 @@ func runCoordinator(ctx *Context, _ []string) error {
 	svc, _, err := newCoordinator(
 		coordCtx,
 		coordCtx.Config,
-		coordCtx.ServiceRegistry,
-		coordCtx.DAGRunStore,
-		coordCtx.StateStore,
-		coordCtx.DispatchTaskStore,
-		coordCtx.WorkerHeartbeatStore,
-		coordCtx.DAGRunLeaseStore,
-		coordCtx.ActiveDistributedRunStore,
-		coordCtx.DAGRepository,
+		coordCtx.Persistence.ServiceRegistry,
+		coordCtx.Persistence.DAGRunRepository,
+		coordCtx.Persistence.StateStore,
+		coordCtx.Persistence.DispatchTaskStore,
+		coordCtx.Persistence.WorkerHeartbeatStore,
+		coordCtx.Persistence.DAGRunLeaseStore,
+		coordCtx.Persistence.ActiveDistributedRunStore,
+		coordCtx.Persistence.DAGRepository,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to initialize coordinator: %w", err)
@@ -143,7 +142,7 @@ func newCoordinator(
 	ctx *Context,
 	cfg *config.Config,
 	registry serviceregistry.ServiceRegistry,
-	dagRunStore dagrun.DAGRunStore,
+	dagRunRepository *persis.DAGRunRepository,
 	stateStore dagrun.StateStore,
 	dispatchTaskStore dispatch.DispatchTaskStore,
 	workerHeartbeatStore dispatch.WorkerHeartbeatStore,
@@ -227,10 +226,10 @@ func newCoordinator(
 		return nil, nil, fmt.Errorf("failed to create listener on %s: %w", addr, err)
 	}
 
-	// Create handler with DAGRunStore for status persistence and LogDir for log streaming
-	runtimeStores := cmdprocess.NewRuntimeStoresForConfig(ctx.Context, cfg)
+	// Create the handler with DAG-run status persistence and streamed log storage.
+	runtimeStores := ctx.runtimeStores()
 	handler := coordinator.NewHandler(coordinator.HandlerConfig{
-		DAGRunStore:               dagRunStore,
+		DAGRunRepository:          dagRunRepository,
 		StateStore:                stateStore,
 		LogDir:                    cfg.Paths.LogDir,
 		ArtifactDir:               cfg.Paths.ArtifactDir,
@@ -242,7 +241,7 @@ func newCoordinator(
 		ActiveDistributedRunStore: activeDistributedRunStore,
 		DAGRepository:             dagRepository,
 		SecretStore:               runtimeStores.SecretStore,
-		EventService:              ctx.EventService,
+		EventService:              ctx.Stores.Event,
 		EventSourceInstance:       ctx.EventSourceInstance,
 	})
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/persis"
 )
 
 var attemptIDFlag = commandLineFlag{
@@ -38,12 +39,12 @@ func requireWorkerAttemptID(ctx *Context, workerID string) (string, error) {
 
 func resolveWorkerPreparedAttempt(
 	ctx context.Context,
-	dagRunStore dagrun.DAGRunStore,
+	dagRunRepository *persis.DAGRunRepository,
 	dagName, dagRunID string,
 	root ir.DAGRunRef,
 	requestedAttemptID string,
-) (dagrun.DAGRunAttempt, *ir.DAGRunStatus, error) {
-	attempt, runStatus, err := readLatestAttempt(ctx, dagRunStore, dagName, dagRunID, root)
+) (dagrun.Attempt, *ir.DAGRunStatus, error) {
+	attempt, runStatus, err := readLatestAttempt(ctx, dagRunRepository, dagName, dagRunID, root)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -53,20 +54,30 @@ func resolveWorkerPreparedAttempt(
 	return attempt, runStatus, nil
 }
 
+func agentAttemptID(requested string, prepared dagrun.Attempt) string {
+	if requested != "" {
+		return requested
+	}
+	if prepared != nil {
+		return prepared.ID()
+	}
+	return ""
+}
+
 func readLatestAttempt(
 	ctx context.Context,
-	dagRunStore dagrun.DAGRunStore,
+	dagRunRepository *persis.DAGRunRepository,
 	dagName, dagRunID string,
 	root ir.DAGRunRef,
-) (dagrun.DAGRunAttempt, *ir.DAGRunStatus, error) {
+) (dagrun.Attempt, *ir.DAGRunStatus, error) {
 	var (
-		attempt dagrun.DAGRunAttempt
+		attempt dagrun.Attempt
 		err     error
 	)
 	if root.ID != "" && root.ID != dagRunID {
-		attempt, err = dagRunStore.FindSubAttempt(ctx, root, dagRunID)
+		attempt, err = dagRunRepository.FindSubAttempt(ctx, root, dagRunID)
 	} else {
-		attempt, err = dagRunStore.FindAttempt(ctx, ir.NewDAGRunRef(dagName, dagRunID))
+		attempt, err = dagRunRepository.FindAttempt(ctx, ir.NewDAGRunRef(dagName, dagRunID))
 	}
 	if err != nil {
 		return nil, nil, err
@@ -81,7 +92,7 @@ func readLatestAttempt(
 
 func validateWorkerAttemptBinding(
 	dagRunID, requestedAttemptID string,
-	attempt dagrun.DAGRunAttempt,
+	attempt dagrun.Attempt,
 	runStatus *ir.DAGRunStatus,
 ) error {
 	currentAttemptID := requestedAttemptID

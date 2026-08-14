@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	iengine "github.com/dagucloud/dagu/v2/internal/engine"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	filematerialization "github.com/dagucloud/dagu/v2/internal/persis/file/materialization"
 	"github.com/dagucloud/dagu/v2/internal/persis/store"
 
 	_ "github.com/dagucloud/dagu/v2/internal/runtime/builtin" // Register built-in executors for embedded use.
@@ -434,18 +436,18 @@ func filePersistenceFactory(ctx context.Context, cfg *config.Config) (iengine.Pe
 		return iengine.Persistence{}, fmt.Errorf("create DAG state directory: %w", err)
 	}
 
-	procStore := file.NewProcStore(cfg)
+	procRepository := file.NewProcRepository(cfg)
 	dagRepository, err := fileEngineDAGRepository(ctx, cfg, iengine.DAGRepositoryFactoryOptions{})
 	if err != nil {
 		return iengine.Persistence{}, err
 	}
 
 	return iengine.Persistence{
-		DAGRepository:   dagRepository,
-		DAGRunStore:     file.NewDAGRunStore(cfg, file.WithDAGRunLatestStatusToday(false)),
-		ProcStore:       procStore,
-		StateStore:      store.NewDAGStateStore(file.NewCollection(cfg.Paths.DAGStateDir)),
-		ServiceRegistry: file.NewServiceRegistry(cfg),
+		DAGRepository:    dagRepository,
+		DAGRunRepository: file.NewDAGRunRepository(cfg, file.WithDAGRunLatestStatusToday(false)),
+		ProcRepository:   procRepository,
+		StateStore:       store.NewDAGStateStore(file.NewCollection(cfg.Paths.DAGStateDir)),
+		ServiceRegistry:  file.NewServiceRegistry(cfg),
 
 		DAGRepositoryFactory: fileEngineDAGRepository,
 		RuntimeStoresFactory: fileEngineRuntimeStores,
@@ -462,8 +464,9 @@ func fileEngineDAGRepository(_ context.Context, cfg *config.Config, opts iengine
 
 func fileEngineRuntimeStores(ctx context.Context, cfg *config.Config) iengine.RuntimeStores {
 	return iengine.RuntimeStores{
-		SecretStore:  file.NewSecretStore(ctx, cfg),
-		ProfileStore: file.NewProfileStore(ctx, cfg),
+		SecretStore:          file.NewSecretStore(ctx, cfg),
+		ProfileStore:         file.NewProfileStore(ctx, cfg),
+		MaterializationStore: filematerialization.New(filepath.Join(cfg.Paths.DataDir, "materializations")),
 	}
 }
 

@@ -17,7 +17,6 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger"
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
-	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/dispatch"
 	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/pagination"
@@ -42,7 +41,7 @@ type Collector struct {
 	startTime            time.Time
 	version              string
 	dagRepository        dagLister
-	dagRunStore          dagrun.DAGRunStore
+	dagRunRepository     *persis.DAGRunRepository
 	queueStore           queue.QueueStore
 	serviceRegistry      serviceregistry.ServiceRegistry
 	workerHeartbeatStore dispatch.WorkerHeartbeatStore
@@ -88,18 +87,18 @@ type dagLister interface {
 func NewCollector(
 	version string,
 	dagRepository dagLister,
-	dagRunStore dagrun.DAGRunStore,
+	dagRunRepository *persis.DAGRunRepository,
 	queueStore queue.QueueStore,
 	serviceRegistry serviceregistry.ServiceRegistry,
 ) *Collector {
 	return &Collector{
-		startTime:       time.Now(),
-		version:         version,
-		dagRepository:   dagRepository,
-		dagRunStore:     dagRunStore,
-		queueStore:      queueStore,
-		serviceRegistry: serviceRegistry,
-		now:             func() time.Time { return time.Now().UTC() },
+		startTime:        time.Now(),
+		version:          version,
+		dagRepository:    dagRepository,
+		dagRunRepository: dagRunRepository,
+		queueStore:       queueStore,
+		serviceRegistry:  serviceRegistry,
+		now:              func() time.Time { return time.Now().UTC() },
 
 		// Initialize metric descriptors
 		infoDesc: prometheus.NewDesc(
@@ -348,7 +347,7 @@ func (c *Collector) collectCacheMetrics(ch chan<- prometheus.Metric) {
 func (c *Collector) collectDAGRunMetrics(ctx context.Context, ch chan<- prometheus.Metric) {
 	// Get all DAG run statuses
 	// NOTE: ListStatuses by default returns only today's data (from midnight)
-	statuses, err := c.dagRunStore.ListStatuses(ctx)
+	statuses, err := c.dagRunRepository.ListStatuses(ctx, persis.DAGRunListOptions{})
 	if err != nil {
 		return
 	}

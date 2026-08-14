@@ -38,6 +38,7 @@ type Attempt interface {
 	CancelRequested(ctx context.Context) (bool, error)
 	ReadStepMessages(ctx context.Context, stepName string) ([]ir.LLMMessage, error)
 	WriteStepMessages(ctx context.Context, stepName string, messages []ir.LLMMessage) error
-	WorkDir() string
+	MaterializeWorkDir(ctx context.Context) (string, error)
+	SnapshotWorkDir(ctx context.Context, localDir string) error
 	Close(ctx context.Context) error
 }

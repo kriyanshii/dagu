@@ -23,6 +23,7 @@ type Router struct {
 }
 
 var _ executor.SubWorkflowRunner = (*Router)(nil)
+var _ executor.Enqueuer = (*Router)(nil)
 
 // NewRouter creates a child workflow runner that tries runners in order.
 func NewRouter(runners ...executor.SubWorkflowRunner) *Router {
@@ -63,6 +64,30 @@ func (r *Router) Retry(ctx context.Context, req executor.SubWorkflowRetryRequest
 	r.remember(req.RunID, runner)
 	defer r.forget(req.RunID)
 	return runner.Retry(ctx, req)
+}
+
+// Enqueue admits req through the runner selected by the execution policy.
+func (r *Router) Enqueue(ctx context.Context, req executor.EnqueueRequest) (executor.EnqueueResult, error) {
+	runner := r.selectRunner(ctx, executor.SubWorkflowRequest{
+		DAG:            req.DAG,
+		RootDAGRun:     req.RootDAGRun,
+		RunID:          req.RunID,
+		WorkerSelector: req.WorkerSelector,
+	})
+	if runner == nil {
+		return executor.EnqueueResult{}, errNoMatchingRunner
+	}
+	if enqueuer, ok := runner.(executor.Enqueuer); ok {
+		return enqueuer.Enqueue(ctx, req)
+	}
+	// Queue admission is persisted by the control-plane enqueuer for every
+	// execution route, including routes owned by distributed runners.
+	for _, candidate := range r.runners {
+		if enqueuer, ok := candidate.(executor.Enqueuer); ok {
+			return enqueuer.Enqueue(ctx, req)
+		}
+	}
+	return executor.EnqueueResult{}, errNoMatchingRunner
 }
 
 // Cancel routes cancellation to the runner that owns req.RunID.

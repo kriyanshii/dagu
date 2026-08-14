@@ -9,6 +9,7 @@ import (
 
 	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
 	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/runtime/agent"
 	"github.com/dagucloud/dagu/v2/internal/spec"
 	"github.com/dagucloud/dagu/v2/internal/workspace"
@@ -90,15 +91,14 @@ func runDry(ctx *Context, args []string) error {
 		dagRepository,
 		agent.Options{
 			Dry:                      true,
-			DAGRunStore:              ctx.DAGRunStore,
-			QueueStore:               ctx.QueueStore,
-			StateStore:               ctx.StateStore,
-			MaterializationStore:     localMaterializationStore(ctx),
+			RunStateStore:            persis.NewRunStateStore(ctx.Persistence.DAGRunRepository, nil),
+			StateStore:               ctx.Persistence.StateStore,
+			MaterializationStore:     as.MaterializationStore,
 			NoReuse:                  noReuse,
 			SecretStore:              as.SecretStore,
 			ProfileStore:             as.ProfileStore,
 			ProfileName:              profileName,
-			ServiceRegistry:          ctx.ServiceRegistry,
+			ServiceRegistry:          ctx.Persistence.ServiceRegistry,
 			SubWorkflowRunnerFactory: ctx.SubWorkflowRunnerFactory(),
 			RootDAGRun:               ir.NewDAGRunRef(dag.Name, dagRunID),
 			PeerConfig:               ctx.Config.Core.Peer,

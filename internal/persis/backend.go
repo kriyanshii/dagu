@@ -4,8 +4,8 @@
 // Package persis defines persistence contracts for Dagu's control plane.
 //
 // Collection-backed records flow through [Backend] → [Collection] → [Record].
-// DAG definitions use [DAGDefinitionStore] because their persistence contract
-// includes source locations, discovery issues, and suspension state.
+// Domain-specific persistence contracts use dedicated store interfaces such as
+// [DAGDefinitionStore], [DAGRunStore], and [ProcStore].
 //
 // Domain model changes for collection-backed records live inside Record.Data,
 // leaving their physical schema unchanged.
@@ -93,6 +93,14 @@ type Collection interface {
 	// bytes equal expected. Returns [ErrConflict] when they do not match.
 	// Used for optimistic concurrency on DAGRunStatus updates.
 	CompareAndSwap(ctx context.Context, id string, expected, next []byte) error
+}
+
+// LockingCollection runs operations under a backend-wide lock scoped by key.
+// Implementations must serialize the same key across all clients sharing the
+// collection's physical namespace.
+type LockingCollection interface {
+	Collection
+	WithLock(ctx context.Context, key string, fn func() error) error
 }
 
 // Backend is the factory for storage [Collection]s.

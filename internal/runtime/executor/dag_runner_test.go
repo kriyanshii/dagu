@@ -14,6 +14,8 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/runctx"
+	"github.com/dagucloud/dagu/v2/internal/runtime/runstate"
+	"github.com/dagucloud/dagu/v2/internal/runtime/runstate/memstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -40,10 +42,10 @@ func TestNewSubDAGExecutor_LocalDAG(t *testing.T) {
 	}
 
 	// Set up the DAG context
-	mockDB := new(mockDatabase)
+	mockLoader := new(mockDAGLoader)
 	dagCtx := runctx.Context{
 		DAG:        parentDAG,
-		DB:         mockDB,
+		DAGLoader:  mockLoader,
 		RootDAGRun: ir.NewDAGRunRef("parent", "root-123"),
 		DAGRunID:   "parent-456",
 	}
@@ -86,21 +88,20 @@ func TestNewSubDAGExecutor_RegularDAG(t *testing.T) {
 	}
 
 	// Set up the DAG context
-	mockDB := new(mockDatabase)
+	mockLoader := new(mockDAGLoader)
 	dagCtx := runctx.Context{
 		DAG:        parentDAG,
-		DB:         mockDB,
+		DAGLoader:  mockLoader,
 		RootDAGRun: ir.NewDAGRunRef("parent", "root-123"),
 		DAGRunID:   "parent-456",
 	}
 	ctx = runctx.WithContext(ctx, dagCtx)
 
-	// Mock the database call
 	expectedDAG := &ir.DAG{
 		Name:     "regular-child",
 		Location: "/path/to/regular-child.yaml",
 	}
-	mockDB.On("GetDAG", ctx, "regular-child").Return(expectedDAG, nil)
+	mockLoader.On("GetDAG", ctx, "regular-child").Return(expectedDAG, nil)
 
 	// Test creating executor for regular DAG
 	executor, err := NewSubDAGExecutor(ctx, "regular-child")
@@ -115,7 +116,7 @@ func TestNewSubDAGExecutor_RegularDAG(t *testing.T) {
 	err = executor.Cleanup(ctx)
 	assert.NoError(t, err)
 
-	mockDB.AssertExpectations(t)
+	mockLoader.AssertExpectations(t)
 }
 
 func TestNewSubDAGExecutor_NotFound(t *testing.T) {
@@ -133,17 +134,16 @@ func TestNewSubDAGExecutor_NotFound(t *testing.T) {
 	}
 
 	// Set up the DAG context
-	mockDB := new(mockDatabase)
+	mockLoader := new(mockDAGLoader)
 	dagCtx := runctx.Context{
 		DAG:        parentDAG,
-		DB:         mockDB,
+		DAGLoader:  mockLoader,
 		RootDAGRun: ir.NewDAGRunRef("parent", "root-123"),
 		DAGRunID:   "parent-456",
 	}
 	ctx = runctx.WithContext(ctx, dagCtx)
 
-	// Mock the database call to return not found
-	mockDB.On("GetDAG", ctx, "non-existent").Return(nil, assert.AnError)
+	mockLoader.On("GetDAG", ctx, "non-existent").Return(nil, assert.AnError)
 
 	// Test creating executor for non-existent DAG
 	executor, err := NewSubDAGExecutor(ctx, "non-existent")
@@ -151,24 +151,18 @@ func TestNewSubDAGExecutor_NotFound(t *testing.T) {
 	assert.Nil(t, executor)
 	assert.Contains(t, err.Error(), "failed to find DAG")
 
-	mockDB.AssertExpectations(t)
+	mockLoader.AssertExpectations(t)
 }
 
-// TestNewSubDAGExecutor_NilDB verifies that NewSubDAGExecutor returns a
-// structured error wrapping persis.ErrDAGNotFound when the runtime context
-// has no DAG store (rCtx.DB == nil), instead of panicking with a nil
-// pointer dereference. The error message must include the
-// worker_selector: local remediation hint.
-func TestNewSubDAGExecutor_NilDB(t *testing.T) {
+func TestNewSubDAGExecutor_MissingDAGLoader(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	parentDAG := &ir.DAG{Name: "parent"}
 
-	// Set up context with nil DB
 	dagCtx := runctx.Context{
 		DAG:        parentDAG,
-		DB:         nil,
+		DAGLoader:  nil,
 		RootDAGRun: ir.NewDAGRunRef("parent", "root-123"),
 		DAGRunID:   "parent-456",
 	}
@@ -191,17 +185,17 @@ func TestNewSubDAGExecutor_NilDAGReturn(t *testing.T) {
 	ctx := context.Background()
 	parentDAG := &ir.DAG{Name: "parent"}
 
-	mockDB := new(mockDatabase)
+	mockLoader := new(mockDAGLoader)
 	dagCtx := runctx.Context{
 		DAG:        parentDAG,
-		DB:         mockDB,
+		DAGLoader:  mockLoader,
 		RootDAGRun: ir.NewDAGRunRef("parent", "root-123"),
 		DAGRunID:   "parent-456",
 	}
 	ctx = runctx.WithContext(ctx, dagCtx)
 
 	// Mock returns nil DAG with nil error
-	mockDB.On("GetDAG", ctx, "child-dag").Return(nil, nil)
+	mockLoader.On("GetDAG", ctx, "child-dag").Return(nil, nil)
 
 	executor, err := NewSubDAGExecutor(ctx, "child-dag")
 	require.Error(t, err)
@@ -209,7 +203,7 @@ func TestNewSubDAGExecutor_NilDAGReturn(t *testing.T) {
 	assert.ErrorIs(t, err, persis.ErrDAGNotFound)
 	assert.Contains(t, err.Error(), "worker_selector: local")
 
-	mockDB.AssertExpectations(t)
+	mockLoader.AssertExpectations(t)
 }
 
 func TestExecute_NoRunID(t *testing.T) {
@@ -218,10 +212,10 @@ func TestExecute_NoRunID(t *testing.T) {
 	ctx := context.Background()
 
 	// Set up the DAG context
-	mockDB := new(mockDatabase)
+	mockLoader := new(mockDAGLoader)
 	dagCtx := runctx.Context{
 		DAG:        &ir.DAG{Name: "parent"},
-		DB:         mockDB,
+		DAGLoader:  mockLoader,
 		RootDAGRun: ir.NewDAGRunRef("parent", "root-123"),
 		DAGRunID:   "parent-456",
 	}
@@ -249,10 +243,10 @@ func TestExecute_NoRootDAGRun(t *testing.T) {
 	ctx := context.Background()
 
 	// Set up the DAG context without RootDAGRun
-	mockDB := new(mockDatabase)
+	mockLoader := new(mockDAGLoader)
 	dagCtx := runctx.Context{
-		DAG: &ir.DAG{Name: "parent"},
-		DB:  mockDB,
+		DAG:       &ir.DAG{Name: "parent"},
+		DAGLoader: mockLoader,
 		// RootDAGRun is zero value
 		DAGRunID: "parent-456",
 	}
@@ -448,11 +442,11 @@ func TestRetry_NoRootDAGRun(t *testing.T) {
 
 	ctx := context.Background()
 
-	mockDB := new(mockDatabase)
+	mockLoader := new(mockDAGLoader)
 	dagCtx := runctx.Context{
-		DAG:      &ir.DAG{Name: "parent"},
-		DB:       mockDB,
-		DAGRunID: "parent-456",
+		DAG:       &ir.DAG{Name: "parent"},
+		DAGLoader: mockLoader,
+		DAGRunID:  "parent-456",
 	}
 	ctx = runctx.WithContext(ctx, dagCtx)
 
@@ -541,14 +535,21 @@ func TestSubDAGExecutor_Kill_ActiveRunner(t *testing.T) {
 	assert.Equal(t, 1, runner.cancelCalled)
 }
 
-func TestSubDAGExecutor_Kill_FallbackDB(t *testing.T) {
+func TestSubDAGExecutor_Kill_FallbackRunStateStore(t *testing.T) {
 	t.Parallel()
 
-	mockDB := new(mockDatabase)
+	store := memstore.New()
+	root := ir.NewDAGRunRef("root-dag", "root-run-id")
+	attempt, err := store.BeginAttempt(context.Background(), runstate.BeginAttemptRequest{
+		DAG:        &ir.DAG{Name: "sub-dag"},
+		RunID:      "child-run",
+		RootDAGRun: root,
+	})
+	require.NoError(t, err)
 	dagCtx := runctx.Context{
-		DB:         mockDB,
-		RootDAGRun: ir.NewDAGRunRef("root-dag", "root-run-id"),
-		DAGRunID:   "parent-run-id",
+		RunStateStore: store,
+		RootDAGRun:    root,
+		DAGRunID:      "parent-run-id",
 	}
 	subDAG := &ir.DAG{
 		Name: "sub-dag",
@@ -563,23 +564,19 @@ func TestSubDAGExecutor_Kill_FallbackDB(t *testing.T) {
 		killed: make(chan struct{}),
 	}
 
-	mockDB.On("RequestChildCancel", mock.Anything, "child-run", dagCtx.RootDAGRun).Return(nil)
-
-	err := executor.Kill(os.Interrupt)
+	err = executor.Kill(os.Interrupt)
 
 	assert.NoError(t, err)
-	mockDB.AssertExpectations(t)
+	cancelled, err := attempt.CancelRequested(context.Background())
+	require.NoError(t, err)
+	assert.True(t, cancelled)
 }
 
 func TestSubDAGExecutor_Kill_Empty(t *testing.T) {
 	t.Parallel()
 
-	// Create a mock database
-	mockDB := new(mockDatabase)
-
 	// Create a DAG context
 	dagCtx := runctx.Context{
-		DB:         mockDB,
 		RootDAGRun: ir.NewDAGRunRef("root-dag", "root-run-id"),
 		DAGRunID:   "parent-run-id",
 	}
@@ -602,14 +599,11 @@ func TestSubDAGExecutor_Kill_Empty(t *testing.T) {
 	// Verify no error
 	assert.NoError(t, err)
 
-	// Verify RequestChildCancel was NOT called
-	mockDB.AssertNotCalled(t, "RequestChildCancel")
 }
 
-var _ runctx.Database = (*mockDatabase)(nil)
+var _ runctx.DAGLoader = (*mockDAGLoader)(nil)
 
-// mockDatabase is a mock implementation of ir.Database
-type mockDatabase struct {
+type mockDAGLoader struct {
 	mock.Mock
 }
 
@@ -647,16 +641,10 @@ func (m *mockSubWorkflowRunner) Cancel(context.Context, SubWorkflowCancelRequest
 	return nil
 }
 
-func (m *mockDatabase) GetDAG(ctx context.Context, name string) (*ir.DAG, error) {
+func (m *mockDAGLoader) GetDAG(ctx context.Context, name string) (*ir.DAG, error) {
 	args := m.Called(ctx, name)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*ir.DAG), args.Error(1)
-}
-
-// RequestChildCancel implements ir.Database.
-func (m *mockDatabase) RequestChildCancel(ctx context.Context, dagRunID string, rootDAGRun ir.DAGRunRef) error {
-	args := m.Called(ctx, dagRunID, rootDAGRun)
-	return args.Error(0)
 }

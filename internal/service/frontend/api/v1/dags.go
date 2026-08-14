@@ -33,6 +33,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/pagination"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/runtime/executor"
+	"github.com/dagucloud/dagu/v2/internal/schedulerstate"
 	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
 	"github.com/dagucloud/dagu/v2/internal/spec"
 	"github.com/dagucloud/dagu/v2/internal/workspace"
@@ -51,7 +52,7 @@ func (a *API) resolveDAGName(ctx context.Context, fileName string) string {
 
 // checkSingletonRunning returns an error if the DAG is already running in singleton mode.
 func (a *API) checkSingletonRunning(ctx context.Context, dag *ir.DAG) error {
-	alive, err := a.procStore.CountAliveByDAGName(ctx, dag.ProcGroup(), dag.Name)
+	alive, err := a.procRepository.CountAliveByDAGName(ctx, dag.ProcGroup(), dag.Name)
 	if err != nil {
 		return fmt.Errorf("failed to check singleton execution status: %w", err)
 	}
@@ -432,17 +433,35 @@ func (a *API) GetDAGDAGRunHistory(ctx context.Context, request api.GetDAGDAGRunH
 		return nil, err
 	}
 	dagName := a.resolveDAGName(ctx, request.FileName)
-	recentHistory := a.dagRunMgr.ListRecentStatus(ctx, dagName, defaultHistoryLimit)
+	response, err := a.buildDAGRunHistoryResponse(ctx, dag, dagName)
+	if err != nil {
+		return nil, &Error{
+			HTTPStatus: http.StatusInternalServerError,
+			Code:       api.ErrorCodeInternalError,
+			Message:    err.Error(),
+		}
+	}
+	return response, nil
+}
 
-	var dagRuns []api.DAGRunDetails
+func (a *API) buildDAGRunHistoryResponse(
+	ctx context.Context,
+	dag *ir.DAG,
+	dagName string,
+) (api.GetDAGDAGRunHistory200JSONResponse, error) {
+	recentHistory, err := a.dagRunRepository.RecentStatuses(ctx, dagName, defaultHistoryLimit)
+	if err != nil {
+		return api.GetDAGDAGRunHistory200JSONResponse{}, fmt.Errorf("list recent DAG runs for %s: %w", dagName, err)
+	}
+
+	dagRuns := make([]api.DAGRunDetails, 0, len(recentHistory))
 	for _, status := range recentHistory {
 		dagRuns = append(dagRuns, ToDAGRunDetails(status))
 	}
 
-	gridData := a.readHistoryData(ctx, dag, recentHistory)
 	return api.GetDAGDAGRunHistory200JSONResponse{
 		DagRuns:  dagRuns,
-		GridData: gridData,
+		GridData: a.readHistoryData(ctx, dag, recentHistory),
 	}, nil
 }
 
@@ -921,7 +940,7 @@ func (a *API) GetDAGDAGRunDetails(ctx context.Context, request api.GetDAGDAGRunD
 	}
 
 	if dagRunId == "latest" {
-		attempt, err := a.dagRunStore.LatestAttempt(ctx, dag.Name)
+		attempt, err := a.dagRunRepository.LatestAttempt(ctx, dag.Name, persis.DAGRunLatestAttemptOptions{})
 		if err != nil {
 			if errors.Is(err, dagrun.ErrDAGRunIDNotFound) {
 				return nil, &Error{
@@ -946,7 +965,7 @@ func (a *API) GetDAGDAGRunDetails(ctx context.Context, request api.GetDAGDAGRunD
 		}, nil
 	}
 
-	attempt, err := a.dagRunStore.FindAttempt(ctx, ir.NewDAGRunRef(dag.Name, dagRunId))
+	attempt, err := a.dagRunRepository.FindAttempt(ctx, ir.NewDAGRunRef(dag.Name, dagRunId))
 	if err != nil {
 		if errors.Is(err, dagrun.ErrDAGRunIDNotFound) {
 			return nil, &Error{
@@ -1027,7 +1046,7 @@ func (a *API) ExecuteDAG(ctx context.Context, request api.ExecuteDAGRequestObjec
 
 	if dagRunId == "" {
 		var err error
-		dagRunId, err = a.dagRunMgr.GenDAGRunID(ctx)
+		dagRunId, err = ir.NewDAGRunID()
 		if err != nil {
 			return nil, fmt.Errorf("error generating dag-run ID: %w", err)
 		}
@@ -1124,7 +1143,7 @@ func (a *API) ExecuteDAGSync(ctx context.Context, request api.ExecuteDAGSyncRequ
 
 	if dagRunId == "" {
 		var err error
-		dagRunId, err = a.dagRunMgr.GenDAGRunID(ctx)
+		dagRunId, err = ir.NewDAGRunID()
 		if err != nil {
 			return nil, fmt.Errorf("error generating dag-run ID: %w", err)
 		}
@@ -1239,7 +1258,7 @@ func (a *API) waitForDAGCompletion(
 }
 
 func (a *API) readDAGRunStatusForSync(ctx context.Context, dag *ir.DAG, dagRunID string) (*ir.DAGRunStatus, error) {
-	attempt, err := a.dagRunStore.FindAttempt(ctx, ir.NewDAGRunRef(dag.Name, dagRunID))
+	attempt, err := a.dagRunRepository.FindAttempt(ctx, ir.NewDAGRunRef(dag.Name, dagRunID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to find dag-run attempt: %w", err)
 	}
@@ -1322,7 +1341,7 @@ func (a *API) ensureDAGRunIDUnique(ctx context.Context, dag *ir.DAG, dagRunID st
 	if dagRunID == "" {
 		return fmt.Errorf("dagRunID must be non-empty")
 	}
-	if _, err := a.dagRunStore.FindAttempt(ctx, ir.NewDAGRunRef(dag.Name, dagRunID)); err == nil {
+	if _, err := a.dagRunRepository.FindAttempt(ctx, ir.NewDAGRunRef(dag.Name, dagRunID)); err == nil {
 		return &Error{
 			HTTPStatus: http.StatusConflict,
 			Code:       api.ErrorCodeAlreadyExists,
@@ -1685,7 +1704,7 @@ func (a *API) EnqueueDAGDAGRun(ctx context.Context, request api.EnqueueDAGDAGRun
 	}
 	if dagRunId == "" {
 		var err error
-		dagRunId, err = a.dagRunMgr.GenDAGRunID(ctx)
+		dagRunId, err = ir.NewDAGRunID()
 		if err != nil {
 			return nil, fmt.Errorf("error generating dag-run ID: %w", err)
 		}
@@ -1879,30 +1898,43 @@ func (a *API) StopAllDAGRuns(ctx context.Context, request api.StopAllDAGRunsRequ
 		return nil, err
 	}
 
-	// Get all running DAG-runs for this DAG
-	runningStatuses, err := a.dagRunStore.ListStatuses(ctx,
-		dagrun.WithExactName(dag.Name),
-		dagrun.WithStatuses([]ir.Status{ir.Running}),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("error listing running DAG-runs: %w", err)
+	listOptions := persis.DAGRunListOptions{
+		ExactName:  dag.Name,
+		Statuses:   []ir.Status{ir.Running},
+		AllHistory: true,
+		Limit:      1000,
 	}
 
-	// Stop each running DAG-run
 	var stopErrors []string
 	var stoppedRunIDs []string
-	for _, runningStatus := range runningStatuses {
-		runID := runningStatus.DAGRunID
-		stopErr := a.dagRunMgr.Stop(ctx, dag, runID)
-		if stopErr != nil {
-			stopErrors = append(stopErrors, fmt.Sprintf("failed to stop run %q: %s", runID, stopErr))
-		} else {
-			stoppedRunIDs = append(stoppedRunIDs, runID)
-		}
-		if ctx.Err() != nil {
-			stopErrors = append(stopErrors, fmt.Sprintf("context is cancelled: %s", ctx.Err()))
+
+stopRuns:
+	for {
+		if err := ctx.Err(); err != nil {
+			stopErrors = append(stopErrors, fmt.Sprintf("context is cancelled: %s", err))
 			break
 		}
+
+		page, err := a.dagRunRepository.ListStatusesPage(ctx, listOptions)
+		if err != nil {
+			return nil, fmt.Errorf("error listing running DAG-runs: %w", err)
+		}
+		for _, runningStatus := range page.Items {
+			runID := runningStatus.DAGRunID
+			if stopErr := a.dagRunMgr.Stop(ctx, dag, runID); stopErr != nil {
+				stopErrors = append(stopErrors, fmt.Sprintf("failed to stop run %q: %s", runID, stopErr))
+			} else {
+				stoppedRunIDs = append(stoppedRunIDs, runID)
+			}
+			if err := ctx.Err(); err != nil {
+				stopErrors = append(stopErrors, fmt.Sprintf("context is cancelled: %s", err))
+				break stopRuns
+			}
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		listOptions.Cursor = page.NextCursor
 	}
 
 	if len(stoppedRunIDs) > 0 {
@@ -1942,18 +1974,7 @@ func (a *API) GetDAGHistoryData(ctx context.Context, fileName string) (any, erro
 		}
 
 		dagName := a.resolveDAGName(readCtx, fileName)
-		recentHistory := a.dagRunMgr.ListRecentStatus(readCtx, dagName, defaultHistoryLimit)
-
-		var dagRuns []api.DAGRunDetails
-		for _, status := range recentHistory {
-			dagRuns = append(dagRuns, ToDAGRunDetails(status))
-		}
-
-		gridData := a.readHistoryData(readCtx, dag, recentHistory)
-		return api.GetDAGDAGRunHistory200JSONResponse{
-			DagRuns:  dagRuns,
-			GridData: gridData,
-		}, nil
+		return a.buildDAGRunHistoryResponse(readCtx, dag, dagName)
 	})
 }
 
@@ -2081,7 +2102,7 @@ func (a *API) nextRunProjection(ctx context.Context) func(*ir.DAG, time.Time) ti
 		location = a.config.Core.Location
 	}
 
-	var schedulerState *scheduler.SchedulerState
+	var schedulerState *schedulerstate.State
 	if a.schedulerStateStore != nil {
 		state, loadErr := a.schedulerStateStore.Load(ctx)
 		if loadErr != nil {

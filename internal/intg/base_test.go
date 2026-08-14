@@ -11,6 +11,7 @@ import (
 
 	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
 	"github.com/dagucloud/dagu/v2/internal/ir"
+	"github.com/dagucloud/dagu/v2/internal/persis"
 	runtimepkg "github.com/dagucloud/dagu/v2/internal/runtime"
 	"github.com/dagucloud/dagu/v2/internal/runtime/agent"
 	"github.com/dagucloud/dagu/v2/internal/spec"
@@ -73,7 +74,7 @@ func TestBaseDAGSpecialEnvVarsInHandler(t *testing.T) {
 	logFile := filepath.Join(logDir, dagRunID+".log")
 	root := ir.NewDAGRunRef(dag.Name, dagRunID)
 
-	drm := runtimepkg.NewManager(th.DAGRunStore, th.ProcStore, th.Config)
+	drm := runtimepkg.NewManager(th.DAGRunRepository, th.ProcRepository, th.Config)
 
 	a := agent.New(
 		dagRunID,
@@ -83,7 +84,7 @@ func TestBaseDAGSpecialEnvVarsInHandler(t *testing.T) {
 		drm,
 		th.DAGRepository,
 		agent.Options{
-			DAGRunStore:     th.DAGRunStore,
+			RunStateStore:   persis.NewRunStateStore(th.DAGRunRepository, nil),
 			ServiceRegistry: th.ServiceRegistry,
 			RootDAGRun:      root,
 			PeerConfig:      th.Config.Core.Peer,
@@ -191,7 +192,7 @@ steps:
 	logFile := filepath.Join(logDir, dagRunID+".log")
 	root := ir.NewDAGRunRef(dag.Name, dagRunID)
 
-	drm := runtimepkg.NewManager(th.DAGRunStore, th.ProcStore, th.Config)
+	drm := runtimepkg.NewManager(th.DAGRunRepository, th.ProcRepository, th.Config)
 
 	a := agent.New(
 		dagRunID,
@@ -201,7 +202,7 @@ steps:
 		drm,
 		th.DAGRepository,
 		agent.Options{
-			DAGRunStore:     th.DAGRunStore,
+			RunStateStore:   persis.NewRunStateStore(th.DAGRunRepository, nil),
 			ServiceRegistry: th.ServiceRegistry,
 			RootDAGRun:      root,
 			PeerConfig:      th.Config.Core.Peer,

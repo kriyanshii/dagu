@@ -72,6 +72,13 @@ func WithTaskParams(params string) TaskOption {
 	}
 }
 
+// WithParallelItem sets the value bound to ITEM for a parallel child run.
+func WithParallelItem(item string) TaskOption {
+	return func(task *dispatch.DispatchTask) {
+		task.ParallelItem = item
+	}
+}
+
 // WithSourceFile sets the original DAG source file path for provenance-aware flows.
 func WithSourceFile(sourceFile string) TaskOption {
 	return func(task *dispatch.DispatchTask) {
@@ -117,6 +124,13 @@ func WithScheduleTime(scheduleTime string) TaskOption {
 func WithProfileName(profileName string) TaskOption {
 	return func(task *dispatch.DispatchTask) {
 		task.ProfileName = profileName
+	}
+}
+
+// WithDefinitionID sets the stable DAG definition identity on a dispatched task.
+func WithDefinitionID(id string) TaskOption {
+	return func(task *dispatch.DispatchTask) {
+		task.DefinitionID = id
 	}
 }
 
@@ -180,7 +194,7 @@ func ResolveBaseConfig(baseConfigData []byte, fallbackPath string) string {
 }
 
 // WithPreviousStatus sets the previous status for retry operations.
-// When set, workers can retry without needing local DAGRunStore access.
+// When set, workers can retry without querying local DAG-run persistence.
 func WithPreviousStatus(status *ir.DAGRunStatus) TaskOption {
 	return func(task *dispatch.DispatchTask) {
 		if status != nil {

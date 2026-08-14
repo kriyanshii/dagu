@@ -33,11 +33,11 @@ import (
 	notificationmodel "github.com/dagucloud/dagu/v2/internal/notification"
 	"github.com/dagucloud/dagu/v2/internal/pagination"
 	"github.com/dagucloud/dagu/v2/internal/persis"
-	"github.com/dagucloud/dagu/v2/internal/proc"
 	profilepkg "github.com/dagucloud/dagu/v2/internal/profile"
 	"github.com/dagucloud/dagu/v2/internal/queue"
 	"github.com/dagucloud/dagu/v2/internal/remotenode"
 	"github.com/dagucloud/dagu/v2/internal/runtime"
+	"github.com/dagucloud/dagu/v2/internal/schedulerstate"
 	secretpkg "github.com/dagucloud/dagu/v2/internal/secret"
 	authservice "github.com/dagucloud/dagu/v2/internal/service/auth"
 	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
@@ -46,7 +46,6 @@ import (
 	incidentservice "github.com/dagucloud/dagu/v2/internal/service/incident"
 	notificationservice "github.com/dagucloud/dagu/v2/internal/service/notification"
 	"github.com/dagucloud/dagu/v2/internal/service/resource"
-	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
 	"github.com/dagucloud/dagu/v2/internal/serviceregistry"
 	"github.com/dagucloud/dagu/v2/internal/tunnel"
 	"github.com/dagucloud/dagu/v2/internal/view"
@@ -64,10 +63,10 @@ var _ api.StrictServerInterface = (*API)(nil)
 
 type API struct {
 	dagRepository        *persis.DAGRepository
-	dagRunStore          dagrun.DAGRunStore
+	dagRunRepository     *persis.DAGRunRepository
 	dagRunMgr            runtime.Manager
 	queueStore           queue.QueueStore
-	procStore            proc.ProcStore
+	procRepository       processRepository
 	dagRunLeaseStore     dispatch.DAGRunLeaseStore
 	workerHeartbeatStore dispatch.WorkerHeartbeatStore
 	remoteNodeResolver   *remotenode.Resolver
@@ -99,14 +98,19 @@ type API struct {
 	apiKeyCreateMu       sync.Mutex
 	workspaceStore       workspace.Store
 	leaseStaleThreshold  time.Duration
-	schedulerStateStore  scheduler.WatermarkStore
+	schedulerStateStore  schedulerstate.Store
 	dagMutationNotifier  func(fileName string)
 	wikiMutationNotifier func()
-	baseConfigFactory    WorkspaceBaseConfigStoreFactory
+	baseConfigProvider   dagsettings.BaseConfigProvider
 	oidcRoleMapping      func() config.OIDCRoleMapping
 }
 
-type WorkspaceBaseConfigStoreFactory func(dagsDir, workspaceName string) (dagsettings.BaseConfigStore, error)
+type processRepository interface {
+	WithLock(ctx context.Context, groupName string, fn func() error) error
+	CountAliveByDAGName(ctx context.Context, groupName, dagName string) (int, error)
+	IsAttemptAlive(ctx context.Context, groupName string, dagRun ir.DAGRunRef, attemptID string) (bool, error)
+	ListAllAlive(ctx context.Context) (map[string][]ir.DAGRunRef, error)
+}
 
 type NotificationService interface {
 	GetByDAGName(ctx context.Context, dagName string) (*notificationmodel.Settings, error)
@@ -234,9 +238,9 @@ func WithBaseConfigStore(store dagsettings.BaseConfigStore) APIOption {
 	}
 }
 
-func WithWorkspaceBaseConfigStoreFactory(factory WorkspaceBaseConfigStoreFactory) APIOption {
+func WithWorkspaceBaseConfigProvider(provider dagsettings.BaseConfigProvider) APIOption {
 	return func(a *API) {
-		a.baseConfigFactory = factory
+		a.baseConfigProvider = provider
 	}
 }
 
@@ -311,7 +315,7 @@ func WithOIDCRoleMapping(load func() config.OIDCRoleMapping) APIOption {
 }
 
 // WithSchedulerStateStore sets the scheduler state store used for next-run projections.
-func WithSchedulerStateStore(store scheduler.WatermarkStore) APIOption {
+func WithSchedulerStateStore(store schedulerstate.Store) APIOption {
 	return func(a *API) {
 		a.schedulerStateStore = store
 	}
@@ -362,9 +366,9 @@ func WithLeaseStaleThreshold(threshold time.Duration) APIOption {
 // applies any supplied APIOption functions to customize the instance.
 func New(
 	dr *persis.DAGRepository,
-	drs dagrun.DAGRunStore,
+	dagRunRepository *persis.DAGRunRepository,
 	qs queue.QueueStore,
-	ps proc.ProcStore,
+	processes *persis.ProcRepository,
 	drm runtime.Manager,
 	cfg *config.Config,
 	cc coordinator.Client,
@@ -375,9 +379,9 @@ func New(
 ) *API {
 	a := &API{
 		dagRepository:       dr,
-		dagRunStore:         drs,
+		dagRunRepository:    dagRunRepository,
 		queueStore:          qs,
-		procStore:           ps,
+		procRepository:      processes,
 		dagRunMgr:           drm,
 		logEncodingCharset:  cfg.UI.LogEncodingCharset,
 		subCmdBuilder:       launcher.NewSubCmdBuilder(cfg),
@@ -403,8 +407,8 @@ func New(
 }
 
 func (a *API) requireValidBaseConfigWiring() {
-	if a.baseConfigStore != nil && a.baseConfigFactory == nil {
-		panic("api: workspace base config store factory must be configured when base config store is configured")
+	if a.baseConfigStore != nil && a.baseConfigProvider == nil {
+		panic("api: workspace base config provider must be configured when base config store is configured")
 	}
 }
 

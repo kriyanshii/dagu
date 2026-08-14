@@ -20,9 +20,12 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/cmn/config"
 	"github.com/dagucloud/dagu/v2/internal/cmn/crypto"
 	"github.com/dagucloud/dagu/v2/internal/cmn/sock"
+	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/ir"
 	"github.com/dagucloud/dagu/v2/internal/launcher"
+	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	filedagrun "github.com/dagucloud/dagu/v2/internal/persis/file/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/persis/store"
 	"github.com/dagucloud/dagu/v2/internal/persis/testutil"
 	profilepkg "github.com/dagucloud/dagu/v2/internal/profile"
@@ -81,6 +84,13 @@ func writeFileCommand(path, content string) string {
 		return fmt.Sprintf("Set-Content -Path %s -Value %s -NoNewline", test.PowerShellQuote(path), test.PowerShellQuote(content))
 	}
 	return fmt.Sprintf("printf '%%s' %s > %s", test.PosixQuote(content), test.PosixQuote(path))
+}
+
+func writeEnvFileCommand(path, name string) string {
+	return test.ForOS(
+		fmt.Sprintf("printf '%%s' \"${%s:-}\" > %s", name, test.PosixQuote(path)),
+		fmt.Sprintf("Set-Content -Path %s -Value $env:%s -NoNewline", test.PowerShellQuote(path), name),
+	)
 }
 
 func waitForTestFile(t *testing.T, path string, timeout time.Duration) {
@@ -321,6 +331,37 @@ func TestAgent_Run(t *testing.T) {
 		// Check if the status is saved correctly
 		require.Equal(t, ir.Failed, dagAgent.Status(th.Context).Status)
 	})
+	t.Run("WorkDirSnapshotFailureFailsSuccessfulRun", func(t *testing.T) {
+		th := test.Setup(t)
+		dag := th.DAG(t, `steps:
+  - run: exit 0
+`)
+		runID := "snapshot-failure"
+		snapshotErr := errors.New("snapshot unavailable")
+		workDirs := &failingWorkDirStore{dir: t.TempDir(), snapshotErr: snapshotErr}
+		repository := persis.NewDAGRunRepository(
+			filedagrun.NewStore(th.Config.Paths.DAGRunsDir),
+			workDirs,
+			persis.DAGRunRepositoryOptions{},
+		)
+		dagAgent := dag.Agent(
+			test.WithDAGRunID(runID),
+			test.WithAgentOptions(agent.Options{
+				RunStateStore:       persis.NewRunStateStore(repository, nil),
+				SocketServerFactory: fakeSocketServerFactory(nil),
+			}),
+		)
+
+		err := dagAgent.Run(th.Context)
+		require.ErrorIs(t, err, snapshotErr)
+		attempt, findErr := repository.FindAttempt(th.Context, ir.NewDAGRunRef(dag.Name, runID))
+		require.NoError(t, findErr)
+		status, readErr := attempt.ReadStatus(th.Context)
+		require.NoError(t, readErr)
+		require.Equal(t, ir.Failed, status.Status)
+		require.ErrorContains(t, errors.New(status.Error), "snapshot DAG-run work directory")
+		require.Equal(t, 1, workDirs.snapshotCalls)
+	})
 	t.Run("InitFailurePersistsFinishedAt", func(t *testing.T) {
 		th := test.Setup(t)
 		blockingFile := filepath.Join(t.TempDir(), "not-a-dir")
@@ -382,7 +423,7 @@ steps:
 		waitForTestFile(t, startedFile, 2*time.Minute)
 		runRef := ir.NewDAGRunRef(dag.Name, dagRunID)
 		require.Eventually(t, func() bool {
-			_, err := th.DAGRunStore.FindAttempt(th.Context, runRef)
+			_, err := th.DAGRunRepository.FindAttempt(th.Context, runRef)
 			return err == nil
 		}, agentRunStartTimeout(), 100*time.Millisecond, "DAG run should be registered before stop")
 
@@ -1392,14 +1433,13 @@ steps:
 		runErr <- a.Run(parent.Context)
 	}()
 
-	// SubRuns must be visible in the *stored* status BEFORE the child DAG completes.
-	// We use ListRecentStatus which reads from the status.jsonl file on disk, not from
-	// the live socket, so it accurately reflects what the API handler would return.
-	// Before the fix, this would never become true because SetSubRuns() was called
-	// after the progressCh notification, so the children field was never written
-	// to status.jsonl while the subdag was running.
+	// SubRuns must be visible in persisted history before the child DAG completes.
+	// RecentStatuses observes the same persisted status returned by the API.
 	require.Eventually(t, func() bool {
-		statuses := th.DAGRunMgr.ListRecentStatus(th.Context, parent.Name, 1)
+		statuses, err := th.DAGRunRepository.RecentStatuses(th.Context, parent.Name, 1)
+		if err != nil {
+			return false
+		}
 		if len(statuses) == 0 || statuses[0].Status != ir.Running {
 			return false
 		}
@@ -1455,7 +1495,7 @@ steps:
 	require.Len(t, status.Nodes[0].SubRuns, 1)
 
 	subRun := status.Nodes[0].SubRuns[0]
-	attempt, err := th.DAGRunStore.FindSubAttempt(
+	attempt, err := th.DAGRunRepository.FindSubAttempt(
 		th.Context,
 		ir.NewDAGRunRef(parent.Name, parentRunID),
 		subRun.DAGRunID,
@@ -1510,7 +1550,7 @@ steps:
 	require.Len(t, status.Nodes[0].SubRuns, 1)
 
 	subRun := status.Nodes[0].SubRuns[0]
-	attempt, err := th.DAGRunStore.FindSubAttempt(
+	attempt, err := th.DAGRunRepository.FindSubAttempt(
 		th.Context,
 		ir.NewDAGRunRef(parent.Name, parentRunID),
 		subRun.DAGRunID,
@@ -1575,7 +1615,7 @@ steps:
 	require.NoError(t, err)
 	require.Equal(t, ir.NewDAGRunRef("child-enqueued", subRun.DAGRunID), *ref)
 
-	attempt, err := th.DAGRunStore.FindAttempt(th.Context, *ref)
+	attempt, err := th.DAGRunRepository.FindAttempt(th.Context, *ref)
 	require.NoError(t, err)
 	childStatus, err := attempt.ReadStatus(th.Context)
 	require.NoError(t, err)
@@ -1610,10 +1650,12 @@ func TestAgent_DAGEnqueueQueuedChildRunsFromQueue(t *testing.T) {
 	require.NoError(t, profileStore.Create(th.Context, prof))
 
 	th.CreateDAGFile(t, th.Config.Paths.DAGsDir, "child-queue-exec", fmt.Appendf(nil, `
+params:
+  - TARGET: default
 steps:
   - name: write-output
     run: %q
-`, writeFileCommand(outputFile, "done")))
+`, writeEnvFileCommand(outputFile, ir.ParallelItemVariable)))
 
 	parent := th.DAG(t, `
 type: graph
@@ -1623,6 +1665,11 @@ steps:
     with:
       dag: child-queue-exec
       queue: background
+      params:
+        TARGET: async
+    parallel:
+      items:
+        - preserved-item
 `)
 
 	a := parent.Agent(test.WithAgentOptions(agent.Options{
@@ -1635,7 +1682,13 @@ steps:
 	require.Len(t, status.Nodes, 1)
 	require.Len(t, status.Nodes[0].SubRuns, 1)
 	subRun := status.Nodes[0].SubRuns[0]
+	require.Equal(t, "preserved-item", subRun.ParallelItem)
 	ref := ir.NewDAGRunRef("child-queue-exec", subRun.DAGRunID)
+	attempt, err := th.DAGRunRepository.FindAttempt(th.Context, ref)
+	require.NoError(t, err)
+	queuedStatus, err := attempt.ReadStatus(th.Context)
+	require.NoError(t, err)
+	require.Equal(t, "preserved-item", queuedStatus.ParallelItem)
 
 	dagExecutor := scheduler.NewDAGExecutor(
 		nil,
@@ -1646,8 +1699,8 @@ steps:
 	)
 	processor := scheduler.NewQueueProcessor(
 		th.QueueStore,
-		th.DAGRunStore,
-		th.ProcStore,
+		th.DAGRunRepository,
+		th.ProcRepository,
 		dagExecutor,
 		th.Config.Queues,
 		scheduler.WithBackoffConfig(scheduler.BackoffConfig{
@@ -1659,6 +1712,9 @@ steps:
 	processor.ProcessQueueItems(th.Context, "background")
 
 	waitForTestFile(t, outputFile, subDAGVisibleTimeout())
+	output, err := os.ReadFile(outputFile)
+	require.NoError(t, err)
+	require.Equal(t, "preserved-item", string(output))
 	require.Eventually(t, func() bool {
 		childStatus, err := th.DAGRunMgr.GetSavedStatus(th.Context, ref)
 		return err == nil && childStatus.Status == ir.Succeeded
@@ -1667,6 +1723,7 @@ steps:
 	childStatus, err := th.DAGRunMgr.GetSavedStatus(th.Context, ref)
 	require.NoError(t, err)
 	require.Equal(t, "prod", childStatus.ProfileName)
+	require.Equal(t, "preserved-item", childStatus.ParallelItem)
 
 	require.Eventually(t, func() bool {
 		processor.ProcessQueueItems(th.Context, "background")
@@ -1680,4 +1737,23 @@ func subDAGVisibleTimeout() time.Duration {
 		return 90 * time.Second
 	}
 	return 10 * time.Second
+}
+
+type failingWorkDirStore struct {
+	dir           string
+	snapshotErr   error
+	snapshotCalls int
+}
+
+func (s *failingWorkDirStore) Materialize(context.Context, dagrun.WorkDirRef) (string, error) {
+	return s.dir, nil
+}
+
+func (s *failingWorkDirStore) Snapshot(context.Context, dagrun.WorkDirRef, string) error {
+	s.snapshotCalls++
+	return s.snapshotErr
+}
+
+func (*failingWorkDirStore) Remove(context.Context, dagrun.WorkDirRef) error {
+	return nil
 }

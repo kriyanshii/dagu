@@ -142,6 +142,13 @@ func WithTriggerActor(actor string) StatusOption {
 	}
 }
 
+// WithParallelItem sets the value bound to ITEM for a parallel child run.
+func WithParallelItem(item string) StatusOption {
+	return func(status *DAGRunStatus) {
+		status.ParallelItem = item
+	}
+}
+
 // WithAutoRetryCount sets the current automatic retry count.
 func WithAutoRetryCount(autoRetryCount int) StatusOption {
 	return func(status *DAGRunStatus) {
@@ -169,6 +176,15 @@ func WithRuntimeProfile(name, resolvedAt string, entries []RuntimeProfileEntry) 
 		status.ProfileName = name
 		status.ProfileResolvedAt = resolvedAt
 		status.ProfileEntries = append([]RuntimeProfileEntry(nil), entries...)
+	}
+}
+
+// WithDAGDefinitionID records the stable identity of the persisted DAG definition.
+func WithDAGDefinitionID(id string) StatusOption {
+	return func(status *DAGRunStatus) {
+		if id != "" {
+			status.DefinitionID = id
+		}
 	}
 }
 
