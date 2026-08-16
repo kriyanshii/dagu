@@ -1229,6 +1229,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/dag-runs/{name}/{dagRunId}/steps/{stepName}/agent-interactions/{interactionId}/respond": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Respond to a managed-agent interaction */
+        post: operations["respondDAGRunStepAgentInteraction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dag-runs/{name}/{dagRunId}/steps/{stepName}/agent-session/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restart a managed-agent session cleanly */
+        post: operations["restartDAGRunStepAgentSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/dag-runs/{name}/{dagRunId}/sub-dag-runs/{subDAGRunId}": {
         parameters: {
             query?: never;
@@ -1503,6 +1537,40 @@ export interface paths {
          * @description Pushes back a step that is in Waiting status within a sub DAG-run, providing input parameters that will be injected as environment variables when the step re-executes. The step must have an approval configuration.
          */
         post: operations["pushBackSubDAGRunStep"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dag-runs/{name}/{dagRunId}/sub-dag-runs/{subDAGRunId}/steps/{stepName}/agent-interactions/{interactionId}/respond": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Respond to a managed-agent interaction in a sub DAG-run */
+        post: operations["respondSubDAGRunStepAgentInteraction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dag-runs/{name}/{dagRunId}/sub-dag-runs/{subDAGRunId}/steps/{stepName}/agent-session/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restart a managed-agent session cleanly in a sub DAG-run */
+        post: operations["restartSubDAGRunStepAgentSession"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3669,6 +3737,26 @@ export interface components {
             /** @description The sub-DAG run ID, present only for sub-DAG push-back operations */
             subDAGRunId?: string;
         };
+        /** @description Answer to a pending managed-agent permission or question */
+        AgentInteractionResponseRequest: {
+            /** @enum {string} */
+            decision?: AgentInteractionResponseRequestDecision;
+            answers?: string[][];
+        };
+        AgentInteractionResponse: {
+            dagRunId: string;
+            stepName: string;
+            interactionId: string;
+            resumed: boolean;
+            subDAGRunId?: string;
+        };
+        AgentSessionRestartResponse: {
+            dagRunId: string;
+            stepName: string;
+            generation: number;
+            resumed: boolean;
+            subDAGRunId?: string;
+        };
         /** @description Configuration for a human approval gate on a step */
         ApprovalConfig: {
             /** @description Message displayed to the approver */
@@ -5182,6 +5270,76 @@ export interface components {
             };
             /** @description Chronological push-back history for this step */
             pushBackHistory?: components["schemas"]["PushBackHistoryEntry"][];
+            agentSession?: components["schemas"]["AgentSession"];
+        };
+        /** @description Durable state for a managed coding-agent session */
+        AgentSession: {
+            provider: string;
+            providerVersion?: string;
+            sessionId?: string;
+            generation?: number;
+            agent?: string;
+            model?: string;
+            variant?: string;
+            state: components["schemas"]["AgentSessionState"];
+            lastError?: string;
+            usage?: components["schemas"]["AgentUsage"];
+            interactions?: components["schemas"]["AgentInteraction"][];
+            events?: components["schemas"]["AgentSessionEvent"][];
+        };
+        /** @enum {string} */
+        AgentSessionState: AgentSessionState;
+        AgentUsage: {
+            /** Format: int64 */
+            inputTokens?: number;
+            /** Format: int64 */
+            outputTokens?: number;
+            /** Format: int64 */
+            reasoningTokens?: number;
+            /** Format: int64 */
+            totalTokens?: number;
+            /** Format: double */
+            cost?: number;
+        };
+        AgentInteraction: {
+            id: string;
+            /** @enum {string} */
+            kind: AgentInteractionKind;
+            /** @enum {string} */
+            status: AgentInteractionStatus;
+            permission?: string;
+            patterns?: string[];
+            allowForSessionPatterns?: string[];
+            questions?: components["schemas"]["AgentQuestion"][];
+            decision?: string;
+            answers?: string[][];
+            createdAt?: string;
+            respondedAt?: string;
+            respondedBy?: string;
+            respondedById?: string;
+        };
+        AgentQuestion: {
+            header: string;
+            question: string;
+            options?: components["schemas"]["AgentQuestionOption"][];
+            multiple?: boolean;
+            custom?: boolean;
+        };
+        AgentQuestionOption: {
+            label: string;
+            description?: string;
+        };
+        AgentSessionEvent: {
+            /** Format: int64 */
+            sequence: number;
+            id: string;
+            type: string;
+            timestamp?: string;
+            role?: string;
+            content?: string;
+            name?: string;
+            status?: string;
+            files?: string[];
         };
         /** @description One push-back event recorded for an approval step */
         PushBackHistoryEntry: {
@@ -10411,6 +10569,143 @@ export interface operations {
             };
         };
     };
+    respondDAGRunStepAgentInteraction: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                /** @description name of the DAG */
+                name: components["parameters"]["DAGName"];
+                /** @description ID of the DAG-run or 'latest' to get the most recent DAG-run */
+                dagRunId: components["parameters"]["DAGRunId"];
+                /** @description name of the step */
+                stepName: components["parameters"]["StepName"];
+                interactionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentInteractionResponseRequest"];
+            };
+        };
+        responses: {
+            /** @description Interaction response stored and resume attempted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentInteractionResponse"];
+                };
+            };
+            /** @description Invalid or stale interaction response */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description DAG-run, step, or interaction not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Managed session owner is unavailable or state changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    restartDAGRunStepAgentSession: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                /** @description name of the DAG */
+                name: components["parameters"]["DAGName"];
+                /** @description ID of the DAG-run or 'latest' to get the most recent DAG-run */
+                dagRunId: components["parameters"]["DAGRunId"];
+                /** @description name of the step */
+                stepName: components["parameters"]["StepName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Clean session restart queued */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSessionRestartResponse"];
+                };
+            };
+            /** @description Step does not have a restartable managed-agent session */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description DAG-run or step not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Managed session state changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getSubDAGRunDetails: {
         parameters: {
             query?: {
@@ -11168,6 +11463,145 @@ export interface operations {
             };
             /** @description Sub DAG-run or step not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    respondSubDAGRunStepAgentInteraction: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                /** @description name of the DAG */
+                name: components["parameters"]["DAGName"];
+                /** @description ID of the DAG-run or 'latest' to get the most recent DAG-run */
+                dagRunId: components["parameters"]["DAGRunId"];
+                subDAGRunId: string;
+                /** @description name of the step */
+                stepName: components["parameters"]["StepName"];
+                interactionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentInteractionResponseRequest"];
+            };
+        };
+        responses: {
+            /** @description Interaction response stored and resume attempted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentInteractionResponse"];
+                };
+            };
+            /** @description Invalid or stale interaction response */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Sub DAG-run, step, or interaction not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Managed session owner is unavailable or state changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Generic error response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    restartSubDAGRunStepAgentSession: {
+        parameters: {
+            query?: {
+                /** @description name of the remote node */
+                remoteNode?: components["parameters"]["RemoteNode"];
+            };
+            header?: never;
+            path: {
+                /** @description name of the DAG */
+                name: components["parameters"]["DAGName"];
+                /** @description ID of the DAG-run or 'latest' to get the most recent DAG-run */
+                dagRunId: components["parameters"]["DAGRunId"];
+                subDAGRunId: string;
+                /** @description name of the step */
+                stepName: components["parameters"]["StepName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Clean session restart queued */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSessionRestartResponse"];
+                };
+            };
+            /** @description Step does not have a restartable managed-agent session */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Sub DAG-run or step not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Managed session state changed */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -18231,6 +18665,11 @@ export enum ChatMessageRole {
     assistant = "assistant",
     tool = "tool"
 }
+export enum AgentInteractionResponseRequestDecision {
+    once = "once",
+    session = "session",
+    reject = "reject"
+}
 export enum ErrorCode {
     forbidden = "forbidden",
     bad_request = "bad_request",
@@ -18470,6 +18909,24 @@ export enum BuildExecutionPhase {
     verify = "verify",
     commit = "commit",
     complete = "complete"
+}
+export enum AgentSessionState {
+    starting = "starting",
+    running = "running",
+    waiting = "waiting",
+    succeeded = "succeeded",
+    failed = "failed",
+    aborted = "aborted",
+    unavailable = "unavailable"
+}
+export enum AgentInteractionKind {
+    permission = "permission",
+    question = "question"
+}
+export enum AgentInteractionStatus {
+    pending = "pending",
+    answered = "answered",
+    rejected = "rejected"
 }
 export enum StepOutputDeclarationType {
     string = "string",

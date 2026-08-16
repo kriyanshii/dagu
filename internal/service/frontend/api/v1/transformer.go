@@ -500,6 +500,9 @@ func toNode(node *ir.Node) api.Node {
 		RejectionReason:        ptrOf(node.RejectionReason),
 		ApprovalIteration:      ptrOf(node.ApprovalIteration),
 	}
+	if node.AgentSession != nil {
+		result.AgentSession = toAgentSession(node.AgentSession)
+	}
 	if node.Build != nil {
 		result.Build = &api.BuildExecution{
 			Decision:           api.BuildExecutionDecision(node.Build.Decision),
@@ -518,6 +521,57 @@ func toNode(node *ir.Node) api.Node {
 		}
 	}
 	return result
+}
+
+func toAgentSession(session *ir.AgentSession) *api.AgentSession {
+	if session == nil {
+		return nil
+	}
+	interactions := make([]api.AgentInteraction, 0, len(session.Interactions))
+	for _, interaction := range session.Interactions {
+		questions := make([]api.AgentQuestion, 0, len(interaction.Questions))
+		for _, question := range interaction.Questions {
+			options := make([]api.AgentQuestionOption, 0, len(question.Options))
+			for _, option := range question.Options {
+				options = append(options, api.AgentQuestionOption{
+					Label: option.Label, Description: ptrOf(option.Description),
+				})
+			}
+			questions = append(questions, api.AgentQuestion{
+				Header: question.Header, Question: question.Question,
+				Options: ptrOf(options), Multiple: ptrOf(question.Multiple), Custom: ptrOf(question.Custom),
+			})
+		}
+		interactions = append(interactions, api.AgentInteraction{
+			Id: interaction.ID, Kind: api.AgentInteractionKind(interaction.Kind), Status: api.AgentInteractionStatus(interaction.Status),
+			Permission: ptrOf(interaction.Permission), Patterns: ptrOf(interaction.Patterns), AllowForSessionPatterns: ptrOf(interaction.AllowForSessionPatterns),
+			Questions: ptrOf(questions), Decision: ptrOf(interaction.Decision), Answers: ptrOf(interaction.Answers),
+			CreatedAt: ptrOf(interaction.CreatedAt), RespondedAt: ptrOf(interaction.RespondedAt),
+			RespondedBy: ptrOf(interaction.RespondedBy), RespondedById: ptrOf(interaction.RespondedByID),
+		})
+	}
+	events := make([]api.AgentSessionEvent, 0, len(session.Events))
+	for _, event := range session.Events {
+		events = append(events, toAgentSessionEvent(event))
+	}
+	return &api.AgentSession{
+		Provider: session.Provider, ProviderVersion: ptrOf(session.ProviderVersion), SessionId: ptrOf(session.SessionID), Generation: ptrOf(session.Generation),
+		Agent: ptrOf(session.Agent), Model: ptrOf(session.Model), Variant: ptrOf(session.Variant),
+		State:     api.AgentSessionState(session.State),
+		LastError: ptrOf(session.LastError), Interactions: ptrOf(interactions), Events: ptrOf(events),
+		Usage: &api.AgentUsage{
+			InputTokens: ptrOf(session.Usage.InputTokens), OutputTokens: ptrOf(session.Usage.OutputTokens),
+			ReasoningTokens: ptrOf(session.Usage.ReasoningTokens), TotalTokens: ptrOf(session.Usage.TotalTokens), Cost: ptrOf(session.Usage.Cost),
+		},
+	}
+}
+
+func toAgentSessionEvent(event ir.AgentSessionEvent) api.AgentSessionEvent {
+	return api.AgentSessionEvent{
+		Sequence: event.Sequence, Id: event.ID, Type: event.Type,
+		Timestamp: ptrOf(event.Timestamp), Role: ptrOf(event.Role), Content: ptrOf(event.Content),
+		Name: ptrOf(event.Name), Status: ptrOf(event.Status), Files: ptrOf(event.Files),
+	}
 }
 
 func toPushBackHistory(node *ir.Node) []api.PushBackHistoryEntry {

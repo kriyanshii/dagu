@@ -37,6 +37,7 @@ func NewBackend(paths config.PathsConfig) *Backend {
 		specs: map[string]collectionSpec{
 			persis.CollectionAPIKeys:               {dir: paths.APIKeysDir, indented: true},
 			persis.CollectionActiveDistributedRuns: {dir: filepath.Join(distributedDir, "active-runs")},
+			persis.CollectionAgentSessionCleanups:  {dir: filepath.Join(paths.DataDir, "agent-session-cleanups")},
 			persis.CollectionDAGRunLeases:          {dir: filepath.Join(distributedDir, "leases")},
 			persis.CollectionDAGSettings:           {dir: filepath.Join(paths.DataDir, "dag-settings"), indented: true},
 			persis.CollectionDAGState:              {dir: paths.DAGStateDir},

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/dagucloud/dagu/v2/internal/agentsession"
 	"github.com/dagucloud/dagu/v2/internal/cmn/config"
 	"github.com/dagucloud/dagu/v2/internal/cmn/fileutil"
 	"github.com/dagucloud/dagu/v2/internal/dagrun"
@@ -33,6 +34,7 @@ type Persistence struct {
 	WorkerHeartbeatStore      dispatch.WorkerHeartbeatStore
 	DAGRunLeaseStore          dispatch.DAGRunLeaseStore
 	ActiveDistributedRunStore dispatch.ActiveDistributedRunStore
+	AgentSessionCleanupQueue  *agentsession.CleanupQueue
 }
 
 type filePersistenceOptions struct {
@@ -51,10 +53,14 @@ func newFilePersistence(
 		return Persistence{}, fmt.Errorf("failed to validate proc directory %s: %w", cfg.Paths.ProcDir, err)
 	}
 
+	cleanupQueue := agentsession.NewCleanupQueue(
+		backend.Collection(persis.CollectionAgentSessionCleanups),
+	)
 	var dagRunOpts []file.DAGRunRepositoryOption
 	if opts.DAGRunStatusCache != nil {
 		dagRunOpts = append(dagRunOpts, file.WithDAGRunHistoryFileCache(opts.DAGRunStatusCache))
 	}
+	dagRunOpts = append(dagRunOpts, file.WithDAGRunRemovalEnqueuer(cleanupQueue))
 	dagRunRepository := file.NewDAGRunRepository(cfg, dagRunOpts...)
 
 	dagRunLeaseStore := store.NewDAGRunLeaseStore(
@@ -93,5 +99,6 @@ func newFilePersistence(
 		WorkerHeartbeatStore:      workerHeartbeatStore,
 		DAGRunLeaseStore:          dagRunLeaseStore,
 		ActiveDistributedRunStore: activeDistributedRunStore,
+		AgentSessionCleanupQueue:  cleanupQueue,
 	}, nil
 }

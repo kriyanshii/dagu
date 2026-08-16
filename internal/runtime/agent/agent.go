@@ -647,6 +647,7 @@ func (a *Agent) Run(ctx context.Context) (runErr error) {
 		runtime.WithRootDAGRun(a.rootDAGRun),
 		runtime.WithRetryPath(a.retryPath),
 		runtime.WithAttemptID(a.dagRunAttemptID),
+		runtime.WithWorkerID(a.workerID),
 		runtime.WithTriggerType(a.triggerType),
 		runtime.WithTriggerActor(a.triggerActor),
 		runtime.WithRunStartedAt(contextTimeString(a.plan.StartAt())),
@@ -1161,8 +1162,10 @@ func (a *Agent) Run(ctx context.Context) (runErr error) {
 		lastErr = errors.Join(lastErr, snapshotErr)
 	}
 
-	// Finalize status (after outputs are written)
-	a.writeStatus(ctx, attempt, finishedStatus)
+	if err := a.writeStatus(ctx, attempt, finishedStatus); err != nil {
+		logger.Error(ctx, "Failed to persist terminal DAG-run status", tag.Error(err))
+		lastErr = errors.Join(lastErr, err)
+	}
 
 	// Stream scheduler log to coordinator if remote logging is configured.
 	if a.logWriterFactory != nil {
@@ -1226,6 +1229,7 @@ func (a *Agent) nodeToModelNode(nodeData runtime.NodeData) *ir.Node {
 		OutputsValue:     nodeData.State.OutputsValue,
 		StepOutputsValue: nodeData.State.StepOutputsValue,
 		AgentState:       nodeData.State.AgentState,
+		AgentSession:     ir.CloneAgentSession(nodeData.State.AgentSession),
 	}
 }
 
@@ -1409,6 +1413,7 @@ func (a *Agent) Status(ctx context.Context) ir.DAGRunStatus {
 			statusOpts = append(statusOpts,
 				ir.WithQueuedAt(source.QueuedAt),
 				ir.WithCreatedAt(source.CreatedAt),
+				ir.WithAgentSessions(source.AgentSessions),
 			)
 			if source.ScheduleTime != "" {
 				statusOpts = append(statusOpts, ir.WithScheduleTime(source.ScheduleTime))
@@ -1463,6 +1468,7 @@ func (a *Agent) Status(ctx context.Context) ir.DAGRunStatus {
 		opts = append(opts,
 			ir.WithQueuedAt(source.QueuedAt),
 			ir.WithCreatedAt(source.CreatedAt),
+			ir.WithAgentSessions(source.AgentSessions),
 		)
 		if source.ScheduleTime != "" {
 			opts = append(opts, ir.WithScheduleTime(source.ScheduleTime))
@@ -1574,15 +1580,14 @@ func appendDAGRunError(current string, err error) string {
 // writeStatus writes the current status to storage.
 // When statusPusher is set, it pushes to the coordinator.
 // Otherwise, it writes to local storage via the run-state attempt.
-func (a *Agent) writeStatus(ctx context.Context, attempt runstate.Attempt, status ir.DAGRunStatus) {
+func (a *Agent) writeStatus(ctx context.Context, attempt runstate.Attempt, status ir.DAGRunStatus) error {
 	if a.statusPusher != nil {
-		a.pushStatus(ctx, status)
-		return
+		return a.pushStatus(ctx, status)
 	}
-	a.writeStatusLocally(ctx, attempt, status)
+	return a.writeStatusLocally(ctx, attempt, status)
 }
 
-func (a *Agent) pushStatus(ctx context.Context, status ir.DAGRunStatus) {
+func (a *Agent) pushStatus(ctx context.Context, status ir.DAGRunStatus) error {
 	pushCtx := context.WithoutCancel(ctx)
 	timeout := remoteStatusPushTimeout
 	if status.Status != ir.NotStarted && !status.Status.IsActive() {
@@ -1602,16 +1607,20 @@ func (a *Agent) pushStatus(ctx context.Context, status ir.DAGRunStatus) {
 			)
 			a.stopChildren(context.Background(), syscall.SIGTERM, true)
 		}
+		return err
 	}
+	return nil
 }
 
-func (a *Agent) writeStatusLocally(ctx context.Context, attempt runstate.Attempt, status ir.DAGRunStatus) {
+func (a *Agent) writeStatusLocally(ctx context.Context, attempt runstate.Attempt, status ir.DAGRunStatus) error {
 	if attempt == nil {
-		return
+		return nil
 	}
 	if err := attempt.RecordStatus(ctx, status); err != nil {
 		logger.Error(ctx, "Failed to write status to local storage", tag.Error(err))
+		return err
 	}
+	return nil
 }
 
 // watchCancelRequested is a goroutine that watches for cancel requests
@@ -2126,6 +2135,7 @@ func (a *Agent) dryRun(ctx context.Context) error {
 		runtime.WithRootDAGRun(a.rootDAGRun),
 		runtime.WithRetryPath(a.retryPath),
 		runtime.WithAttemptID(a.dagRunAttemptID),
+		runtime.WithWorkerID(a.workerID),
 		runtime.WithTriggerType(a.triggerType),
 		runtime.WithTriggerActor(a.triggerActor),
 		runtime.WithRunStartedAt(contextTimeString(a.plan.StartAt())),
