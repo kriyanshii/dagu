@@ -1641,7 +1641,11 @@ func TestAgent_DAGEnqueueQueuedChildRunsFromQueue(t *testing.T) {
 		}),
 	)
 
-	profileStore := file.NewProfileStore(th.Context, th.Config)
+	profileStore := file.NewProfileStore(
+		th.Context,
+		th.Config,
+		th.Backend.Collection(persis.CollectionProfiles),
+	)
 	prof, err := profilepkg.New(profilepkg.CreateInput{
 		Name:      "prod",
 		CreatedBy: "alice",
@@ -1711,14 +1715,13 @@ steps:
 	)
 	processor.ProcessQueueItems(th.Context, "background")
 
-	waitForTestFile(t, outputFile, subDAGVisibleTimeout())
-	output, err := os.ReadFile(outputFile)
-	require.NoError(t, err)
-	require.Equal(t, "preserved-item", string(output))
 	require.Eventually(t, func() bool {
 		childStatus, err := th.DAGRunMgr.GetSavedStatus(th.Context, ref)
 		return err == nil && childStatus.Status == ir.Succeeded
 	}, subDAGVisibleTimeout(), 100*time.Millisecond)
+	output, err := os.ReadFile(outputFile)
+	require.NoError(t, err)
+	require.Equal(t, "preserved-item", string(output))
 
 	childStatus, err := th.DAGRunMgr.GetSavedStatus(th.Context, ref)
 	require.NoError(t, err)
