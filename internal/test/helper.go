@@ -33,6 +33,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/launcher"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	filebaseconfig "github.com/dagucloud/dagu/v2/internal/persis/file/baseconfig"
 	filedagrun "github.com/dagucloud/dagu/v2/internal/persis/file/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/persis/store"
 	"github.com/dagucloud/dagu/v2/internal/proc"
@@ -274,9 +275,9 @@ func Setup(t *testing.T, opts ...HelperOption) Helper {
 	ctx = config.WithConfig(ctx, cfg)
 
 	if cfg.Paths.BaseConfig != "" {
-		baseConfigStore, err := file.NewBaseConfigStore(
+		baseConfigStore, err := filebaseconfig.New(
 			cfg.Paths.BaseConfig,
-			file.WithBaseConfigSkipDefault(cfg.Core.SkipExamples),
+			filebaseconfig.WithSkipDefault(cfg.Core.SkipExamples),
 		)
 		require.NoError(t, err)
 		require.NoError(t, baseConfigStore.Initialize())
@@ -286,13 +287,13 @@ func Setup(t *testing.T, opts ...HelperOption) Helper {
 	require.NoError(t, err)
 	dagRunRepository := file.NewDAGRunRepository(cfg)
 	procRepository := newProcRepository(cfg)
-	queueStore := store.NewQueueStore(file.NewCollection(cfg.Paths.QueueDir))
-	stateStore := store.NewDAGStateStore(file.NewCollection(cfg.Paths.DAGStateDir))
+	backend := file.NewBackend(cfg.Paths)
+	queueStore := store.NewQueueStore(backend.Collection(persis.CollectionQueue))
+	stateStore := store.NewDAGStateStore(backend.Collection(persis.CollectionDAGState))
 	serviceMonitor := file.NewServiceRegistry(cfg)
-	distributedDir := filepath.Join(cfg.Paths.DataDir, "distributed")
-	workerHeartbeatStore := store.NewWorkerHeartbeatStore(file.NewCollection(filepath.Join(distributedDir, "workers")))
-	leaseCollection := file.NewCollection(filepath.Join(distributedDir, "leases"))
-	activeRunCollection := file.NewCollection(filepath.Join(distributedDir, "active-runs"))
+	workerHeartbeatStore := store.NewWorkerHeartbeatStore(backend.Collection(persis.CollectionWorkerHeartbeats))
+	leaseCollection := backend.Collection(persis.CollectionDAGRunLeases)
+	activeRunCollection := backend.Collection(persis.CollectionActiveDistributedRuns)
 	dagRunLeaseStore := store.NewDAGRunLeaseStore(leaseCollection)
 	activeDistributedRunStore := store.NewActiveDistributedRunStore(activeRunCollection)
 	dispatchStoreOpts := []store.DispatchTaskStoreOption{
@@ -301,7 +302,10 @@ func Setup(t *testing.T, opts ...HelperOption) Helper {
 	if options.StaleLeaseThreshold > 0 {
 		dispatchStoreOpts = append(dispatchStoreOpts, store.WithDispatchReservationTTL(options.StaleLeaseThreshold))
 	}
-	dispatchTaskStore := store.NewDispatchTaskStore(file.NewCollection(distributedDir), dispatchStoreOpts...)
+	dispatchTaskStore := store.NewDispatchTaskStore(
+		backend.Collection(persis.CollectionDispatchTasks),
+		dispatchStoreOpts...,
+	)
 
 	drm := runtimepkg.NewManager(dagRunRepository, procRepository, cfg)
 
@@ -313,6 +317,7 @@ func Setup(t *testing.T, opts ...HelperOption) Helper {
 		DAGRepository:             dagRepository,
 		DAGRunRepository:          dagRunRepository,
 		ProcRepository:            procRepository,
+		Backend:                   backend,
 		QueueStore:                queueStore,
 		StateStore:                stateStore,
 		ServiceRegistry:           serviceMonitor,
@@ -372,6 +377,7 @@ func writeHelperConfigFile(t *testing.T, cfg *config.Config, configPath string) 
 		"event_store_dir":      cfg.Paths.EventStoreDir,
 		"base_config":          cfg.Paths.BaseConfig,
 		"dag_runs_dir":         cfg.Paths.DAGRunsDir,
+		"dag_run_work_dir":     cfg.Paths.DAGRunWorkDir,
 		"queue_dir":            cfg.Paths.QueueDir,
 		"proc_dir":             cfg.Paths.ProcDir,
 		"service_registry_dir": cfg.Paths.ServiceRegistryDir,
@@ -522,6 +528,7 @@ type Helper struct {
 	DAGRunRepository          *persis.DAGRunRepository
 	DAGRunMgr                 runtimepkg.Manager
 	ProcRepository            *persis.ProcRepository
+	Backend                   persis.Backend
 	QueueStore                queue.QueueStore
 	StateStore                dagrun.StateStore
 	ServiceRegistry           serviceregistry.ServiceRegistry

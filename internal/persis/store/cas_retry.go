@@ -7,29 +7,20 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
-	"sync"
 	"time"
 
 	"github.com/dagucloud/dagu/v2/internal/persis"
 )
 
-type lockableCollection interface {
-	WithLock(ctx context.Context, key string, fn func() error) error
-}
-
-func withCollectionRecordLock(
-	ctx context.Context,
-	col persis.Collection,
-	mu *sync.Mutex,
-	key string,
-	fn func() error,
-) error {
-	if locked, ok := col.(lockableCollection); ok {
-		return locked.WithLock(ctx, key, fn)
+func createOrSwap(ctx context.Context, col persis.Collection, current, next *persis.Record) error {
+	if current == nil {
+		return col.Create(ctx, next)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	return fn()
+	err := col.CompareAndSwap(ctx, current.ID, current.Data, next.Data)
+	if errors.Is(err, persis.ErrNotFound) {
+		return persis.ErrConflict
+	}
+	return err
 }
 
 const (

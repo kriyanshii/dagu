@@ -5,13 +5,11 @@ package ssh
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/dagucloud/dagu/v2/internal/executor/registry"
 
@@ -42,14 +40,11 @@ func getSSHClientFromContext(ctx context.Context) *Client {
 }
 
 type sshExecutor struct {
-	mu        sync.Mutex
+	executorLifecycle
 	step      ir.Step
 	client    *Client
 	stdout    io.Writer
 	stderr    io.Writer
-	conn      *ssh.Client  // SSH connection (must be closed after session)
-	session   *ssh.Session // SSH session
-	closed    bool         // Whether session/conn have been closed
 	shell     string
 	shellArgs []string
 }
@@ -84,22 +79,7 @@ func (e *sshExecutor) SetStderr(out io.Writer) {
 }
 
 func (e *sshExecutor) Kill(_ os.Signal) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.closed {
-		return nil
-	}
-	e.closed = true
-
-	var sessionErr, connErr error
-	if e.session != nil {
-		sessionErr = e.session.Close()
-	}
-	if e.conn != nil {
-		connErr = e.conn.Close()
-	}
-	return errors.Join(sessionErr, connErr)
+	return e.shutdown(true)
 }
 
 func (e *sshExecutor) Run(ctx context.Context) error {
@@ -107,39 +87,43 @@ func (e *sshExecutor) Run(ctx context.Context) error {
 		return nil
 	}
 
-	conn, session, err := e.client.NewSession()
+	runCtx, ok := e.begin(ctx)
+	if !ok {
+		return context.Canceled
+	}
+
+	defer func() {
+		if closeErr := e.shutdown(false); closeErr != nil {
+			logger.Warn(ctx, "SSH cleanup error", tag.Error(closeErr))
+		}
+	}()
+
+	conn, session, err := e.client.NewSession(runCtx)
 	if err != nil {
 		return fmt.Errorf("failed to create SSH session: %w", err)
 	}
 
-	e.mu.Lock()
-	e.conn = conn
-	e.session = session
-	e.mu.Unlock()
-
-	defer func() {
-		e.mu.Lock()
-		defer e.mu.Unlock()
-
-		if e.closed {
-			return
+	if !e.registerTransport(conn) {
+		_ = session.Close()
+		_ = conn.Close()
+		if ctxErr := runCtx.Err(); ctxErr != nil {
+			return ctxErr
 		}
-
-		// Close session first, then the underlying connection
-		if closeErr := session.Close(); closeErr != nil {
-			logger.Warn(ctx, "SSH session close error", tag.Error(closeErr))
+		return context.Canceled
+	}
+	if !e.registerResource(session) {
+		_ = session.Close()
+		if ctxErr := runCtx.Err(); ctxErr != nil {
+			return ctxErr
 		}
-		if closeErr := conn.Close(); closeErr != nil {
-			logger.Warn(ctx, "SSH connection close error", tag.Error(closeErr))
-		}
-		e.closed = true
-	}()
+		return context.Canceled
+	}
 
 	session.Stdout = e.stdout
 	session.Stderr = e.stderr
 	session.Stdin = strings.NewReader(e.buildScript())
 
-	return e.runWithCancellation(ctx, session, e.buildShellCommand())
+	return e.runWithCancellation(runCtx, session, e.buildShellCommand())
 }
 
 // runWithCancellation executes the session command with context cancellation support.
@@ -151,13 +135,17 @@ func (e *sshExecutor) runWithCancellation(ctx context.Context, session *ssh.Sess
 
 	select {
 	case err := <-done:
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err == nil {
 			return nil
 		}
 		return fmt.Errorf("ssh execution failed: %w", err)
 	case <-ctx.Done():
-		// Close session to unblock the goroutine, then wait for it to finish
-		_ = session.Close()
+		// Closing the transport unblocks Session.Wait even when the server keeps
+		// the channel open until the remote process exits.
+		_ = e.shutdown(true)
 		<-done
 		return ctx.Err()
 	}

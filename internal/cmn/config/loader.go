@@ -358,6 +358,13 @@ func (l *ConfigLoader) loadCoreConfig(cfg *Config, def Definition) error {
 		BaseEnv:                baseEnv,
 		Peer:                   l.loadPeerConfig(def.Peer),
 	}
+	cfg.OpenCode = OpenCodeConfig{
+		Executable:     strings.TrimSpace(l.v.GetString("opencode.executable")),
+		EnvPassthrough: normalizeEnvEntries(parseStringList(l.v.Get("opencode.env_passthrough"))),
+	}
+	if cfg.OpenCode.Executable == "" {
+		cfg.OpenCode.Executable = "opencode"
+	}
 	cfg.DAGDiscovery = DAGDiscoveryConfig{
 		Recursive: l.v.GetBool("dag_discovery.recursive"),
 		Symlinks:  l.v.GetBool("dag_discovery.symlinks"),
@@ -432,6 +439,7 @@ func (l *ConfigLoader) loadPathsConfig(cfg *Config, def Definition) error {
 		{"BaseConfig", &cfg.Paths.BaseConfig, def.Paths.BaseConfig},
 		{"Executable", &cfg.Paths.Executable, def.Paths.Executable},
 		{"DAGRunsDir", &cfg.Paths.DAGRunsDir, def.Paths.DAGRunsDir},
+		{"DAGRunWorkDir", &cfg.Paths.DAGRunWorkDir, def.Paths.DAGRunWorkDir},
 		{"QueueDir", &cfg.Paths.QueueDir, def.Paths.QueueDir},
 		{"ProcDir", &cfg.Paths.ProcDir, def.Paths.ProcDir},
 		{"ServiceRegistryDir", &cfg.Paths.ServiceRegistryDir, def.Paths.ServiceRegistryDir},
@@ -1723,6 +1731,7 @@ func (l *ConfigLoader) finalizePaths(cfg *Config) error {
 		defaultPath string
 	}{
 		{&cfg.Paths.DAGRunsDir, "dag-runs"},
+		{&cfg.Paths.DAGRunWorkDir, "dag-run-work"},
 		{&cfg.Paths.DAGStateDir, "dag-state"},
 		{&cfg.Paths.ProcDir, "proc"},
 		{&cfg.Paths.QueueDir, "queue"},
@@ -2074,6 +2083,8 @@ var envBindings = []envBinding{
 	{key: "dag_discovery.symlinks", env: "DAG_DISCOVERY_SYMLINKS"},
 	{key: "env_passthrough", env: "ENV_PASSTHROUGH"},
 	{key: "env_passthrough_prefixes", env: "ENV_PASSTHROUGH_PREFIXES"},
+	{key: "opencode.executable", env: "OPENCODE_EXECUTABLE"},
+	{key: "opencode.env_passthrough", env: "OPENCODE_ENV_PASSTHROUGH"},
 
 	// Secrets
 	{key: "secrets.vault.address", env: "SECRETS_VAULT_ADDRESS"},
@@ -2180,6 +2191,7 @@ var envBindings = []envBinding{
 	{key: "paths.event_store_dir", env: "EVENT_STORE_DIR", isPath: true},
 	{key: "paths.base_config", env: "BASE_CONFIG", isPath: true},
 	{key: "paths.dag_runs_dir", env: "DAG_RUNS_DIR", isPath: true},
+	{key: "paths.dag_run_work_dir", env: "DAG_RUN_WORK_DIR", isPath: true},
 	{key: "paths.proc_dir", env: "PROC_DIR", isPath: true},
 	{key: "paths.queue_dir", env: "QUEUE_DIR", isPath: true},
 	{key: "paths.service_registry_dir", env: "SERVICE_REGISTRY_DIR", isPath: true},

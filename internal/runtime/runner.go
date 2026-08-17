@@ -153,6 +153,7 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 	r.resetRunState(plan)
 
 	// Create a cancellable context for the entire execution
+	parentCtx := ctx
 	var cancel context.CancelFunc
 	if r.timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, r.timeout)
@@ -206,14 +207,19 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 		}
 	}
 
-	if rCtx.DAG.IsController() {
-		r.runControllerLoop(ctx, plan, progressCh)
+	if rCtx.DAG.IsAgent() {
+		r.runAgentLoop(ctx, plan, progressCh)
 	} else {
 		r.runGraphLoop(ctx, plan, nodes, progressCh)
 	}
 
 	// Collect final metrics
 	r.metrics.totalExecutionTime = time.Since(r.metrics.startTime)
+
+	handlerCtx := ctx
+	if r.timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) && parentCtx.Err() == nil {
+		handlerCtx = parentCtx
+	}
 
 	var eventHandlers []ir.HandlerType
 	finalStatus := r.Status(ctx, plan)
@@ -230,7 +236,7 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 		if r.shouldRunFailureHandler(finalStatus) {
 			eventHandlers = append(eventHandlers, ir.HandlerOnFailure)
 		} else {
-			logger.Info(ctx, "Skipping failure handler while DAG auto-retry is pending",
+			logger.Info(ctx, "Skipping failure handler while effective DAG retry policy is pending",
 				slog.Int("autoRetryCount", r.dagRunAutoRetryCount),
 				slog.Int("autoRetryLimit", r.dagRunAutoRetryLimit),
 			)
@@ -252,15 +258,15 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 			// Set DAG_WAITING_STEPS environment variable
 			waitingSteps := strings.Join(plan.WaitingStepNames(), ",")
 
-			logger.Info(ctx, "Executing onWait handler",
+			logger.Info(handlerCtx, "Executing onWait handler",
 				slog.String("waitingSteps", waitingSteps),
 			)
 
-			if err := r.runEventHandler(ctx, plan, handlerNode, map[string]string{
+			if err := r.runEventHandler(handlerCtx, plan, handlerNode, map[string]string{
 				runenv.EnvKeyDAGWaitingSteps: waitingSteps,
 			}); err != nil {
 				// Log error but don't fail - notification failure shouldn't block Wait status
-				logger.Error(ctx, "onWait handler failed", tag.Error(err))
+				logger.Error(handlerCtx, "onWait handler failed", tag.Error(err))
 			}
 
 			if progressCh != nil {
@@ -289,10 +295,10 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 
 	for _, handler := range eventHandlers {
 		if handlerNode := r.handlers[handler]; handlerNode != nil {
-			logger.Debug(ctx, "Handler execution started",
+			logger.Debug(handlerCtx, "Handler execution started",
 				tag.Handler(handlerNode.Name()),
 			)
-			if err := r.runEventHandler(ctx, plan, handlerNode, nil); err != nil {
+			if err := r.runEventHandler(handlerCtx, plan, handlerNode, nil); err != nil {
 				r.setLastError(err)
 			}
 
@@ -302,8 +308,8 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan *Node) err
 		}
 	}
 
-	logger.Debug(ctx, "Runner execution complete",
-		tag.Status(r.Status(ctx, plan).String()),
+	logger.Debug(handlerCtx, "Runner execution complete",
+		tag.Status(r.Status(handlerCtx, plan).String()),
 		tag.Error(r.lastError),
 	)
 
@@ -1054,12 +1060,17 @@ func (r *Runner) execNode(ctx context.Context, node *Node, progressCh chan *Node
 	if r.dry {
 		return nil
 	}
+	report := func() {
+		if progressCh != nil {
+			progressCh <- node
+		}
+	}
 	if progressCh != nil && node.Step().SubDAG != nil {
 		// Send an additional progress notification after the executor is set up
 		// so that SubRuns are persisted to storage before the subDAG starts running.
-		return r.stepExecutor.Execute(ctx, node, func() { progressCh <- node })
+		return r.stepExecutor.ExecuteWithProgress(ctx, node, report, report)
 	}
-	return r.stepExecutor.Execute(ctx, node)
+	return r.stepExecutor.ExecuteWithProgress(ctx, node, nil, report)
 }
 
 // Signal sends a signal to the runner.
@@ -1871,12 +1882,12 @@ func planPredecessorNodes(plan *Plan, node *Node) []*Node {
 		return nil
 	}
 
-	// A controller plan has no edges: the controller picks the order, so every
+	// An agent plan has no edges: the agent picks the order, so every
 	// action it has already run is upstream of the one starting now.
-	if plan.IsController() {
+	if plan.IsAgent() {
 		var nodes []*Node
 		for _, candidate := range plan.Nodes() {
-			if candidate.ID() == node.ID() || candidate.Name() == ir.ControllerStepName {
+			if candidate.ID() == node.ID() || candidate.Name() == ir.AgentStepName {
 				continue
 			}
 			if candidate.State().Status.IsDone() {

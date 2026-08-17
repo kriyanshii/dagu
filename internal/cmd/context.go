@@ -30,13 +30,11 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/license"
 	"github.com/dagucloud/dagu/v2/internal/persis"
 	"github.com/dagucloud/dagu/v2/internal/persis/file"
+	filebaseconfig "github.com/dagucloud/dagu/v2/internal/persis/file/baseconfig"
 	"github.com/dagucloud/dagu/v2/internal/proc"
 	"github.com/dagucloud/dagu/v2/internal/runtime"
 	runtimeexec "github.com/dagucloud/dagu/v2/internal/runtime/executor"
 	"github.com/dagucloud/dagu/v2/internal/service/coordinator"
-	"github.com/dagucloud/dagu/v2/internal/service/frontend"
-	"github.com/dagucloud/dagu/v2/internal/service/resource"
-	"github.com/dagucloud/dagu/v2/internal/service/scheduler"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -53,9 +51,9 @@ type Context struct {
 
 	EventSourceInstance string
 	Persistence         Persistence
-	Stores              frontend.Stores
 	DAGRunMgr           runtime.Manager
-	schedulerDeps       scheduler.Dependencies
+	backend             persis.Backend
+	event               *eventstore.Service
 
 	Caches         []fileutil.CacheMetrics
 	Proc           proc.ProcHandle
@@ -77,13 +75,25 @@ func (c *Context) WithContext(ctx context.Context) *Context {
 // WithEventSource returns a shallow copy whose context carries the given event source.
 // If the event store is not configured, the original context is preserved.
 func (c *Context) WithEventSource(service string) *Context {
-	if c == nil || c.Stores.Event == nil {
+	if c == nil || c.event == nil {
 		return c
 	}
-	return c.WithContext(eventstore.WithContext(c.Context, c.Stores.Event, eventstore.Source{
+	return c.WithContext(eventstore.WithContext(c.Context, c.event, eventstore.Source{
 		Service:  service,
 		Instance: c.EventSourceInstance,
 	}))
+}
+
+func (c *Context) withEvent(service *eventstore.Service) *Context {
+	clone := *c
+	clone.event = service
+	if service != nil {
+		clone.Context = eventstore.WithContext(clone.Context, service, eventstore.Source{
+			Service:  eventSourceServiceForCommand(clone.Command.Name()),
+			Instance: clone.EventSourceInstance,
+		})
+	}
+	return &clone
 }
 
 // LogToFile creates a new logger context with a file writer.
@@ -237,14 +247,17 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 			Scope:               scope,
 		}, nil
 	}
+	backend := file.NewBackend(cfg.Paths)
 
-	workerCommand := isWorkerCommand(cmd)
-	stores, schedulerDeps, err := newFileStores(ctx, cfg, cmd.Name())
-	if err != nil {
-		return nil, err
+	workerCommand := cmd.Name() == "worker"
+	var eventService *eventstore.Service
+	switch cmd.Name() {
+	case "server", "scheduler", "start-all", "worker":
+	default:
+		eventService = newEventService(ctx, cfg)
 	}
-	if stores.Event != nil {
-		ctx = eventstore.WithContext(ctx, stores.Event, eventstore.Source{
+	if eventService != nil {
+		ctx = eventstore.WithContext(ctx, eventService, eventstore.Source{
 			Service:  eventSourceServiceForCommand(cmd.Name()),
 			Instance: eventSourceInstance,
 		})
@@ -263,12 +276,11 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 			Quiet:               quiet,
 			Flags:               flags,
 			EventSourceInstance: eventSourceInstance,
-			Stores:              stores,
-			schedulerDeps:       schedulerDeps,
 			ContextStore:        contextStore,
 			CLIContext:          selectedContext,
 			ContextName:         selectedContextName,
 			Scope:               scope,
+			backend:             backend,
 			// Run stores are nil; worker execution reports runtime state to the coordinator.
 			// Status is pushed to coordinator, DAG definitions come from task payload
 		}, nil
@@ -291,7 +303,7 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 		caches = append(caches, dagCache, hc)
 	}
 
-	persistence, err := newFilePersistence(ctx, cfg, filePersistenceOptions{
+	persistence, err := newFilePersistence(ctx, cfg, backend, filePersistenceOptions{
 		DAGCache:          dagCache,
 		DAGRunStatusCache: dagRunStatusCache,
 	})
@@ -310,7 +322,7 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 			break
 		}
 		licenseDir := file.LicenseDir(cfg)
-		licStore := file.NewLicenseStore(cfg)
+		licStore := file.NewLicenseStore(ctx, backend.Collection(persis.CollectionLicense))
 		licMgr = license.NewManager(license.ManagerConfig{
 			LicenseDir: licenseDir,
 			ConfigKey:  cfg.License.Key,
@@ -335,8 +347,8 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 
 	// Initialize default base config if it doesn't exist
 	if cfg.Paths.BaseConfig != "" {
-		bcStore, bcErr := file.NewBaseConfigStore(cfg.Paths.BaseConfig,
-			file.WithBaseConfigSkipDefault(cfg.Core.SkipExamples),
+		bcStore, bcErr := filebaseconfig.New(cfg.Paths.BaseConfig,
+			filebaseconfig.WithSkipDefault(cfg.Core.SkipExamples),
 		)
 		if bcErr != nil {
 			logger.Warn(ctx, "Failed to create base config store", tag.Error(bcErr))
@@ -354,9 +366,9 @@ func NewContext(cmd *cobra.Command, flags []commandLineFlag) (*Context, error) {
 		Quiet:               quiet,
 		EventSourceInstance: eventSourceInstance,
 		Persistence:         persistence,
-		Stores:              stores,
-		schedulerDeps:       schedulerDeps,
 		DAGRunMgr:           drm,
+		backend:             backend,
+		event:               eventService,
 		Flags:               flags,
 		Caches:              caches,
 		LicenseManager:      licMgr,
@@ -479,36 +491,6 @@ func isProgressOutputCommand(cmdName string) bool {
 	}
 }
 
-func isWorkerCommand(cmd *cobra.Command) bool {
-	return cmd.Name() == "worker"
-}
-
-// NewServer creates and returns a new web UI server for this command context.
-func (c *Context) NewServer(rs *resource.Service, opts ...frontend.ServerOption) (*frontend.Server, error) {
-	coordinatorClient, err := c.NewCoordinatorClient()
-	if err != nil {
-		return nil, err
-	}
-	return frontend.NewServer(frontend.ServerConfig{
-		Context:              c.Context,
-		Config:               c.Config,
-		DAGRepository:        c.Persistence.DAGRepository,
-		DAGRunRepository:     c.Persistence.DAGRunRepository,
-		ProcRepository:       c.Persistence.ProcRepository,
-		QueueStore:           c.Persistence.QueueStore,
-		DAGRunManager:        c.DAGRunMgr,
-		CoordinatorClient:    coordinatorClient,
-		ServiceRegistry:      c.Persistence.ServiceRegistry,
-		DAGRunLeaseStore:     c.Persistence.DAGRunLeaseStore,
-		WorkerHeartbeatStore: c.Persistence.WorkerHeartbeatStore,
-		SchedulerStateStore:  c.Persistence.SchedulerStateStore,
-		Caches:               c.Caches,
-		LicenseManager:       c.LicenseManager,
-		ResourceService:      rs,
-		Stores:               c.Stores,
-	}, opts...)
-}
-
 // NewCoordinatorClient creates a new coordinator client using the global peer configuration.
 // Returns a nil client when the coordinator is disabled via configuration.
 func (c *Context) NewCoordinatorClient() (coordinator.Client, error) {
@@ -539,36 +521,6 @@ func (c *Context) SubWorkflowRunnerFactory() func(context.Context) (runtimeexec.
 		DAGRunLogDir:      c.Config.Paths.LogDir,
 		DAGRunArtifactDir: c.Config.Paths.ArtifactDir,
 	})
-}
-
-// NewScheduler creates a scheduler for this command context.
-func (c *Context) NewScheduler() (*scheduler.Scheduler, error) {
-	deps := c.schedulerDeps
-	if deps.DAGSettingsStore == nil {
-		return nil, errors.New("DAG settings store is not configured")
-	}
-	coordinatorClient, err := c.NewCoordinatorClient()
-	if err != nil {
-		return nil, err
-	}
-	manager := runtime.NewManager(
-		c.Persistence.DAGRunRepository,
-		c.Persistence.ProcRepository,
-		c.Config,
-		runtime.WithLatestStatusAllHistory(),
-	)
-	deps.DAGRunManager = manager
-	deps.DAGRepository = c.Persistence.DAGRepository
-	deps.DAGRunRepository = c.Persistence.DAGRunRepository
-	deps.QueueStore = c.Persistence.QueueStore
-	deps.ProcRepository = c.Persistence.ProcRepository
-	deps.ServiceRegistry = c.Persistence.ServiceRegistry
-	deps.CoordinatorClient = coordinatorClient
-	deps.SchedulerStateStore = c.Persistence.SchedulerStateStore
-	deps.DAGRunLeaseStore = c.Persistence.DAGRunLeaseStore
-	deps.DispatchTaskStore = c.Persistence.DispatchTaskStore
-	deps.LicenseManager = c.LicenseManager
-	return scheduler.New(c.Config, deps)
 }
 
 // StringParam retrieves a string parameter from the command line flags.
@@ -607,18 +559,6 @@ type dagRepositoryConfig struct {
 // dagRepository returns a new DAGRepository instance.
 func (c *Context) dagRepository(cfg dagRepositoryConfig) (*persis.DAGRepository, error) {
 	return newDAGRepository(c.Config, cfg)
-}
-
-// runtimeStores creates the runtime store bundle for this command context.
-func (c *Context) runtimeStores() executionStores {
-	stores := newExecutionStores(c.Context, c.Config)
-	if c.Stores.Secret != nil {
-		stores.SecretStore = c.Stores.Secret
-	}
-	if c.Stores.Profile != nil {
-		stores.ProfileStore = c.Stores.Profile
-	}
-	return stores
 }
 
 // OpenLogFile creates and opens a log file for a given dag-run.
