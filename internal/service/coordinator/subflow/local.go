@@ -316,9 +316,10 @@ func (r *Local) Retry(ctx context.Context, req executor.SubWorkflowRetryRequest)
 	defer cleanup()
 
 	child, err := r.newAgent(ctx, req.SubWorkflowRequest, dag, rtagent.Options{
-		RetryTarget: retryTarget,
-		StepRetry:   req.StepName,
-		TriggerType: inProcessRetryTriggerType(retryTarget),
+		RetryTarget:       retryTarget,
+		StepRetry:         req.StepName,
+		IncludeDownstream: req.IncludeDownstream,
+		TriggerType:       inProcessRetryTriggerType(retryTarget),
 	})
 	if err != nil {
 		return nil, err

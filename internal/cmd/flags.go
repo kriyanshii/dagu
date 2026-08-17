@@ -179,6 +179,12 @@ var (
 		usage: "Retry only the specified step (optional)",
 	}
 
+	downstreamForRetry = commandLineFlag{
+		name:   "downstream",
+		usage:  "Also retry reachable downstream steps (requires --step)",
+		isBool: true,
+	}
+
 	retryPathFlag = commandLineFlag{
 		name:   "retry-path",
 		usage:  "Internal persisted child DAG retry path",

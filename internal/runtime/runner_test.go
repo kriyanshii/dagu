@@ -3083,6 +3083,53 @@ func TestRunner_StepRetryExecution(t *testing.T) {
 		retryResult.assertNodeStatus(t, "B", ir.NodeSucceeded)
 		retryResult.assertNodeStatus(t, "C", ir.NodeSucceeded)
 	})
+
+	t.Run("RetryWithDownstreamResetsDescendantsOnly", func(t *testing.T) {
+		r := setupRunner(t)
+
+		dag := &ir.DAG{
+			Steps: []ir.Step{
+				{Name: "A", Commands: []ir.CommandEntry{{Command: "echo", Args: []string{"A"}}}},
+				{Name: "B", Commands: []ir.CommandEntry{{Command: "echo", Args: []string{"B"}}}, Depends: []string{"A"}},
+				{Name: "C", Commands: []ir.CommandEntry{{Command: "echo", Args: []string{"C"}}}, Depends: []string{"B"}},
+				{Name: "D", Commands: []ir.CommandEntry{{Command: "echo", Args: []string{"D"}}}, Depends: []string{"A"}},
+			},
+		}
+
+		nodes := []*runtime.Node{
+			runtime.NodeWithData(runtime.NodeData{
+				Step:  dag.Steps[0],
+				State: runtime.NodeState{Status: ir.NodeSucceeded},
+			}),
+			runtime.NodeWithData(runtime.NodeData{
+				Step:  dag.Steps[1],
+				State: runtime.NodeState{Status: ir.NodeSucceeded},
+			}),
+			runtime.NodeWithData(runtime.NodeData{
+				Step:  dag.Steps[2],
+				State: runtime.NodeState{Status: ir.NodeSucceeded},
+			}),
+			runtime.NodeWithData(runtime.NodeData{
+				Step:  dag.Steps[3],
+				State: runtime.NodeState{Status: ir.NodeSucceeded},
+			}),
+		}
+
+		retryPlan, err := runtime.CreateStepRetryPlanWithOptions(dag, nodes, "B", runtime.StepRetryPlanOptions{
+			IncludeDownstream: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, ir.NodeSucceeded, nodes[0].State().Status)
+		require.Equal(t, ir.NodeNotStarted, nodes[1].State().Status)
+		require.Equal(t, ir.NodeNotStarted, nodes[2].State().Status)
+		require.Equal(t, ir.NodeSucceeded, nodes[3].State().Status)
+
+		retryResult := planHelper{testHelper: r, Plan: retryPlan}.assertRun(t, ir.Succeeded)
+		retryResult.assertNodeStatus(t, "A", ir.NodeSucceeded)
+		retryResult.assertNodeStatus(t, "B", ir.NodeSucceeded)
+		retryResult.assertNodeStatus(t, "C", ir.NodeSucceeded)
+		retryResult.assertNodeStatus(t, "D", ir.NodeSucceeded)
+	})
 }
 
 // TestRunner_StepIDAccess tests that step ID variables are expanded correctly

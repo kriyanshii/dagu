@@ -178,3 +178,77 @@ if (-not (Test-Path marker)) {
 	require.GreaterOrEqual(t, observedWorkingDirCount, 2, "step should run from the original step working directory before and during retry")
 	require.Contains(t, observedOutput, "retry ok")
 }
+
+func TestStepRetryWithDownstreamResetsOnlyReachableDescendants(t *testing.T) {
+	th := test.SetupCommand(t)
+	workDir := t.TempDir()
+	seen := filepath.Join(workDir, "seen.txt")
+
+	appendLine := func(letter string) string {
+		return test.ForOS(
+			fmt.Sprintf("echo %s >> seen.txt", letter),
+			fmt.Sprintf("Add-Content -Path seen.txt -Value %s", letter),
+		)
+	}
+	th.CreateDAGFile(t, "retry_downstream.yaml", fmt.Sprintf(`type: graph
+working_dir: %q
+steps:
+  - name: A
+    run: |
+      %s
+  - name: B
+    run: |
+      %s
+    depends:
+      - A
+  - name: C
+    run: |
+      %s
+    depends:
+      - B
+  - name: D
+    run: |
+      %s
+    depends:
+      - A
+`, workDir, appendLine("A"), appendLine("B"), appendLine("C"), appendLine("D")))
+
+	dagRunID := uuid.Must(uuid.NewV7()).String()
+	th.RunCommand(t, cmd.Start(), test.CmdTest{
+		Args: []string{"start", "--run-id", dagRunID, "retry_downstream"},
+	})
+
+	first, err := os.ReadFile(seen)
+	require.NoError(t, err)
+	require.Equal(t, map[string]int{"A": 1, "B": 1, "C": 1, "D": 1}, countOutputLines(string(first)))
+
+	th.RunCommand(t, cmd.Retry(), test.CmdTest{
+		Args: []string{"retry", "--run-id", dagRunID, "--step", "B", "--downstream", "retry_downstream"},
+	})
+
+	second, err := os.ReadFile(seen)
+	require.NoError(t, err)
+	require.Equal(t, map[string]int{"A": 1, "B": 2, "C": 2, "D": 1}, countOutputLines(string(second)))
+
+	ref := ir.NewDAGRunRef("retry_downstream", dagRunID)
+	attempt, err := th.DAGRunRepository.FindAttempt(th.Context, ref)
+	require.NoError(t, err)
+	status, err := attempt.ReadStatus(th.Context)
+	require.NoError(t, err)
+	require.Equal(t, ir.Succeeded, status.Status)
+	require.Equal(t, ir.NodeSucceeded, status.Nodes[0].Status)
+	require.Equal(t, ir.NodeSucceeded, status.Nodes[1].Status)
+	require.Equal(t, ir.NodeSucceeded, status.Nodes[2].Status)
+	require.Equal(t, ir.NodeSucceeded, status.Nodes[3].Status)
+}
+
+func countOutputLines(s string) map[string]int {
+	counts := map[string]int{}
+	for line := range strings.SplitSeq(strings.ReplaceAll(s, "\r\n", "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		counts[line]++
+	}
+	return counts
+}

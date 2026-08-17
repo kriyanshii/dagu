@@ -434,3 +434,104 @@ func TestRetryDAGRun_TargetsPersistedChildStepFromRoot(t *testing.T) {
 	require.Equal(t, childStep.Name, path.Step)
 	require.Equal(t, subRunID, path.Hops[0].RunID)
 }
+
+func TestRetryDAGRun_RejectsIncludeDownstreamWithoutStep(t *testing.T) {
+	ctx := context.Background()
+	includeDownstream := true
+	apiServer := &API{
+		config: &config.Config{Server: config.Server{Permissions: map[config.Permission]bool{
+			config.PermissionRunDAGs: true,
+		}}},
+	}
+
+	resp, err := apiServer.RetryDAGRun(ctx, openapiv1.RetryDAGRunRequestObject{
+		Name:     "any",
+		DagRunId: "run-1",
+		Body: &openapiv1.RetryDAGRunJSONRequestBody{
+			DagRunId:          "run-1",
+			IncludeDownstream: &includeDownstream,
+		},
+	})
+	require.Nil(t, resp)
+	var apiErr *Error
+	require.ErrorAs(t, err, &apiErr)
+	require.Equal(t, http.StatusBadRequest, apiErr.HTTPStatus)
+	require.Contains(t, apiErr.Message, "includeDownstream requires stepName")
+}
+
+func TestRetryDAGRun_DispatchesIncludeDownstream(t *testing.T) {
+	ctx := auth.WithUser(context.Background(), &auth.User{Username: "alice"})
+	tmpDir := t.TempDir()
+
+	dagFile := filepath.Join(tmpDir, "downstream-retry.yaml")
+	require.NoError(t, os.WriteFile(dagFile, []byte(`
+name: downstream_retry_dag
+worker_selector:
+  region: apac
+steps:
+  - name: first
+    run: echo first
+  - name: second
+    run: echo second
+    depends:
+      - first
+`), 0o600))
+
+	dag, err := spec.Load(ctx, dagFile)
+	require.NoError(t, err)
+
+	dagRunRepository := testutil.NewFileDAGRunRepository(filepath.Join(tmpDir, "dag-runs"), persis.DAGRunRepositoryOptions{LatestStatusToday: true})
+	attempt, err := dagRunRepository.CreateAttempt(
+		ctx,
+		dag,
+		time.Now().Add(-2*time.Minute),
+		"downstream-run",
+		persis.DAGRunCreateAttemptOptions{},
+	)
+	require.NoError(t, err)
+
+	status := ir.NewStatusBuilder(dag).Create(
+		"downstream-run",
+		ir.Succeeded,
+		0,
+		time.Now().Add(-2*time.Minute),
+		ir.WithAttemptID(attempt.ID()),
+		ir.WithFinishedAt(time.Now().Add(-time.Minute)),
+	)
+	require.NoError(t, attempt.Open(ctx))
+	require.NoError(t, attempt.Write(ctx, status))
+	require.NoError(t, attempt.Close(ctx))
+
+	coordinatorCli := &retryCoordinatorRecorder{}
+	apiServer := &API{
+		dagRunRepository: dagRunRepository,
+		config: &config.Config{
+			Server: config.Server{
+				Permissions: map[config.Permission]bool{
+					config.PermissionRunDAGs: true,
+				},
+			},
+		},
+		coordinatorCli:  coordinatorCli,
+		defaultExecMode: config.ExecutionModeLocal,
+	}
+
+	stepName := "first"
+	includeDownstream := true
+	resp, err := apiServer.RetryDAGRun(ctx, openapiv1.RetryDAGRunRequestObject{
+		Name:     dag.Name,
+		DagRunId: "downstream-run",
+		Body: &openapiv1.RetryDAGRunJSONRequestBody{
+			DagRunId:          "downstream-run",
+			StepName:          &stepName,
+			IncludeDownstream: &includeDownstream,
+		},
+	})
+	require.NoError(t, err)
+	_, ok := resp.(openapiv1.RetryDAGRun200Response)
+	require.True(t, ok)
+	require.Len(t, coordinatorCli.dispatched, 1)
+	task := coordinatorCli.dispatched[0]
+	require.Equal(t, "first", task.Step)
+	require.True(t, task.IncludeDownstream)
+}

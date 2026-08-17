@@ -83,8 +83,10 @@ Stop and restart a DAG run: `dagu restart <dag-name> [--run-id/-r <id>]`
 Retry a previous DAG run using the same run ID.
 
 ```sh
-dagu retry <dag> --run-id/-r <id> [--step <name>] [--worker-id <id>]
+dagu retry <dag> --run-id/-r <id> [--step <name>] [--downstream] [--worker-id <id>]
 ```
+
+`--step` retries only the selected step. Add `--downstream` to also reset every reachable descendant; unrelated branches keep their current status. `--downstream` requires `--step`.
 
 ### dagu human-task complete
 

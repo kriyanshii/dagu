@@ -146,7 +146,7 @@ func (r *Runner) Run(ctx context.Context, req executor.SubWorkflowRequest) (*ir.
 		if req.ExternalStepRetry && previousStatus.Status == ir.Succeeded {
 			return statusToRunStatus(previousStatus, req.RunID), nil
 		}
-		if err := r.dispatchRetryWithStatus(ctx, req, "", previousStatus); err != nil {
+		if err := r.dispatchRetryWithStatus(ctx, req, "", previousStatus, false); err != nil {
 			logger.Error(dispatchCtx, "Distributed child workflow retry dispatch failed", tag.Error(err))
 			return nil, fmt.Errorf("distributed retry failed: %w", err)
 		}
@@ -263,7 +263,7 @@ func (r *Runner) dispatchRetry(ctx context.Context, req executor.SubWorkflowRetr
 	if err != nil {
 		return fmt.Errorf("failed to load child workflow status for retry: %w", err)
 	}
-	return r.dispatchRetryWithStatus(ctx, req.SubWorkflowRequest, req.StepName, previousStatus)
+	return r.dispatchRetryWithStatus(ctx, req.SubWorkflowRequest, req.StepName, previousStatus, req.IncludeDownstream)
 }
 
 func (r *Runner) dispatchRetryWithStatus(
@@ -271,8 +271,9 @@ func (r *Runner) dispatchRetryWithStatus(
 	req executor.SubWorkflowRequest,
 	stepName string,
 	previousStatus *ir.DAGRunStatus,
+	includeDownstream bool,
 ) error {
-	task, err := r.buildRetryTask(req, stepName, previousStatus)
+	task, err := r.buildRetryTask(req, stepName, previousStatus, includeDownstream)
 	if err != nil {
 		return fmt.Errorf("failed to build retry coordinator task: %w", err)
 	}
@@ -310,10 +311,14 @@ func (r *Runner) buildRetryTask(
 	req executor.SubWorkflowRequest,
 	stepName string,
 	previousStatus *ir.DAGRunStatus,
+	includeDownstream bool,
 ) (*dispatch.DispatchTask, error) {
 	extra := []executor.TaskOption{executor.WithPreviousStatus(previousStatus)}
 	if stepName != "" {
 		extra = append(extra, executor.WithStep(stepName))
+	}
+	if includeDownstream {
+		extra = append(extra, executor.WithIncludeDownstream(true))
 	}
 	opts, err := r.taskOptions(req, extra...)
 	if err != nil {

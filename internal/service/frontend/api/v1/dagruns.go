@@ -2831,6 +2831,7 @@ func (a *API) RetryDAGRun(ctx context.Context, request api.RetryDAGRunRequestObj
 	retryDagRunID := request.DagRunId
 	stepName := ""
 	subDAGRunID := ""
+	includeDownstream := false
 	if request.Body != nil {
 		if request.Body.DagRunId != "" && request.DagRunId != "" && request.Body.DagRunId != request.DagRunId {
 			return nil, &Error{
@@ -2844,6 +2845,7 @@ func (a *API) RetryDAGRun(ctx context.Context, request api.RetryDAGRunRequestObj
 		}
 		stepName = valueOf(request.Body.StepName)
 		subDAGRunID = valueOf(request.Body.SubDAGRunId)
+		includeDownstream = valueOf(request.Body.IncludeDownstream)
 	}
 	if subDAGRunID != "" && stepName == "" {
 		return nil, &Error{
@@ -2852,7 +2854,14 @@ func (a *API) RetryDAGRun(ctx context.Context, request api.RetryDAGRunRequestObj
 			Message:    "subDAGRunId requires stepName",
 		}
 	}
-	if _, err := a.retryDAGRun(ctx, request.Name, request.DagRunId, retryDagRunID, stepName, subDAGRunID); err != nil {
+	if includeDownstream && stepName == "" {
+		return nil, &Error{
+			HTTPStatus: http.StatusBadRequest,
+			Code:       api.ErrorCodeBadRequest,
+			Message:    "includeDownstream requires stepName",
+		}
+	}
+	if _, err := a.retryDAGRun(ctx, request.Name, request.DagRunId, retryDagRunID, stepName, subDAGRunID, includeDownstream); err != nil {
 		return nil, err
 	}
 
@@ -2906,7 +2915,7 @@ func (a *API) resolveAttemptForDAGRun(
 	return attempt, status.DAGRunID, nil
 }
 
-func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID, stepName, subDAGRunID string) (retryDAGRunResult, error) {
+func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID, stepName, subDAGRunID string, includeDownstream bool) (retryDAGRunResult, error) {
 	if retryDagRunID == "" {
 		retryDagRunID = dagRunID
 	}
@@ -2986,7 +2995,7 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 		if err := a.enqueueRetry(ctx, attempt, dag); err != nil {
 			return retryDAGRunResult{}, err
 		}
-		a.logRetryAudit(ctx, dagName, sourceDagRunID, auditStepName, false)
+		a.logRetryAudit(ctx, dagName, sourceDagRunID, auditStepName, includeDownstream, false)
 		return retryDAGRunResult{queued: true}, nil
 	}
 
@@ -3006,6 +3015,9 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 		}
 		if stepName != "" {
 			opts = append(opts, executor.WithStep(stepName))
+		}
+		if includeDownstream {
+			opts = append(opts, executor.WithIncludeDownstream(true))
 		}
 		if len(retryPath.Hops) > 0 {
 			opts = append(opts, executor.WithRetryPath(retryPath))
@@ -3031,7 +3043,7 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 			return retryDAGRunResult{}, fmt.Errorf("error dispatching retry to coordinator: %w", err)
 		}
 
-		a.logRetryAudit(ctx, dagName, sourceDagRunID, auditStepName, true)
+		a.logRetryAudit(ctx, dagName, sourceDagRunID, auditStepName, includeDownstream, true)
 		return retryDAGRunResult{}, nil
 	}
 
@@ -3045,10 +3057,11 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 	}
 
 	spec := a.subCmdBuilder.Retry(prepared, launcher.RetryOptions{
-		DAGRunID:     retryDagRunID,
-		Step:         stepName,
-		RetryPath:    retryPath,
-		TriggerActor: triggerActorFromContext(ctx),
+		DAGRunID:          retryDagRunID,
+		Step:              stepName,
+		IncludeDownstream: includeDownstream,
+		RetryPath:         retryPath,
+		TriggerActor:      triggerActorFromContext(ctx),
 	})
 	if err := launcher.Start(ctx, spec); err != nil {
 		return retryDAGRunResult{}, fmt.Errorf("error retrying DAG: %w", err)
@@ -3058,7 +3071,7 @@ func (a *API) retryDAGRun(ctx context.Context, dagName, dagRunID, retryDagRunID,
 	// by the start endpoint to confirm the subprocess launched successfully.
 	a.waitForRetryStarted(ctx, dag, retryDagRunID)
 
-	a.logRetryAudit(ctx, dagName, sourceDagRunID, auditStepName, false)
+	a.logRetryAudit(ctx, dagName, sourceDagRunID, auditStepName, includeDownstream, false)
 	return retryDAGRunResult{}, nil
 }
 
@@ -3099,7 +3112,7 @@ func (a *API) enqueueRetry(ctx context.Context, attempt dagrun.Attempt, dag *ir.
 	return nil
 }
 
-func (a *API) logRetryAudit(ctx context.Context, dagName, dagRunID, stepName string, distributed bool) {
+func (a *API) logRetryAudit(ctx context.Context, dagName, dagRunID, stepName string, includeDownstream, distributed bool) {
 	detailsMap := map[string]any{
 		"dag_name":    dagName,
 		"dag_run_id":  dagRunID,
@@ -3107,6 +3120,9 @@ func (a *API) logRetryAudit(ctx context.Context, dagName, dagRunID, stepName str
 	}
 	if stepName != "" {
 		detailsMap["step_name"] = stepName
+	}
+	if includeDownstream {
+		detailsMap["include_downstream"] = true
 	}
 	a.logAudit(ctx, audit.CategoryDAG, "dag_retry", detailsMap)
 }

@@ -243,13 +243,14 @@ Fields:
 - singleton: singleton run flag for start and enqueue.
 - noReuse: when true for start or enqueue, execute eligible build steps instead of reusing prior materializations.
 - labels: labels for start and enqueue.
-- stepName: optional failed step name for retry.
+- stepName: optional step name for retry.
+- includeDownstream: when true, retry the selected step and every reachable descendant. Requires stepName.
 
 Action behavior:
 
 - start runs a stored DAG when targetType=dag and runs an inline spec when targetType=inline_spec.
 - enqueue enqueues a stored DAG or inline spec.
-- retry retries an existing DAG-run and may target a step with stepName.
+- retry retries an existing DAG-run and may target a step with stepName, optionally including downstream steps.
 - stop stops an existing DAG-run.
 
 Output:

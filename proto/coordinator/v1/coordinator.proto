@@ -154,6 +154,8 @@ message Task {
   string definition_id = 35;
   // Value bound to ITEM for a parallel child run.
   string parallel_item = 36;
+  // When true, a targeted step retry also resets reachable descendants.
+  bool include_downstream = 37;
 }
 
 enum Operation {

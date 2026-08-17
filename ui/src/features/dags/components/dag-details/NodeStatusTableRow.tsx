@@ -317,6 +317,7 @@ function NodeStatusTableRow({
   // State for expanding/collapsing parallel executions
   const [isExpanded, setIsExpanded] = useState(false);
   const [showDialog, setShowDialog] = useState(false);
+  const [includeDownstream, setIncludeDownstream] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // State for inline log expansion
@@ -611,6 +612,7 @@ function NodeStatusTableRow({
           body: {
             dagRunId: retryDAGRunId,
             stepName: node.step.name,
+            ...(includeDownstream ? { includeDownstream: true } : {}),
             ...(isSubDAGRun ? { subDAGRunId: dagRun.dagRunId } : {}),
           },
         }
@@ -688,6 +690,9 @@ function NodeStatusTableRow({
   const handleRetryDialogOpenChange = (open: boolean) => {
     setShowDialog(open);
     setError(null);
+    if (open) {
+      setIncludeDownstream(false);
+    }
   };
 
   const retryDialog = (
@@ -696,8 +701,46 @@ function NodeStatusTableRow({
         <DialogHeader>
           <DialogTitle>Retry this step?</DialogTitle>
         </DialogHeader>
-        <div className="py-2 text-sm">
-          This will re-execute <b>{node.step.name}</b>. Are you sure?
+        <div className="py-2 text-sm space-y-3">
+          <p>
+            This will re-execute <b>{node.step.name}</b>. Are you sure?
+          </p>
+          <fieldset className="space-y-1.5">
+            <legend className="text-xs text-muted-foreground">Retry scope</legend>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="retry-scope"
+                className="mt-0.5"
+                checked={!includeDownstream}
+                onChange={() => setIncludeDownstream(false)}
+              />
+              <span>
+                <span className="font-medium">This step only</span>
+                <span className="block text-xs text-muted-foreground">
+                  Downstream steps keep their current status.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="retry-scope"
+                className="mt-0.5"
+                checked={includeDownstream}
+                onChange={() => setIncludeDownstream(true)}
+              />
+              <span>
+                <span className="font-medium">
+                  This step and all downstream steps
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  Reset this step and every reachable descendant. Unrelated
+                  branches are left unchanged.
+                </span>
+              </span>
+            </label>
+          </fieldset>
           {error && <div className="text-error mt-2">{error}</div>}
         </div>
         <DialogFooter>

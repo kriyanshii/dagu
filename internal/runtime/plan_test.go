@@ -438,6 +438,84 @@ func TestStepRetryPlan(t *testing.T) {
 	}
 }
 
+func TestStepRetryPlan_IncludeDownstream(t *testing.T) {
+	t.Parallel()
+
+	dag := &ir.DAG{Steps: []ir.Step{
+		{Name: "A"},
+		{Name: "B", Depends: []string{"A"}},
+		{Name: "C", Depends: []string{"B"}},
+		{Name: "D", Depends: []string{"A"}},
+		{Name: "E", Depends: []string{"B", "D"}},
+	}}
+
+	tests := []struct {
+		name       string
+		step       string
+		wantStatus map[string]ir.NodeStatus
+	}{
+		{
+			name: "retry succeeded middle with descendants",
+			step: "B",
+			wantStatus: map[string]ir.NodeStatus{
+				"A": ir.NodeSucceeded,
+				"B": ir.NodeNotStarted,
+				"C": ir.NodeNotStarted,
+				"D": ir.NodeSkipped,
+				"E": ir.NodeNotStarted,
+			},
+		},
+		{
+			name: "retry failed step with descendants",
+			step: "B",
+			wantStatus: map[string]ir.NodeStatus{
+				"A": ir.NodeSucceeded,
+				"B": ir.NodeNotStarted,
+				"C": ir.NodeNotStarted,
+				"D": ir.NodeSkipped,
+				"E": ir.NodeNotStarted,
+			},
+		},
+		{
+			name: "retry skipped branch keeps unrelated success",
+			step: "D",
+			wantStatus: map[string]ir.NodeStatus{
+				"A": ir.NodeSucceeded,
+				"B": ir.NodeFailed,
+				"C": ir.NodeAborted,
+				"D": ir.NodeNotStarted,
+				"E": ir.NodeNotStarted,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			nodes := []*runtime.Node{
+				makeNode("A", ir.NodeSucceeded),
+				makeNode("B", ir.NodeFailed, "A"),
+				makeNode("C", ir.NodeAborted, "B"),
+				makeNode("D", ir.NodeSkipped, "A"),
+				makeNode("E", ir.NodeSkipped, "B", "D"),
+			}
+			if tt.name == "retry succeeded middle with descendants" {
+				nodes[1] = makeNode("B", ir.NodeSucceeded, "A")
+				nodes[2] = makeNode("C", ir.NodeSucceeded, "B")
+				nodes[4] = makeNode("E", ir.NodeSucceeded, "B", "D")
+			}
+			p, err := runtime.CreateStepRetryPlanWithOptions(dag, nodes, tt.step, runtime.StepRetryPlanOptions{
+				IncludeDownstream: true,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, p)
+			for _, n := range nodes {
+				require.Equal(t, tt.wantStatus[n.Name()], n.State().Status, "status mismatch for %s", n.Name())
+			}
+		})
+	}
+}
+
 func TestStepRetryPlan_PreservesRetryCountForRetryingStep(t *testing.T) {
 	dag := &ir.DAG{Steps: []ir.Step{
 		{Name: "retrying-step", RetryPolicy: ir.RetryPolicy{Limit: 1}},

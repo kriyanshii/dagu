@@ -26,6 +26,7 @@ type Context struct {
 	DAGRunID             string
 	RootDAGRun           ir.DAGRunRef
 	RetryPath            dagrun.RetryPath
+	IncludeDownstream    bool
 	AttemptID            string
 	TriggerType          ir.TriggerType
 	TriggerActor         string
@@ -136,6 +137,14 @@ func WithRootDAGRun(ref ir.DAGRunRef) ContextOption {
 func WithRetryPath(path dagrun.RetryPath) ContextOption {
 	return func(o *contextOptions) {
 		o.RetryPath = path
+	}
+}
+
+// WithIncludeDownstream records that a targeted step retry should also reset
+// reachable descendants in the DAG that contains the selected step.
+func WithIncludeDownstream(enabled bool) ContextOption {
+	return func(o *contextOptions) {
+		o.IncludeDownstream = enabled
 	}
 }
 

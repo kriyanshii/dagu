@@ -319,6 +319,9 @@ func executeAuditMetadata(input executeInput) toolAuditMetadata {
 	if input.StepName != "" {
 		attrs["step_name"] = input.StepName
 	}
+	if input.IncludeDownstream {
+		attrs["include_downstream"] = true
+	}
 	if input.Spec != "" {
 		attrs["has_spec"] = true
 		attrs["spec_bytes"] = len(input.Spec)

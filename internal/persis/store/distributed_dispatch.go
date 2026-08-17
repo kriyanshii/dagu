@@ -123,6 +123,7 @@ var legacyDispatchTaskJSONFields = map[string]string{
 	"source_file":                   "SourceFile",
 	"worker_selector":               "WorkerSelector",
 	"external_step_retry":           "ExternalStepRetry",
+	"include_downstream":            "IncludeDownstream",
 	"workspace_bundle_digest":       "WorkspaceBundleDigest",
 	"workspace_bundle_size":         "WorkspaceBundleSize",
 	"workspace_bundle_dag_path":     "WorkspaceBundleDAGPath",

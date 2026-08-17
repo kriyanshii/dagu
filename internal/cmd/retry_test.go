@@ -576,6 +576,19 @@ steps:
 	require.Equal(t, "from-host|", test.StatusOutputValue(t, retriedStatus, "RESULT"))
 }
 
+func TestRetryCommand_DownstreamRequiresStep(t *testing.T) {
+	th := test.SetupCommand(t)
+	dagFile := th.DAG(t, `steps:
+  - name: "1"
+    run: echo ok
+`)
+	err := th.RunCommandWithError(t, cmd.Retry(), test.CmdTest{
+		Args: []string{"retry", "--run-id=any", "--downstream", dagFile.Location},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--downstream requires --step")
+}
+
 func writeStatus(t *testing.T, ctx context.Context, attempt dagrun.Attempt, status ir.DAGRunStatus) {
 	t.Helper()
 

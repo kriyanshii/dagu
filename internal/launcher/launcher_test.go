@@ -699,6 +699,19 @@ func TestRetry(t *testing.T) {
 		})
 
 		assert.Contains(t, spec.Args, "--step=step-1")
+		assert.NotContains(t, spec.Args, "--downstream")
+	})
+
+	t.Run("RetryWithDownstream", func(t *testing.T) {
+		t.Parallel()
+		spec := builder.Retry(dag, launcher.RetryOptions{
+			DAGRunID:          "retry-run-id",
+			Step:              "step-1",
+			IncludeDownstream: true,
+		})
+
+		assert.Contains(t, spec.Args, "--step=step-1")
+		assert.Contains(t, spec.Args, "--downstream")
 	})
 
 	t.Run("RetryWithActor", func(t *testing.T) {

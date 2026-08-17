@@ -5082,9 +5082,12 @@ type RescheduleDAGRunParams struct {
 type RetryDAGRunJSONBody struct {
 	DagRunId string `json:"dagRunId"`
 
-	// StepName Optional. If provided, only this step will be retried.
-	StepName    *string `json:"stepName,omitempty"`
-	SubDAGRunId *string `json:"subDAGRunId,omitempty"`
+	// StepName Optional. If provided, this step will be retried. Combine with includeDownstream to also reset reachable descendants.
+	StepName *string `json:"stepName,omitempty"`
+
+	// IncludeDownstream Optional. When true, retry the selected step and every reachable descendant. Requires stepName. Unrelated branches keep their existing status.
+	IncludeDownstream *bool   `json:"includeDownstream,omitempty"`
+	SubDAGRunId       *string `json:"subDAGRunId,omitempty"`
 }
 
 // RetryDAGRunParams defines parameters for RetryDAGRun.

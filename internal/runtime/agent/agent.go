@@ -179,6 +179,8 @@ type Agent struct {
 
 	// stepRetry is the name of the step to retry, if specified.
 	stepRetry string
+	// includeDownstream resets reachable descendants of stepRetry.
+	includeDownstream bool
 
 	// retryPath identifies the persisted child invocation selected by a root retry.
 	retryPath dagrun.RetryPath
@@ -302,6 +304,8 @@ type Options struct {
 	ExtraEnvs []string
 	// StepRetry is the name of the step to retry, if specified.
 	StepRetry string
+	// IncludeDownstream resets the selected step and every reachable descendant.
+	IncludeDownstream bool
 	// RetryPath identifies a persisted child DAG step retry.
 	RetryPath dagrun.RetryPath
 	// WorkerID is the identifier of the worker executing this DAG run.
@@ -413,6 +417,7 @@ func New(
 		profileName:              opts.ProfileName,
 		definitionID:             opts.DAGDefinitionID,
 		stepRetry:                opts.StepRetry,
+		includeDownstream:        opts.IncludeDownstream,
 		retryPath:                opts.RetryPath,
 		peerConfig:               opts.PeerConfig,
 		workerID:                 opts.WorkerID,
@@ -646,6 +651,7 @@ func (a *Agent) Run(ctx context.Context) (runErr error) {
 		runtime.WithRunStateStore(a.runStateStore),
 		runtime.WithRootDAGRun(a.rootDAGRun),
 		runtime.WithRetryPath(a.retryPath),
+		runtime.WithIncludeDownstream(a.includeDownstream),
 		runtime.WithAttemptID(a.dagRunAttemptID),
 		runtime.WithTriggerType(a.triggerType),
 		runtime.WithTriggerActor(a.triggerActor),
@@ -2125,6 +2131,7 @@ func (a *Agent) dryRun(ctx context.Context) error {
 		runtime.WithRunStateStore(a.runStateStore),
 		runtime.WithRootDAGRun(a.rootDAGRun),
 		runtime.WithRetryPath(a.retryPath),
+		runtime.WithIncludeDownstream(a.includeDownstream),
 		runtime.WithAttemptID(a.dagRunAttemptID),
 		runtime.WithTriggerType(a.triggerType),
 		runtime.WithTriggerActor(a.triggerActor),
@@ -2301,7 +2308,13 @@ func (a *Agent) retryNodes() ([]*runtime.Node, error) {
 
 // setupStepRetryPlan sets up the plan for retrying a specific step.
 func (a *Agent) setupStepRetryPlan(nodes []*runtime.Node) (*runtime.Plan, error) {
-	plan, err := runtime.CreateStepRetryPlan(a.dag, nodes, a.stepRetry)
+	// Nested child retries remapped to a parent container step should not
+	// expand that container's siblings. Downstream expansion applies in the
+	// DAG that contains the selected step (empty remaining retry hops).
+	includeDownstream := a.includeDownstream && len(a.retryPath.Hops) == 0
+	plan, err := runtime.CreateStepRetryPlanWithOptions(a.dag, nodes, a.stepRetry, runtime.StepRetryPlanOptions{
+		IncludeDownstream: includeDownstream,
+	})
 	if err != nil {
 		return nil, err
 	}

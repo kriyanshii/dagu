@@ -37,11 +37,14 @@ func Retry() *cobra.Command {
 Flags:
   --run-id string (required) Unique identifier of the DAG-run to retry.
   --step string (optional) Retry only the specified step.
+  --downstream (optional) Also retry reachable descendants of --step.
   --sub-run-id string (optional) Retry the step in this persisted child DAG-run.
 
 Examples:
   dagu retry --run-id=abc123 my_dag
   dagu retry --run-id=abc123 my_dag.yaml
+  dagu retry --run-id=abc123 --step=build my_dag
+  dagu retry --run-id=abc123 --step=build --downstream my_dag
   dagu retry --run-id=abc123 --sub-run-id=child123 --step=build my_dag
 `,
 			Args: cobra.ExactArgs(1),
@@ -52,6 +55,7 @@ Examples:
 var retryFlags = []commandLineFlag{
 	dagRunIDFlagRetry,
 	stepNameForRetry,
+	downstreamForRetry,
 	subDAGRunIDFlagStatus,
 	rootDAGRunFlag,
 	retryPathFlag,
@@ -92,6 +96,13 @@ func runRetry(ctx *Context, args []string) error {
 	}
 	dagRunID, _ := ctx.StringParam("run-id")
 	stepName, _ := ctx.StringParam("step")
+	includeDownstream, err := ctx.Command.Flags().GetBool("downstream")
+	if err != nil {
+		return fmt.Errorf("failed to get --downstream: %w", err)
+	}
+	if includeDownstream && stepName == "" {
+		return fmt.Errorf("--downstream requires --step")
+	}
 	subDAGRunID, _ := ctx.StringParam("sub-run-id")
 	rootRefStr, _ := ctx.StringParam("root")
 	retryPathValue, _ := ctx.StringParam("retry-path")
@@ -240,19 +251,20 @@ func runRetry(ctx *Context, args []string) error {
 
 	ctx.Context = logger.WithValues(ctx.Context, tag.DAG(dag.Name), tag.RunID(dagRunID))
 	run := runOptions{
-		root:         rootRun,
-		parent:       status.Parent,
-		workerID:     workerID,
-		attemptID:    attemptID,
-		triggerType:  queue.PreservedQueueTriggerType(status),
-		triggerActor: triggerActor,
-		parallelItem: status.ParallelItem,
-		scheduleTime: status.ScheduleTime,
-		profileName:  profileName,
-		definitionID: status.DAGDefinitionID(),
-		noReuse:      status.NoReuse,
-		step:         stepName,
-		retryPath:    retryPath,
+		root:              rootRun,
+		parent:            status.Parent,
+		workerID:          workerID,
+		attemptID:         attemptID,
+		triggerType:       queue.PreservedQueueTriggerType(status),
+		triggerActor:      triggerActor,
+		parallelItem:      status.ParallelItem,
+		scheduleTime:      status.ScheduleTime,
+		profileName:       profileName,
+		definitionID:      status.DAGDefinitionID(),
+		noReuse:           status.NoReuse,
+		step:              stepName,
+		includeDownstream: includeDownstream,
+		retryPath:         retryPath,
 	}
 
 	if workerID == "local" {
@@ -708,6 +720,7 @@ func executeRetry(ctx *Context, dag *ir.DAG, status *ir.DAGRunStatus, opts runOp
 			ProgressDisplay:          shouldEnableProgress(ctx),
 			ExtraEnvs:                extraEnvs,
 			StepRetry:                opts.step,
+			IncludeDownstream:        opts.includeDownstream,
 			RetryPath:                opts.retryPath,
 			WorkerID:                 opts.workerID,
 			AttemptID:                agentAttemptID(opts.attemptID, opts.preparedAttempt),

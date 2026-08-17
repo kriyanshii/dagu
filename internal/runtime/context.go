@@ -38,6 +38,9 @@ var (
 	WithRootDAGRun = runctx.WithRootDAGRun
 	// WithRetryPath sets a targeted child DAG retry path.
 	WithRetryPath = runctx.WithRetryPath
+	// WithIncludeDownstream records that a targeted step retry should also
+	// reset reachable descendants.
+	WithIncludeDownstream = runctx.WithIncludeDownstream
 	// WithAttemptID sets the DAG-run attempt identifier.
 	WithAttemptID = runctx.WithAttemptID
 	// WithTriggerType sets the DAG-run trigger type.

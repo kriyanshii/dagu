@@ -424,6 +424,13 @@ func remoteRunRetry(ctx *Context, args []string) error {
 		return fmt.Errorf("invalid run-id: %w", err)
 	}
 	stepName, _ := ctx.StringParam("step")
+	includeDownstream, err := ctx.Command.Flags().GetBool("downstream")
+	if err != nil {
+		return fmt.Errorf("failed to get --downstream: %w", err)
+	}
+	if includeDownstream && stepName == "" {
+		return fmt.Errorf("--downstream requires --step")
+	}
 	subDAGRunID, _ := ctx.StringParam("sub-run-id")
 	if subDAGRunID != "" && stepName == "" {
 		return fmt.Errorf("--sub-run-id requires --step")
@@ -432,11 +439,15 @@ func remoteRunRetry(ctx *Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	return ctx.Remote.retryDAGRun(ctx, dag.Dag.Name, runID, api.RetryDAGRunJSONBody{
+	body := api.RetryDAGRunJSONBody{
 		DagRunId:    runID,
 		StepName:    stringPtrOrNil(stepName),
 		SubDAGRunId: stringPtrOrNil(subDAGRunID),
-	})
+	}
+	if includeDownstream {
+		body.IncludeDownstream = &includeDownstream
+	}
+	return ctx.Remote.retryDAGRun(ctx, dag.Dag.Name, runID, body)
 }
 
 func remoteRunRestart(ctx *Context, args []string) error {

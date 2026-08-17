@@ -288,6 +288,9 @@ func (b *SubCmdBuilder) Retry(dag *ir.DAG, opts RetryOptions) CmdSpec {
 	if opts.Step != "" {
 		args = append(args, fmt.Sprintf("--step=%s", opts.Step))
 	}
+	if opts.IncludeDownstream {
+		args = append(args, "--downstream")
+	}
 	if !opts.Root.Zero() {
 		args = append(args, fmt.Sprintf("--root=%s", opts.Root.String()))
 	}
@@ -372,12 +375,13 @@ func definitionIDEnv(id string) []string {
 
 // RetryOptions contains options for retrying a dag-run.
 type RetryOptions struct {
-	DAGRunID      string
-	Step          string
-	Root          ir.DAGRunRef
-	RetryPath     dagrun.RetryPath
-	TriggerActor  string
-	QueueDispatch bool
+	DAGRunID          string
+	Step              string
+	IncludeDownstream bool
+	Root              ir.DAGRunRef
+	RetryPath         dagrun.RetryPath
+	TriggerActor      string
+	QueueDispatch     bool
 }
 
 // RestartOptions contains options for restarting a dag-run.

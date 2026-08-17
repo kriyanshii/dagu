@@ -34,10 +34,11 @@ func TestDispatchTaskAttributionRoundTrips(t *testing.T) {
 	t.Parallel()
 
 	task := &dispatch.DispatchTask{
-		ProfileName:  "prod",
-		DefinitionID: "ops/daily",
-		TriggerActor: "alice",
-		ParallelItem: "item-1",
+		ProfileName:       "prod",
+		DefinitionID:      "ops/daily",
+		TriggerActor:      "alice",
+		ParallelItem:      "item-1",
+		IncludeDownstream: true,
 	}
 
 	protoTask, err := convert.DispatchTaskToProto(task)
@@ -47,6 +48,7 @@ func TestDispatchTaskAttributionRoundTrips(t *testing.T) {
 	assert.Equal(t, "ops/daily", protoTask.DefinitionId)
 	assert.Equal(t, "alice", protoTask.TriggerActor)
 	assert.Equal(t, "item-1", protoTask.ParallelItem)
+	assert.True(t, protoTask.IncludeDownstream)
 
 	got, err := convert.ProtoToDispatchTask(protoTask)
 	require.NoError(t, err)
@@ -55,6 +57,7 @@ func TestDispatchTaskAttributionRoundTrips(t *testing.T) {
 	assert.Equal(t, "ops/daily", got.DefinitionID)
 	assert.Equal(t, "alice", got.TriggerActor)
 	assert.Equal(t, "item-1", got.ParallelItem)
+	assert.True(t, got.IncludeDownstream)
 }
 
 func TestDispatchTaskToProtoValidatesOwnerPort(t *testing.T) {

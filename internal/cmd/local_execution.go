@@ -17,20 +17,21 @@ import (
 )
 
 type runOptions struct {
-	root            ir.DAGRunRef
-	parent          ir.DAGRunRef
-	workerID        string
-	attemptID       string
-	triggerType     ir.TriggerType
-	triggerActor    string
-	parallelItem    string
-	scheduleTime    string
-	profileName     string
-	definitionID    string
-	step            string
-	retryPath       dagrun.RetryPath
-	preparedAttempt dagrun.Attempt
-	noReuse         bool
+	root              ir.DAGRunRef
+	parent            ir.DAGRunRef
+	workerID          string
+	attemptID         string
+	triggerType       ir.TriggerType
+	triggerActor      string
+	parallelItem      string
+	scheduleTime      string
+	profileName       string
+	definitionID      string
+	step              string
+	includeDownstream bool
+	retryPath         dagrun.RetryPath
+	preparedAttempt   dagrun.Attempt
+	noReuse           bool
 }
 
 func dagDefinitionIDFromEnv() string {

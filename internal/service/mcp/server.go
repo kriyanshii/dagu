@@ -110,17 +110,18 @@ type changeInput struct {
 }
 
 type executeInput struct {
-	Action     string   `json:"action" jsonschema:"Execution action: start, enqueue, retry, or stop."`
-	TargetType string   `json:"targetType,omitempty" jsonschema:"Target type: dag, inline_spec, or run. Defaults from action and spec."`
-	Name       string   `json:"name,omitempty" jsonschema:"DAG name, or optional inline spec name."`
-	Spec       string   `json:"spec,omitempty" jsonschema:"Inline DAG YAML spec for start or enqueue with targetType inline_spec."`
-	DAGRunID   string   `json:"dagRunId,omitempty" jsonschema:"DAG-run ID for start/enqueue override, retry, and stop."`
-	Params     string   `json:"params,omitempty" jsonschema:"Runtime parameters as a JSON string."`
-	Queue      string   `json:"queue,omitempty" jsonschema:"Queue override for enqueue."`
-	Singleton  bool     `json:"singleton,omitempty" jsonschema:"Prevent duplicate running or queued DAG-runs when supported by the action."`
-	NoReuse    bool     `json:"noReuse,omitempty" jsonschema:"Execute eligible build steps without reusing prior materializations for start or enqueue."`
-	Labels     []string `json:"labels,omitempty" jsonschema:"Additional labels, each as key=value or key-only."`
-	StepName   string   `json:"stepName,omitempty" jsonschema:"Optional step name for retry."`
+	Action            string   `json:"action" jsonschema:"Execution action: start, enqueue, retry, or stop."`
+	TargetType        string   `json:"targetType,omitempty" jsonschema:"Target type: dag, inline_spec, or run. Defaults from action and spec."`
+	Name              string   `json:"name,omitempty" jsonschema:"DAG name, or optional inline spec name."`
+	Spec              string   `json:"spec,omitempty" jsonschema:"Inline DAG YAML spec for start or enqueue with targetType inline_spec."`
+	DAGRunID          string   `json:"dagRunId,omitempty" jsonschema:"DAG-run ID for start/enqueue override, retry, and stop."`
+	Params            string   `json:"params,omitempty" jsonschema:"Runtime parameters as a JSON string."`
+	Queue             string   `json:"queue,omitempty" jsonschema:"Queue override for enqueue."`
+	Singleton         bool     `json:"singleton,omitempty" jsonschema:"Prevent duplicate running or queued DAG-runs when supported by the action."`
+	NoReuse           bool     `json:"noReuse,omitempty" jsonschema:"Execute eligible build steps without reusing prior materializations for start or enqueue."`
+	Labels            []string `json:"labels,omitempty" jsonschema:"Additional labels, each as key=value or key-only."`
+	StepName          string   `json:"stepName,omitempty" jsonschema:"Optional step name for retry."`
+	IncludeDownstream bool     `json:"includeDownstream,omitempty" jsonschema:"When true, retry the selected step and every reachable descendant. Requires stepName."`
 }
 
 func registerTools(server *mcpsdk.Server, svc *Service) {
@@ -649,6 +650,9 @@ func (svc *Service) retryDAGRun(ctx context.Context, input executeInput) error {
 	body := &daguapi.RetryDAGRunJSONRequestBody{DagRunId: input.DAGRunID}
 	if input.StepName != "" {
 		body.StepName = &input.StepName
+	}
+	if input.IncludeDownstream {
+		body.IncludeDownstream = &input.IncludeDownstream
 	}
 	resp, err := svc.api.RetryDAGRun(ctx, daguapi.RetryDAGRunRequestObject{
 		Name:     daguapi.DAGName(input.Name),

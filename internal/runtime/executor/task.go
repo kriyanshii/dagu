@@ -100,6 +100,13 @@ func WithStep(step string) TaskOption {
 	}
 }
 
+// WithIncludeDownstream requests that a step retry also reset reachable descendants.
+func WithIncludeDownstream(enabled bool) TaskOption {
+	return func(task *dispatch.DispatchTask) {
+		task.IncludeDownstream = enabled
+	}
+}
+
 // WithLabels sets additional labels (comma-separated) for the task.
 func WithLabels(labels string) TaskOption {
 	return func(task *dispatch.DispatchTask) {

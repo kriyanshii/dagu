@@ -342,6 +342,16 @@ func TestTaskOption_Functions(t *testing.T) {
 		assert.Equal(t, "step-name", task.Step)
 	})
 
+	t.Run("WithIncludeDownstream", func(t *testing.T) {
+		t.Parallel()
+
+		task := &dispatch.DispatchTask{}
+
+		executor.WithIncludeDownstream(true)(task)
+
+		assert.True(t, task.IncludeDownstream)
+	})
+
 	t.Run("WithLabels", func(t *testing.T) {
 		t.Parallel()
 
