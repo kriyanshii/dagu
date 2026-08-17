@@ -487,6 +487,33 @@ func TestRetryDAGRun_RejectsIncludeDownstreamWithoutStep(t *testing.T) {
 	require.Contains(t, apiErr.Message, "includeDownstream requires stepName")
 }
 
+func TestRetryDAGRunSchema_IncludeDownstreamRequiresStepName(t *testing.T) {
+	t.Parallel()
+
+	swagger, err := openapiv1.GetSwagger()
+	require.NoError(t, err)
+	pathItem := swagger.Paths.Find("/dag-runs/{name}/{dagRunId}/retry")
+	require.NotNil(t, pathItem)
+	require.NotNil(t, pathItem.Post)
+	require.NotNil(t, pathItem.Post.RequestBody)
+	schema := pathItem.Post.RequestBody.Value.Content["application/json"].Schema
+	require.NotNil(t, schema)
+	require.NotNil(t, schema.Value)
+
+	validate := func(body map[string]any) error {
+		return schema.Value.VisitJSON(body)
+	}
+
+	require.NoError(t, validate(map[string]any{"dagRunId": "run-1"}))
+	require.NoError(t, validate(map[string]any{"dagRunId": "run-1", "stepName": "build"}))
+	require.NoError(t, validate(map[string]any{"dagRunId": "run-1", "includeDownstream": false}))
+	require.NoError(t, validate(map[string]any{
+		"dagRunId": "run-1", "stepName": "build", "includeDownstream": true,
+	}))
+	require.Error(t, validate(map[string]any{"includeDownstream": true}))
+	require.Error(t, validate(map[string]any{"dagRunId": "run-1", "includeDownstream": true}))
+}
+
 func TestRetryDAGRun_DispatchesIncludeDownstream(t *testing.T) {
 	ctx := auth.WithUser(context.Background(), &auth.User{Username: "alice"})
 	tmpDir := t.TempDir()

@@ -57,8 +57,9 @@ type NodeState struct {
 	// This is used to generate unique run IDs for repeated steps in case the node
 	// runs nested DAGs.
 	Repeated bool
-	// SkippedByRetry marks a node that was intentionally skipped by an edited
-	// retry while preserving its output variables for downstream steps.
+	// SkippedByRetry marks a skipped node that should not block downstream
+	// execution during a retry. Edit-and-retry uses this to preserve outputs;
+	// include-downstream step retry uses it for preserved skipped join prerequisites.
 	SkippedByRetry bool
 	// Error is the error that the executor encountered.
 	Error error
@@ -733,6 +734,13 @@ func (d *Data) SetRepeated(repeated bool) {
 	defer d.mu.Unlock()
 
 	d.inner.State.Repeated = repeated
+}
+
+func (d *Data) SetSkippedByRetry(skipped bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.inner.State.SkippedByRetry = skipped
 }
 
 func (d *Data) IsRepeated() bool {

@@ -3181,6 +3181,55 @@ func TestRunner_StepRetryExecution(t *testing.T) {
 		retryResult.assertNodeStatus(t, "C", ir.NodeSucceeded)
 		retryResult.assertNodeStatus(t, "D", ir.NodeSucceeded)
 	})
+
+	t.Run("RetryWithDownstreamRerunsJoinWhenSidePrerequisiteSkipped", func(t *testing.T) {
+		r := setupRunner(t)
+
+		dag := &ir.DAG{
+			Steps: []ir.Step{
+				{Name: "A", Commands: []ir.CommandEntry{{Command: "echo", Args: []string{"A"}}}},
+				{Name: "B", Commands: []ir.CommandEntry{{Command: "echo", Args: []string{"B"}}}, Depends: []string{"A"}},
+				{Name: "D", Commands: []ir.CommandEntry{{Command: "echo", Args: []string{"D"}}}, Depends: []string{"A"}},
+				{Name: "E", Commands: []ir.CommandEntry{{Command: "echo", Args: []string{"E"}}}, Depends: []string{"B", "D"}},
+			},
+		}
+
+		nodes := []*runtime.Node{
+			runtime.NodeWithData(runtime.NodeData{
+				Step:  dag.Steps[0],
+				State: runtime.NodeState{Status: ir.NodeSucceeded},
+			}),
+			runtime.NodeWithData(runtime.NodeData{
+				Step:  dag.Steps[1],
+				State: runtime.NodeState{Status: ir.NodeSucceeded},
+			}),
+			runtime.NodeWithData(runtime.NodeData{
+				Step:  dag.Steps[2],
+				State: runtime.NodeState{Status: ir.NodeSkipped},
+			}),
+			runtime.NodeWithData(runtime.NodeData{
+				Step:  dag.Steps[3],
+				State: runtime.NodeState{Status: ir.NodeSkipped},
+			}),
+		}
+
+		retryPlan, err := runtime.CreateStepRetryPlanWithOptions(dag, nodes, "B", runtime.StepRetryPlanOptions{
+			IncludeDownstream: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, ir.NodeSucceeded, nodes[0].State().Status)
+		require.Equal(t, ir.NodeNotStarted, nodes[1].State().Status)
+		require.Equal(t, ir.NodeSkipped, nodes[2].State().Status)
+		require.True(t, nodes[2].State().SkippedByRetry)
+		require.Equal(t, ir.NodeNotStarted, nodes[3].State().Status)
+		require.False(t, nodes[3].State().SkippedByRetry)
+
+		retryResult := planHelper{testHelper: r, Plan: retryPlan}.assertRun(t, ir.Succeeded)
+		retryResult.assertNodeStatus(t, "A", ir.NodeSucceeded)
+		retryResult.assertNodeStatus(t, "B", ir.NodeSucceeded)
+		retryResult.assertNodeStatus(t, "D", ir.NodeSkipped)
+		retryResult.assertNodeStatus(t, "E", ir.NodeSucceeded)
+	})
 }
 
 // TestRunner_StepIDAccess tests that step ID variables are expanded correctly

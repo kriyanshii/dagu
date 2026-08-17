@@ -450,9 +450,10 @@ func TestStepRetryPlan_IncludeDownstream(t *testing.T) {
 	}}
 
 	tests := []struct {
-		name       string
-		step       string
-		wantStatus map[string]ir.NodeStatus
+		name               string
+		step               string
+		wantStatus         map[string]ir.NodeStatus
+		wantSkippedByRetry map[string]bool
 	}{
 		{
 			name: "retry succeeded middle with descendants",
@@ -464,6 +465,7 @@ func TestStepRetryPlan_IncludeDownstream(t *testing.T) {
 				"D": ir.NodeSkipped,
 				"E": ir.NodeNotStarted,
 			},
+			wantSkippedByRetry: map[string]bool{"D": true},
 		},
 		{
 			name: "retry failed step with descendants",
@@ -475,6 +477,7 @@ func TestStepRetryPlan_IncludeDownstream(t *testing.T) {
 				"D": ir.NodeSkipped,
 				"E": ir.NodeNotStarted,
 			},
+			wantSkippedByRetry: map[string]bool{"D": true},
 		},
 		{
 			name: "retry skipped branch keeps unrelated success",
@@ -511,6 +514,7 @@ func TestStepRetryPlan_IncludeDownstream(t *testing.T) {
 			require.NotNil(t, p)
 			for _, n := range nodes {
 				require.Equal(t, tt.wantStatus[n.Name()], n.State().Status, "status mismatch for %s", n.Name())
+				require.Equal(t, tt.wantSkippedByRetry[n.Name()], n.State().SkippedByRetry, "SkippedByRetry mismatch for %s", n.Name())
 			}
 		})
 	}

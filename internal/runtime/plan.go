@@ -178,11 +178,14 @@ func CreateStepRetryPlanWithOptions(dag *ir.DAG, nodes []*Node, stepName string,
 	}
 
 	if opts.IncludeDownstream {
+		resetIDs := map[int]struct{}{targetNode.id: {}}
 		for _, node := range p.reachableDescendants(targetNode) {
+			resetIDs[node.id] = struct{}{}
 			if err := resetStepRetryNode(node, steps, false); err != nil {
 				return nil, err
 			}
 		}
+		p.markSkippedSidePrerequisites(resetIDs)
 	}
 
 	return p, nil
@@ -229,6 +232,28 @@ func (p *Plan) reachableDescendants(node *Node) []*Node {
 		}
 	}
 	return result
+}
+
+// markSkippedSidePrerequisites converts preserved ordinary skipped
+// prerequisites of reset join descendants to SkippedByRetry so the runner
+// can re-execute those descendants without treating the skipped side as a
+// hard skip.
+func (p *Plan) markSkippedSidePrerequisites(resetIDs map[int]struct{}) {
+	for id := range resetIDs {
+		for _, depID := range p.DependencyMap[id] {
+			if _, reset := resetIDs[depID]; reset {
+				continue
+			}
+			dep := p.nodeByID[depID]
+			if dep == nil {
+				continue
+			}
+			state := dep.State()
+			if state.Status == ir.NodeSkipped && !state.SkippedByRetry {
+				dep.SetSkippedByRetry(true)
+			}
+		}
+	}
 }
 
 // IsAgent reports whether execution order is decided by an agent step

@@ -2749,6 +2749,8 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - dagRunId
               properties:
                 dagRunId:
                   allOf:
@@ -2764,8 +2766,20 @@ paths:
                   allOf:
                     - $ref: "#/components/schemas/DAGRunId"
                     - description: "Optional. Persisted child DAG-run containing the step. Requires stepName; the path and dagRunId remain the root DAG-run."
-              required:
-                - dagRunId
+              not:
+                allOf:
+                  - type: object
+                    required:
+                      - includeDownstream
+                    properties:
+                      includeDownstream:
+                        type: boolean
+                        enum:
+                          - true
+                  - not:
+                      type: object
+                      required:
+                        - stepName
       responses:
         "200":
           description: "A successful response"
