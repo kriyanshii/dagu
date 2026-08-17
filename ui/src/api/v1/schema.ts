@@ -1020,7 +1020,7 @@ export interface paths {
         put?: never;
         /**
          * Retry DAG-run execution
-         * @description Creates a new DAG-run based on a previous execution
+         * @description Reuses the existing DAG-run ID and resets only the selected step or reachable descendants, rather than creating a new DAG-run.
          */
         post: operations["retryDAGRun"];
         delete?: never;
