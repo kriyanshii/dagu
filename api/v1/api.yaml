@@ -2735,7 +2735,7 @@ paths:
   /dag-runs/{name}/{dagRunId}/retry:
     post:
       summary: "Retry DAG-run execution"
-      description: "Reuses the existing DAG-run ID and resets only the selected step or reachable descendants, rather than creating a new DAG-run."
+      description: "Retries the existing DAG-run by reusing its DAG-run ID rather than creating a new DAG-run. Resets only the selected step or reachable descendants."
       operationId: "retryDAGRun"
       tags:
         - "dag-runs"
