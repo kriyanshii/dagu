@@ -178,6 +178,33 @@ func TestDAGChangeInputValidation(t *testing.T) {
 	}
 }
 
+func TestRetryRequiresStepNameForIncludeDownstream(t *testing.T) {
+	t.Parallel()
+
+	err := requireRetry(executeInput{
+		Name:              "example",
+		DAGRunID:          "run-1",
+		IncludeDownstream: true,
+	})
+	require.EqualError(t, err, "includeDownstream requires stepName")
+
+	err = requireRetry(executeInput{
+		Name:              "example",
+		DAGRunID:          "run-1",
+		StepName:          "build",
+		IncludeDownstream: true,
+	})
+	require.NoError(t, err)
+
+	svc := &Service{}
+	err = svc.retryDAGRun(context.Background(), executeInput{
+		Name:              "example",
+		DAGRunID:          "run-1",
+		IncludeDownstream: true,
+	})
+	require.EqualError(t, err, "includeDownstream requires stepName")
+}
+
 func TestExecuteToolSupportsNoReuse(t *testing.T) {
 	ctx := context.Background()
 	session := connectTestClient(t, ctx, NewServer(nil))

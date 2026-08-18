@@ -288,7 +288,7 @@ func (b *SubCmdBuilder) Retry(dag *ir.DAG, opts RetryOptions) CmdSpec {
 	if opts.Step != "" {
 		args = append(args, fmt.Sprintf("--step=%s", opts.Step))
 	}
-	if opts.IncludeDownstream {
+	if opts.IncludeDownstream && opts.Step != "" {
 		args = append(args, "--downstream")
 	}
 	if !opts.Root.Zero() {

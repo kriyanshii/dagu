@@ -376,6 +376,64 @@ func TestEditRetryDAGRun_ExplicitEmptySkipStepsRunsAllSteps(t *testing.T) {
 	require.False(t, previousStatus.Nodes[0].SkippedByRetry)
 }
 
+func TestPlanEditRetrySteps_IncludeDownstreamSkippedSidePrerequisite(t *testing.T) {
+	t.Parallel()
+
+	// Status after include-downstream retry of B: join E reran, side branch D
+	// stayed skipped and was marked SkippedByRetry so the runner would not
+	// block E.
+	status := &ir.DAGRunStatus{
+		Nodes: []*ir.Node{
+			{Step: ir.Step{Name: "A"}, Status: ir.NodeSucceeded},
+			{Step: ir.Step{Name: "B"}, Status: ir.NodeSucceeded},
+			{Step: ir.Step{Name: "D"}, Status: ir.NodeSkipped, SkippedByRetry: true},
+			{Step: ir.Step{Name: "E"}, Status: ir.NodeSucceeded},
+		},
+	}
+
+	t.Run("default edit-retry still plans", func(t *testing.T) {
+		t.Parallel()
+		dag := &ir.DAG{Steps: []ir.Step{
+			{Name: "A"},
+			{Name: "B", Depends: []string{"A"}},
+			{Name: "D", Depends: []string{"A"}},
+			{Name: "E", Depends: []string{"B", "D"}},
+		}}
+		plan := planEditRetrySteps(status, dag, nil)
+		require.Empty(t, plan.validationErrors)
+		require.Contains(t, plan.skippedSteps, "A")
+		require.Contains(t, plan.skippedSteps, "B")
+		require.Contains(t, plan.skippedSteps, "E")
+		// SkippedByRetry currently also means "reusable edit-retry skip", so D
+		// is preserved when the edited step does not require output.
+		require.Contains(t, plan.skippedSteps, "D")
+	})
+
+	t.Run("side branch with declared output is not reusable", func(t *testing.T) {
+		t.Parallel()
+		dag := &ir.DAG{Steps: []ir.Step{
+			{Name: "A"},
+			{Name: "B", Depends: []string{"A"}},
+			{Name: "D", Depends: []string{"A"}, Output: "SIDE"},
+			{Name: "E", Depends: []string{"B", "D"}},
+		}}
+		plan := planEditRetrySteps(status, dag, nil)
+		require.Empty(t, plan.validationErrors)
+		require.NotContains(t, plan.skippedSteps, "D")
+		require.Contains(t, plan.runnableSteps, "D")
+		require.Equal(t, []editRetryIneligibleStep{{
+			name:   "D",
+			reason: `previous output "SIDE" is not available`,
+		}}, plan.ineligible)
+
+		skip := []string{"D"}
+		rejected := planEditRetrySteps(status, dag, &skip)
+		require.Equal(t, []string{
+			`skipSteps contains ineligible step "D": previous output "SIDE" is not available`,
+		}, rejected.validationErrors)
+	})
+}
+
 func TestEditRetryDAGRun_RejectsIneligibleRequestedSkipStep(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()

@@ -378,7 +378,7 @@ func (svc *Service) executeToolImpl(ctx context.Context, input executeInput) (*m
 	case "enqueue":
 		dagRunID, err = svc.enqueueDAG(ctx, targetType, input)
 	case "retry":
-		err = requireRun(input.Name, input.DAGRunID)
+		err = requireRetry(input)
 		if err == nil {
 			err = svc.retryDAGRun(ctx, input)
 			dagRunID = input.DAGRunID
@@ -647,6 +647,9 @@ func (svc *Service) enqueueDAG(ctx context.Context, targetType string, input exe
 }
 
 func (svc *Service) retryDAGRun(ctx context.Context, input executeInput) error {
+	if err := requireIncludeDownstreamStep(input); err != nil {
+		return err
+	}
 	body := &daguapi.RetryDAGRunJSONRequestBody{DagRunId: input.DAGRunID}
 	if input.StepName != "" {
 		body.StepName = &input.StepName
@@ -1004,6 +1007,20 @@ func requireRun(name, dagRunID string) error {
 	}
 	if strings.TrimSpace(dagRunID) == "" {
 		return errors.New("dagRunId is required")
+	}
+	return nil
+}
+
+func requireRetry(input executeInput) error {
+	if err := requireRun(input.Name, input.DAGRunID); err != nil {
+		return err
+	}
+	return requireIncludeDownstreamStep(input)
+}
+
+func requireIncludeDownstreamStep(input executeInput) error {
+	if input.IncludeDownstream && strings.TrimSpace(input.StepName) == "" {
+		return errors.New("includeDownstream requires stepName")
 	}
 	return nil
 }
