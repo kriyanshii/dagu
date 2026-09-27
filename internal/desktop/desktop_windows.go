@@ -11,6 +11,7 @@ import (
 	"image"
 	"runtime"
 	"sync"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -20,6 +21,7 @@ import (
 var (
 	user32 = windows.NewLazySystemDLL("user32.dll")
 	gdi32  = windows.NewLazySystemDLL("gdi32.dll")
+	kernel = windows.NewLazySystemDLL("kernel32.dll")
 
 	procSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
 	procSetProcessDPIAware            = user32.NewProc("SetProcessDPIAware")
@@ -34,6 +36,7 @@ var (
 	procOpenInputDesktop              = user32.NewProc("OpenInputDesktop")
 	procCloseDesktop                  = user32.NewProc("CloseDesktop")
 	procGetUserObjectInformationW     = user32.NewProc("GetUserObjectInformationW")
+	procGetLastInputInfo              = user32.NewProc("GetLastInputInfo")
 
 	procCreateCompatibleDC     = gdi32.NewProc("CreateCompatibleDC")
 	procCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
@@ -42,6 +45,11 @@ var (
 	procGetDIBits              = gdi32.NewProc("GetDIBits")
 	procDeleteObject           = gdi32.NewProc("DeleteObject")
 	procDeleteDC               = gdi32.NewProc("DeleteDC")
+
+	procPowerCreateRequest = kernel.NewProc("PowerCreateRequest")
+	procPowerSetRequest    = kernel.NewProc("PowerSetRequest")
+	procPowerClearRequest  = kernel.NewProc("PowerClearRequest")
+	procGetTickCount       = kernel.NewProc("GetTickCount")
 )
 
 // Win32 constants.
@@ -65,6 +73,11 @@ const (
 	inputMouse    = 0
 	inputKeyboard = 1
 	wheelDelta    = 120
+
+	powerRequestContextVersion      = 0
+	powerRequestContextSimpleString = 0x1
+	powerRequestDisplayRequired     = 0
+	powerRequestSystemRequired      = 1
 )
 
 // Input event flags.
@@ -159,6 +172,24 @@ func keyboardEvent(vk, scan uint16, flags uint32) input {
 	return in
 }
 
+// reasonContext is REASON_CONTEXT with a simple reason string. The padding
+// fills the union to the size of its detailed form: 24 bytes on 64-bit
+// Windows, 16 on 32-bit.
+type reasonContext struct {
+	Version uint32
+	Flags   uint32
+	Reason  *uint16
+	_       uint32
+	_       uint32
+	_       uintptr
+}
+
+// lastInputInfo is LASTINPUTINFO.
+type lastInputInfo struct {
+	Size uint32
+	Time uint32
+}
+
 type point struct {
 	X int32
 	Y int32
@@ -186,7 +217,10 @@ func Open() (*Driver, error) {
 	if err := Check().Err(); err != nil {
 		return nil, err
 	}
-	return New(windowsBackend{}), nil
+	// A display that turns off shows nothing to capture; staying awake is
+	// best effort.
+	wake, _ := keepAwake()
+	return New(windowsBackend{wake: wake}), nil
 }
 
 // Check reports whether the desktop of the current session can be automated.
@@ -200,12 +234,23 @@ func Check() Diagnostics {
 		diag.Problems = append(diag.Problems, "the process runs in session 0, which has no desktop; run the worker in a logged-in user session instead of as a service")
 		return diag
 	}
-	if name, err := inputDesktopName(); err != nil {
-		diag.Problems = append(diag.Problems, "the input desktop is not accessible; the screen may be locked")
-	} else if name != defaultDesk {
-		diag.Problems = append(diag.Problems, fmt.Sprintf("the %q desktop is active; the screen is locked or a secure prompt is shown", name))
+	if problem := inputDesktopProblem(); problem != "" {
+		diag.Problems = append(diag.Problems, problem)
 	}
 	return diag
+}
+
+// inputDesktopProblem reports why the desktop that receives input is not the
+// user's, such as a locked screen, or returns an empty string.
+func inputDesktopProblem() string {
+	name, err := inputDesktopName()
+	switch {
+	case err != nil:
+		return "the input desktop is not accessible; the screen may be locked"
+	case name != defaultDesk:
+		return fmt.Sprintf("the %q desktop is active; the screen is locked or a secure prompt is shown", name)
+	}
+	return ""
 }
 
 // RequestPermissions does nothing on Windows, which needs no permission to
@@ -245,10 +290,48 @@ func inputDesktopName() (string, error) {
 	return windows.UTF16ToString(buf[:]), nil
 }
 
-// windowsBackend drives the desktop through Win32 input and GDI capture.
-type windowsBackend struct{}
+// keepAwake keeps the display and the system awake until release is
+// called. An error means the power settings apply as usual.
+func keepAwake() (release func(), err error) {
+	reason, err := windows.UTF16PtrFromString(awakeReason)
+	if err != nil {
+		return func() {}, err
+	}
+	context := reasonContext{Version: powerRequestContextVersion, Flags: powerRequestContextSimpleString, Reason: reason}
+	request, _, err := procPowerCreateRequest.Call(uintptr(unsafe.Pointer(&context))) //nolint:gosec // Win32 takes the struct address as uintptr
+	runtime.KeepAlive(reason)
+	if windows.Handle(request) == windows.InvalidHandle || request == 0 {
+		return func() {}, fmt.Errorf("PowerCreateRequest: %w", err)
+	}
+	var set []uintptr
+	var errs []error
+	for _, kind := range []uintptr{powerRequestDisplayRequired, powerRequestSystemRequired} {
+		if ok, _, err := procPowerSetRequest.Call(request, kind); ok == 0 {
+			errs = append(errs, fmt.Errorf("PowerSetRequest: %w", err))
+			continue
+		}
+		set = append(set, kind)
+	}
+	return func() {
+		for _, kind := range set {
+			_, _, _ = procPowerClearRequest.Call(request, kind)
+		}
+		_ = windows.CloseHandle(windows.Handle(request))
+	}, errors.Join(errs...)
+}
 
+// windowsBackend drives the desktop through Win32 input and GDI capture.
+type windowsBackend struct {
+	// wake releases the power requests held while the backend is open.
+	wake func()
+}
+
+// Capture fails while another desktop has the input, since the user's
+// desktop then captures without error but shows nothing current.
 func (windowsBackend) Capture() (*image.RGBA, error) {
+	if problem := inputDesktopProblem(); problem != "" {
+		return nil, errors.New(problem)
+	}
 	width, height := screenSize()
 	if width <= 0 || height <= 0 {
 		return nil, errors.New("screen size is unavailable")
@@ -389,7 +472,19 @@ func (windowsBackend) Type(text string) error {
 	return sendInput(events...)
 }
 
-func (windowsBackend) Close() error {
+func (windowsBackend) LastInput() time.Time {
+	info := lastInputInfo{Size: uint32(unsafe.Sizeof(lastInputInfo{}))}
+	if ok, _, _ := procGetLastInputInfo.Call(uintptr(unsafe.Pointer(&info))); ok == 0 { //nolint:gosec // Win32 takes the struct address as uintptr
+		return time.Time{}
+	}
+	// Both are 32-bit tick counts, so the difference wraps correctly.
+	ticks, _, _ := procGetTickCount.Call()
+	idle := uint32(ticks) - info.Time //nolint:gosec // GetTickCount returns a 32-bit DWORD
+	return time.Now().Add(-time.Duration(idle) * time.Millisecond)
+}
+
+func (b windowsBackend) Close() error {
+	b.wake()
 	return nil
 }
 

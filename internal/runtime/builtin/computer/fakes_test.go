@@ -38,6 +38,13 @@ type fakeBackend struct {
 	events      []string
 	// typeErr fails typing when set.
 	typeErr error
+	// lastEvent and personInputAt are when the desktop last received input
+	// from the step and from a person.
+	lastEvent     time.Time
+	personInputAt time.Time
+	// personChecks is how many more checks find a person using the desktop
+	// at that moment.
+	personChecks int
 }
 
 func newFakeBackend(width, height int) *fakeBackend {
@@ -70,6 +77,36 @@ func (b *fakeBackend) record(event string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.events = append(b.events, event)
+	b.lastEvent = time.Now()
+}
+
+// personUses records input from a person now. The time is a moment ahead,
+// so it follows every earlier reading of a clock as coarse as Windows'.
+func (b *fakeBackend) personUses() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.personInputAt = time.Now().Add(time.Millisecond)
+}
+
+// personKeepsUsing makes the next checks find a person using the desktop,
+// however long the step takes to make them.
+func (b *fakeBackend) personKeepsUsing(checks int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.personChecks = checks
+}
+
+func (b *fakeBackend) LastInput() time.Time {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.personChecks > 0 {
+		b.personChecks--
+		b.personInputAt = time.Now()
+	}
+	if b.personInputAt.After(b.lastEvent) {
+		return b.personInputAt
+	}
+	return b.lastEvent
 }
 
 func (b *fakeBackend) inputs() []string {
@@ -159,11 +196,16 @@ type scriptedSession struct {
 	turns        []*computeruse.Turn
 	err          error
 	observations []computeruse.Observation
+	// onNext runs at the start of every request.
+	onNext func()
 }
 
 func (s *scriptedSession) ImageLimit() computeruse.ImageLimit { return s.limit }
 
 func (s *scriptedSession) Next(_ context.Context, obs computeruse.Observation) (*computeruse.Turn, error) {
+	if s.onNext != nil {
+		s.onNext()
+	}
 	s.observations = append(s.observations, obs)
 	if s.err != nil {
 		return nil, s.err
@@ -231,10 +273,13 @@ type testRun struct {
 	dataDir   string
 	artifacts string
 	workDir   string
-	backend   *fakeBackend
-	vision    *visionModel
-	secrets   map[string]string
-	llm       *ir.LLMConfig
+	// desktopLock is the desktop lock the run's steps take; runs that share
+	// it share a desktop.
+	desktopLock string
+	backend     *fakeBackend
+	vision      *visionModel
+	secrets     map[string]string
+	llm         *ir.LLMConfig
 	// sessions supplies the session for each act, in order.
 	sessions []*scriptedSession
 	// sessionErrors fails session creation for the named models.
@@ -245,13 +290,14 @@ type testRun struct {
 func newTestRun(t *testing.T) *testRun {
 	t.Helper()
 	return &testRun{
-		t:         t,
-		dataDir:   t.TempDir(),
-		artifacts: t.TempDir(),
-		workDir:   t.TempDir(),
-		backend:   newFakeBackend(400, 200),
-		vision:    &visionModel{},
-		llm:       &ir.LLMConfig{Provider: "openai", Model: "test-model"},
+		t:           t,
+		dataDir:     t.TempDir(),
+		artifacts:   t.TempDir(),
+		workDir:     t.TempDir(),
+		desktopLock: filepath.Join(t.TempDir(), desktopLockName),
+		backend:     newFakeBackend(400, 200),
+		vision:      &visionModel{},
+		llm:         &ir.LLMConfig{Provider: "openai", Model: "test-model"},
 	}
 }
 
@@ -296,6 +342,8 @@ func (r *testRun) execute(withJSON string, session *ir.AgentSession) *stepExecut
 		return session, nil
 	}
 	execution.exec.settle = settleTiming{timeout: time.Millisecond}
+	execution.exec.desktopLock = r.desktopLock
+	execution.exec.idlePoll = time.Millisecond
 	execution.exec.SetStdout(&execution.stdout)
 	execution.exec.SetStderr(&execution.stderr)
 	execution.exec.SetAgentSession(session)
@@ -328,6 +376,16 @@ func eventNames(session *ir.AgentSession) []string {
 		}
 	}
 	return names
+}
+
+func lifecycleMessages(session *ir.AgentSession) []string {
+	var messages []string
+	for _, event := range session.Events {
+		if event.Type == agentstep.EventLifecycle {
+			messages = append(messages, event.Content)
+		}
+	}
+	return messages
 }
 
 // blockRead makes the only file in dir unreadable until the returned

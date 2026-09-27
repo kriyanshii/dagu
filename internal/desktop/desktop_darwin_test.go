@@ -7,7 +7,9 @@ package desktop
 
 import (
 	"os"
+	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,6 +38,66 @@ func TestKeyCode(t *testing.T) {
 		_, _, err := keyCode(key)
 		assert.Error(t, err, key)
 	}
+}
+
+// A logged-in session reports whether it has the display, which checks the
+// Core Foundation lookups behind the locked-screen check.
+func TestDictionaryFlag(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, load())
+	session := cgSessionCopyCurrentDictionary()
+	if session == 0 {
+		t.Skip("no graphical login session")
+	}
+	t.Cleanup(func() { cfRelease(session) })
+
+	onConsole, ok := dictionaryFlag(session, sessionOnConsoleKey)
+	require.True(t, ok)
+	assert.True(t, onConsole)
+	_, ok = dictionaryFlag(session, "DaguNoSuchSessionKey")
+	assert.False(t, ok)
+}
+
+// The trust check's prompt option is set to true, which is what makes macOS
+// show the Accessibility prompt.
+func TestAccessibilityPromptOptions(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, load())
+	options := accessibilityPromptOptions()
+	require.NotZero(t, options)
+	t.Cleanup(func() { cfRelease(options) })
+
+	prompt, ok := dictionaryFlag(options, axTrustedCheckOptionPrompt)
+	require.True(t, ok)
+	assert.True(t, prompt)
+}
+
+// The window server reports when it last received input, which lies in the
+// past.
+func TestLastInput(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, load())
+	last := (&darwinBackend{}).LastInput()
+	assert.False(t, last.IsZero())
+	assert.False(t, last.After(time.Now()))
+}
+
+// While held, the power assertions are listed by pmset under the reason
+// Dagu gives; releasing them removes them.
+func TestKeepAwake(t *testing.T) {
+	require.NoError(t, load())
+	release, err := keepAwake()
+	require.NoError(t, err)
+	assert.Contains(t, powerAssertions(t), awakeReason)
+	release()
+	assert.NotContains(t, powerAssertions(t), awakeReason)
+}
+
+func powerAssertions(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("/usr/bin/pmset", "-g", "assertions").Output()
+	require.NoError(t, err)
+	return string(out)
 }
 
 // TestDarwinDesktop moves the pointer, so it runs only when asked to with

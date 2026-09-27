@@ -16,7 +16,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 	"unicode/utf16"
+	"unsafe"
 
 	"github.com/ebitengine/purego"
 )
@@ -25,6 +27,7 @@ const (
 	coreGraphicsPath        = "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
 	coreFoundationPath      = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
 	applicationServicesPath = "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+	ioKitPath               = "/System/Library/Frameworks/IOKit.framework/IOKit"
 	screencapturePath       = "/usr/sbin/screencapture"
 )
 
@@ -46,6 +49,27 @@ const (
 	mouseButtonLeft   = 0
 	mouseButtonRight  = 1
 	mouseButtonCenter = 2
+
+	// cfStringEncodingUTF8 is kCFStringEncodingUTF8.
+	cfStringEncodingUTF8 = 0x08000100
+	// Keys of the login session dictionary. The lock key is present only
+	// while the screen is locked.
+	sessionOnConsoleKey    = "kCGSSessionOnConsoleKey"
+	sessionScreenLockedKey = "CGSSessionScreenIsLocked"
+
+	// Power assertions that keep the display and the system awake, at
+	// kIOPMAssertionLevelOn.
+	assertionDisplayAwake = "PreventUserIdleDisplaySleep"
+	assertionSystemAwake  = "PreventUserIdleSystemSleep"
+	assertionLevelOn      = 255
+
+	// axTrustedCheckOptionPrompt is kAXTrustedCheckOptionPrompt.
+	axTrustedCheckOptionPrompt = "AXTrustedCheckOptionPrompt"
+
+	// Arguments that make CGEventSourceSecondsSinceLastEventType report
+	// any input the window server received.
+	eventSourceStateHIDSystem = 1
+	anyInputEventType         = 0xFFFFFFFF
 
 	mouseEventClickState = 1
 	scrollUnitLine       = 1
@@ -92,11 +116,26 @@ var (
 	cgEventSetIntegerValueField     func(event uintptr, field uint32, value int64)
 	cgEventSetFlags                 func(event uintptr, flags uint64)
 	cgEventPost                     func(tap uint32, event uintptr)
+	cgEventSourceSecondsSinceLast   func(state int32, eventType uint32) float64
 	cgPreflightScreenCaptureAccess  func() bool
 	cgRequestScreenCaptureAccess    func() bool
 	cgSessionCopyCurrentDictionary  func() uintptr
 	cfRelease                       func(ref uintptr)
+	cfStringCreateWithCString       func(alloc uintptr, text string, encoding uint32) uintptr
+	cfDictionaryGetValue            func(dict, key uintptr) uintptr
+	cfBooleanGetValue               func(boolean uintptr) bool
+	cfDictionaryCreate              func(alloc uintptr, keys, values *uintptr, count int, keyCallBacks, valueCallBacks uintptr) uintptr
+	axIsProcessTrustedWithOptions   func(options uintptr) bool
 	axIsProcessTrusted              func() bool
+	ioPMAssertionCreateWithName     func(kind uintptr, level uint32, name uintptr, id *uint32) int32
+	ioPMAssertionRelease            func(id uint32) int32
+)
+
+// Core Foundation data symbols, resolved when the libraries load.
+var (
+	cfBooleanTrue                  uintptr
+	cfTypeDictionaryKeyCallBacks   uintptr
+	cfTypeDictionaryValueCallBacks uintptr
 )
 
 var (
@@ -135,13 +174,47 @@ func load() error {
 		purego.RegisterLibFunc(&cgEventSetIntegerValueField, cg, "CGEventSetIntegerValueField")
 		purego.RegisterLibFunc(&cgEventSetFlags, cg, "CGEventSetFlags")
 		purego.RegisterLibFunc(&cgEventPost, cg, "CGEventPost")
+		purego.RegisterLibFunc(&cgEventSourceSecondsSinceLast, cg, "CGEventSourceSecondsSinceLastEventType")
 		purego.RegisterLibFunc(&cgPreflightScreenCaptureAccess, cg, "CGPreflightScreenCaptureAccess")
 		purego.RegisterLibFunc(&cgRequestScreenCaptureAccess, cg, "CGRequestScreenCaptureAccess")
 		purego.RegisterLibFunc(&cgSessionCopyCurrentDictionary, cg, "CGSessionCopyCurrentDictionary")
 		purego.RegisterLibFunc(&cfRelease, cf, "CFRelease")
+		purego.RegisterLibFunc(&cfStringCreateWithCString, cf, "CFStringCreateWithCString")
+		purego.RegisterLibFunc(&cfDictionaryGetValue, cf, "CFDictionaryGetValue")
+		purego.RegisterLibFunc(&cfBooleanGetValue, cf, "CFBooleanGetValue")
+		purego.RegisterLibFunc(&cfDictionaryCreate, cf, "CFDictionaryCreate")
+		if errLoad = loadCFSymbols(cf); errLoad != nil {
+			return
+		}
 		purego.RegisterLibFunc(&axIsProcessTrusted, as, "AXIsProcessTrusted")
+		purego.RegisterLibFunc(&axIsProcessTrustedWithOptions, as, "AXIsProcessTrustedWithOptions")
+		iokit, err := purego.Dlopen(ioKitPath, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+		if err != nil {
+			errLoad = fmt.Errorf("load IOKit: %w", err)
+			return
+		}
+		purego.RegisterLibFunc(&ioPMAssertionCreateWithName, iokit, "IOPMAssertionCreateWithName")
+		purego.RegisterLibFunc(&ioPMAssertionRelease, iokit, "IOPMAssertionRelease")
 	})
 	return errLoad
+}
+
+// loadCFSymbols resolves the Core Foundation constants the permission
+// prompt needs.
+func loadCFSymbols(cf uintptr) error {
+	booleanTrue, err := purego.Dlsym(cf, "kCFBooleanTrue")
+	if err != nil {
+		return fmt.Errorf("load kCFBooleanTrue: %w", err)
+	}
+	// The symbol is the address of the variable that holds the reference.
+	cfBooleanTrue = *(*uintptr)(unsafe.Add(nil, booleanTrue)) //nolint:gosec // reads a C global whose address dlsym returned
+	if cfTypeDictionaryKeyCallBacks, err = purego.Dlsym(cf, "kCFTypeDictionaryKeyCallBacks"); err != nil {
+		return fmt.Errorf("load kCFTypeDictionaryKeyCallBacks: %w", err)
+	}
+	if cfTypeDictionaryValueCallBacks, err = purego.Dlsym(cf, "kCFTypeDictionaryValueCallBacks"); err != nil {
+		return fmt.Errorf("load kCFTypeDictionaryValueCallBacks: %w", err)
+	}
+	return nil
 }
 
 // Open returns a driver for the desktop of the current session.
@@ -163,12 +236,10 @@ func Check() Diagnostics {
 		diag.Problems = append(diag.Problems, err.Error())
 		return diag
 	}
-	session := cgSessionCopyCurrentDictionary()
-	if session == 0 {
-		diag.Problems = append(diag.Problems, "no graphical login session; run the worker in a logged-in user session")
+	if problem := sessionProblem(); problem != "" {
+		diag.Problems = append(diag.Problems, problem)
 		return diag
 	}
-	cfRelease(session)
 	if display, err := mainDisplay(); err == nil {
 		diag.Width, diag.Height = display.pixelWidth, display.pixelHeight
 	}
@@ -181,12 +252,34 @@ func Check() Diagnostics {
 	return diag
 }
 
-// RequestPermissions asks macOS to show its Screen Recording prompt for the
-// current process. Accessibility must be granted in System Settings.
+// RequestPermissions asks macOS to show its Screen Recording and
+// Accessibility prompts for the current process, for the permissions it
+// lacks.
 func RequestPermissions() {
-	if load() == nil && !cgPreflightScreenCaptureAccess() {
+	if load() != nil {
+		return
+	}
+	if !cgPreflightScreenCaptureAccess() {
 		cgRequestScreenCaptureAccess()
 	}
+	if !axIsProcessTrusted() {
+		if options := accessibilityPromptOptions(); options != 0 {
+			_ = axIsProcessTrustedWithOptions(options)
+			cfRelease(options)
+		}
+	}
+}
+
+// accessibilityPromptOptions returns the options that make the trust check
+// show the Accessibility prompt, or 0. The caller releases them.
+func accessibilityPromptOptions() uintptr {
+	key := cfString(axTrustedCheckOptionPrompt)
+	if key == 0 {
+		return 0
+	}
+	defer cfRelease(key)
+	value := cfBooleanTrue
+	return cfDictionaryCreate(0, &key, &value, 1, cfTypeDictionaryKeyCallBacks, cfTypeDictionaryValueCallBacks)
 }
 
 // display describes the main display in points and pixels.
@@ -219,6 +312,75 @@ func mainDisplay() (display, error) {
 	}, nil
 }
 
+// sessionProblem reports why the login session cannot be operated: there
+// is none, another user's session has the display, or the screen is locked.
+// It returns an empty string when the session can be operated.
+func sessionProblem() string {
+	session := cgSessionCopyCurrentDictionary()
+	if session == 0 {
+		return "no graphical login session; run the worker in a logged-in user session"
+	}
+	defer cfRelease(session)
+	if onConsole, ok := dictionaryFlag(session, sessionOnConsoleKey); ok && !onConsole {
+		return "another user's session has the display; switch back to this user"
+	}
+	if locked, ok := dictionaryFlag(session, sessionScreenLockedKey); ok && locked {
+		return "the screen is locked; unlock it and keep it unlocked while computer steps run"
+	}
+	return ""
+}
+
+// dictionaryFlag reads a boolean of a Core Foundation dictionary. ok is
+// false when the dictionary does not hold the key.
+func dictionaryFlag(dict uintptr, key string) (value, ok bool) {
+	cfKey := cfString(key)
+	if cfKey == 0 {
+		return false, false
+	}
+	defer cfRelease(cfKey)
+	ref := cfDictionaryGetValue(dict, cfKey)
+	if ref == 0 {
+		return false, false
+	}
+	return cfBooleanGetValue(ref), true
+}
+
+// cfString returns a Core Foundation string the caller releases, or 0.
+func cfString(text string) uintptr {
+	return cfStringCreateWithCString(0, text, cfStringEncodingUTF8)
+}
+
+// keepAwake keeps the display and the system awake until release is
+// called. An error means the power settings apply as usual.
+func keepAwake() (release func(), err error) {
+	name := cfString(awakeReason)
+	if name == 0 {
+		return func() {}, errors.New("create the power assertion name")
+	}
+	defer cfRelease(name)
+	var ids []uint32
+	var errs []error
+	for _, kind := range []string{assertionDisplayAwake, assertionSystemAwake} {
+		kindRef := cfString(kind)
+		if kindRef == 0 {
+			errs = append(errs, fmt.Errorf("create the %s assertion type", kind))
+			continue
+		}
+		var id uint32
+		if code := ioPMAssertionCreateWithName(kindRef, assertionLevelOn, name, &id); code != 0 {
+			errs = append(errs, fmt.Errorf("create %s assertion: IOReturn 0x%x", kind, uint32(code))) //nolint:gosec // IOReturn codes are reported as unsigned hex
+		} else {
+			ids = append(ids, id)
+		}
+		cfRelease(kindRef)
+	}
+	return func() {
+		for _, id := range ids {
+			_ = ioPMAssertionRelease(id)
+		}
+	}, errors.Join(errs...)
+}
+
 // darwinBackend drives the desktop through Quartz events. Positions are
 // screenshot pixels, which Quartz measures in points.
 type darwinBackend struct {
@@ -227,6 +389,8 @@ type darwinBackend struct {
 	// drags and every event carries the held modifiers.
 	buttons map[Button]bool
 	flags   uint64
+	// wake releases the power assertions held while the backend is open.
+	wake func()
 }
 
 func newDarwinBackend() (*darwinBackend, error) {
@@ -234,12 +398,19 @@ func newDarwinBackend() (*darwinBackend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &darwinBackend{display: display, buttons: map[Button]bool{}}, nil
+	// A display that sleeps shows nothing to capture; staying awake is best
+	// effort.
+	wake, _ := keepAwake()
+	return &darwinBackend{display: display, buttons: map[Button]bool{}, wake: wake}, nil
 }
 
 // Capture uses the screencapture tool, which keeps working across macOS
 // releases that retire the Quartz capture functions.
 func (b *darwinBackend) Capture() (*image.RGBA, error) {
+	// A locked screen captures without error but shows the lock screen.
+	if problem := sessionProblem(); problem != "" {
+		return nil, errors.New(problem)
+	}
 	dir, err := os.MkdirTemp("", "dagu-screen-")
 	if err != nil {
 		return nil, err
@@ -369,7 +540,13 @@ func (b *darwinBackend) Type(text string) error {
 	return nil
 }
 
+func (b *darwinBackend) LastInput() time.Time {
+	seconds := cgEventSourceSecondsSinceLast(eventSourceStateHIDSystem, anyInputEventType)
+	return time.Now().Add(-time.Duration(seconds * float64(time.Second)))
+}
+
 func (b *darwinBackend) Close() error {
+	b.wake()
 	return nil
 }
 
