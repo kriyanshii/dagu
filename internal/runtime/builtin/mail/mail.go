@@ -79,7 +79,6 @@ func newSend(ctx context.Context, step ir.Step) (executor.Executor, error) {
 	if err := decodeConfig(step.ExecutorConfig.Config, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to decode mail config: %w", err)
 	}
-
 	env := runtime.NewEnv(ctx, step)
 
 	exec := &mail{cfg: &cfg}
@@ -96,6 +95,7 @@ func newSend(ctx context.Context, step ir.Step) (executor.Executor, error) {
 		if cfg.From == "" {
 			cfg.From = exec.address
 		}
+		mailerConfig.RequireAttachments = true
 		exec.mailer = mailer.New(mailerConfig)
 		return exec, nil
 	}
@@ -105,6 +105,9 @@ func newSend(ctx context.Context, step ir.Step) (executor.Executor, error) {
 		return nil, fmt.Errorf("failed to substitute string fields: %w", err)
 	}
 
+	// The workflow names these attachments, so a missing one must not be
+	// dropped silently.
+	mailerConfig.RequireAttachments = true
 	exec.mailer = mailer.New(mailerConfig)
 
 	return exec, nil
