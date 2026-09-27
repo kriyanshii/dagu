@@ -77,6 +77,8 @@ type Runner struct {
 	pause         time.Duration
 	lastError     error
 	preconditions []ir.ConditionResult
+	// preconditionCancel interrupts the running DAG-level precondition check.
+	preconditionCancel context.CancelFunc
 
 	handlerMu sync.RWMutex
 	handlers  map[ir.HandlerType]*Node
@@ -178,11 +180,15 @@ func (r *Runner) Run(ctx context.Context, plan *Plan, progressCh chan ProgressUp
 			r.setFailed()
 			r.Cancel(plan)
 		} else {
-			results, conditionErr := EvaluateConditions(ctx, shell, rCtx.DAG.Preconditions)
+			checkCtx, stopCheck := r.watchPreconditionStop(ctx)
+			results, conditionErr := EvaluateConditions(checkCtx, shell, rCtx.DAG.Preconditions)
+			stopCheck()
 			r.setPreconditionResults(results)
 			if conditionErr != nil {
 				logger.Info(ctx, "Preconditions are not met", tag.Error(conditionErr))
-				if !errors.Is(conditionErr, ErrConditionNotMet) {
+				// A check interrupted by abort leaves the run aborted.
+				abortedCheck := errors.Is(conditionErr, errConditionInterrupted) && r.isCanceled()
+				if !errors.Is(conditionErr, ErrConditionNotMet) && !abortedCheck {
 					r.setLastError(conditionErr)
 					r.setFailed()
 				}
@@ -579,8 +585,7 @@ func (r *Runner) runNodeExecution(ctx context.Context, plan *Plan, node *Node, p
 	met, err := r.meetsPreconditions(ctx, node, preconditionProgress)
 	if err != nil {
 		r.markBuildPrecondition(ctx, buildSession, node, ir.BuildReasonPreconditionError, "", progressCh)
-		r.setLastError(err)
-		r.Cancel(plan)
+		r.handlePreconditionError(plan, err)
 		return
 	}
 	if !met {
@@ -761,8 +766,7 @@ func (r *Runner) runHumanTask(ctx context.Context, plan *Plan, node *Node, progr
 	ctx = r.setupNodeExecutionEnv(ctx, node)
 	met, err := r.meetsPreconditions(ctx, node, progressCh)
 	if err != nil {
-		r.setLastError(err)
-		r.Cancel(plan)
+		r.handlePreconditionError(plan, err)
 		return
 	}
 	if !met {
@@ -1094,6 +1098,12 @@ func (r *Runner) Stop(
 		if !r.isCanceled() {
 			r.setCanceled()
 		}
+		r.mu.RLock()
+		cancelCheck := r.preconditionCancel
+		r.mu.RUnlock()
+		if cancelCheck != nil {
+			cancelCheck()
+		}
 	}
 
 	for _, node := range plan.Nodes() {
@@ -1405,6 +1415,25 @@ func (r *Runner) setFailed() {
 	r.failed = 1
 }
 
+// watchPreconditionStop returns a context for the DAG-level precondition check
+// that Stop cancels, including a stop that arrived before the check started.
+// The returned func ends the watch and must be called once the check returns.
+func (r *Runner) watchPreconditionStop(ctx context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	r.mu.Lock()
+	r.preconditionCancel = cancel
+	r.mu.Unlock()
+	if r.isCanceled() {
+		cancel()
+	}
+	return ctx, func() {
+		r.mu.Lock()
+		r.preconditionCancel = nil
+		r.mu.Unlock()
+		cancel()
+	}
+}
+
 func (r *Runner) resetRunState(plan *Plan) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1625,6 +1654,21 @@ func externalStepRetryEnabled(ctx context.Context) bool {
 	return false
 }
 
+// handlePreconditionError records a step precondition error and cancels the
+// run. An interrupted check leaves the run to the abort or timeout that
+// interrupted it, so the run ends as that event defines: an abort records no
+// error, and a timeout records the interruption as the failure.
+func (r *Runner) handlePreconditionError(plan *Plan, err error) {
+	if !errors.Is(err, errConditionInterrupted) {
+		r.setLastError(err)
+		r.Cancel(plan)
+		return
+	}
+	if !r.isCanceled() {
+		r.setLastError(err)
+	}
+}
+
 // checkPreconditions evaluates the preconditions for a node and updates its status accordingly.
 func (r *Runner) meetsPreconditions(ctx context.Context, node *Node, progressCh chan ProgressUpdate) (bool, error) {
 	err := node.evalPreconditions(ctx)
@@ -1634,7 +1678,11 @@ func (r *Runner) meetsPreconditions(ctx context.Context, node *Node, progressCh 
 			r.report(ctx, progressCh, node)
 			return false, nil
 		}
-		node.SetStatus(ir.NodeFailed)
+		status := ir.NodeFailed
+		if errors.Is(err, errConditionInterrupted) {
+			status = ir.NodeAborted
+		}
+		node.SetStatus(status)
 		node.SetError(err)
 		r.report(ctx, progressCh, node)
 		return false, err
