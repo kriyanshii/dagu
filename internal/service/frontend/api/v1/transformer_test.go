@@ -224,6 +224,30 @@ func TestToDAGRunDetailsTreatsHumanTaskFormWithTrailingDataAsAbsent(t *testing.T
 	assert.Nil(t, details.Nodes[0].Step.HumanTask.Form)
 }
 
+func TestToDAGRunDetailsIncludesError(t *testing.T) {
+	status := ir.DAGRunStatus{
+		Name:     "test-dag",
+		DAGRunID: "run-1",
+		Status:   ir.Failed,
+		Error:    "field 'actions.broken_action.input_schema': failed to parse schema JSON",
+	}
+
+	details := ToDAGRunDetails(status)
+	require.NotNil(t, details.Error)
+	assert.Equal(t, status.Error, *details.Error)
+}
+
+func TestToDAGRunDetailsOmitsErrorWhenEmpty(t *testing.T) {
+	status := ir.DAGRunStatus{
+		Name:     "test-dag",
+		DAGRunID: "run-1",
+		Status:   ir.Succeeded,
+	}
+
+	details := ToDAGRunDetails(status)
+	assert.Nil(t, details.Error)
+}
+
 func TestToDAGRunSummaryOmitsAutoRetryLimitWhenUnconfigured(t *testing.T) {
 	status := ir.DAGRunStatus{
 		Name:           "test-dag",
