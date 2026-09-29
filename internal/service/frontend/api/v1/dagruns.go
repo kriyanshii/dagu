@@ -31,6 +31,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/cmn/logger/tag"
 	"github.com/dagucloud/dagu/v2/internal/cmn/runenv"
 	"github.com/dagucloud/dagu/v2/internal/cmn/stringutil"
+	"github.com/dagucloud/dagu/v2/internal/cmn/yamlutil"
 	"github.com/dagucloud/dagu/v2/internal/dagrun"
 	"github.com/dagucloud/dagu/v2/internal/dispatch"
 	"github.com/dagucloud/dagu/v2/internal/humantask"
@@ -418,6 +419,9 @@ func applyInlineEnqueueLabels(data []byte, labels string) ([]byte, error) {
 	if len(data) == 0 || labels == "" {
 		return data, nil
 	}
+
+	// Normalize once so every reader below sees the same documents.
+	data = yamlutil.ClearEmptyDocumentSeparators(data)
 
 	existingLabels, err := extractInlineEnqueueLabelStrings(data)
 	if err != nil {

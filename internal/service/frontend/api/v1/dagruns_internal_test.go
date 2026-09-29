@@ -1273,6 +1273,54 @@ steps:
 	requireNoDeprecatedTagsKey(t, patched)
 }
 
+func TestApplyInlineEnqueueLabels_PreservesDocAfterEmptyDocument(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`name: main
+steps:
+  - name: s1
+    run: echo hi
+---
+---
+name: child
+steps:
+  - name: s2
+    run: echo bye
+`)
+
+	patched, err := applyInlineEnqueueLabels(data, "env=prod")
+	require.NoError(t, err)
+
+	content := string(patched)
+	assert.Contains(t, content, "name: child")
+	assert.Contains(t, content, "echo bye")
+}
+
+func TestApplyInlineEnqueueLabels_LeadingEmptyDocument(t *testing.T) {
+	t.Parallel()
+
+	// A leading empty document must not hide the first real document: the
+	// label merge reads the same stream the parser sees.
+	data := []byte(`---
+---
+name: main
+labels:
+  - env=prod
+steps:
+  - name: s1
+    run: echo hi
+`)
+
+	patched, err := applyInlineEnqueueLabels(data, "team=backend")
+	require.NoError(t, err)
+
+	labels := labelsFromPatchedSpec(t, patched)
+	assert.Contains(t, labels, "env=prod")
+	assert.Contains(t, labels, "team=backend")
+	assert.Contains(t, string(patched), "name: main")
+	requireNoDeprecatedTagsKey(t, patched)
+}
+
 func TestApplyInlineEnqueueLabels_InvalidYAML(t *testing.T) {
 	t.Parallel()
 
