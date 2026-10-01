@@ -36,6 +36,10 @@ const (
 	callTimeoutSlack = 5 * time.Second
 	// exitPollInterval spaces the checks for a closing browser's exit.
 	exitPollInterval = 100 * time.Millisecond
+	// unstartedCallTimeout bounds each request that ends a browser whose
+	// runtime failed to start, so a slow request cannot use up the next one's
+	// time.
+	unstartedCallTimeout = 5 * time.Second
 )
 
 // pageTextExpression reads the text a person sees on the page.
@@ -117,14 +121,15 @@ func (stagehandLauncher) Launch(ctx context.Context, opts launchOptions) (engine
 	if opts.Proxy != "" {
 		launch.Proxy = &stagehand.LocalProxyConfig{Server: opts.Proxy}
 	}
+	cdpURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	browser, err := stagehand.LaunchLocalBrowser(ctx, launch)
 	if err != nil {
-		return nil, fmt.Errorf("launch browser: %w%s", err, sandboxHint(opts.NoSandbox))
+		launchErr := fmt.Errorf("launch browser: %w%s", err, sandboxHint(opts.NoSandbox))
+		return nil, errors.Join(launchErr, endUnstartedBrowser(ctx, nil, cdpURL, opts.UserDataDir))
 	}
-	cdpURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	eng, err := startEngine(ctx, browser, cdpURL, opts)
 	if err != nil {
-		return nil, errors.Join(err, browser.Close(context.WithoutCancel(ctx)))
+		return nil, errors.Join(err, endUnstartedBrowser(ctx, browser, cdpURL, opts.UserDataDir))
 	}
 	extension, err := browserhost.StagehandExtension(ctx, cdpURL)
 	if err != nil {
@@ -158,6 +163,37 @@ func (stagehandLauncher) Reattach(ctx context.Context, handle browserHandle, opt
 		return nil, errors.Join(err, eng.Close(context.WithoutCancel(ctx)))
 	}
 	return eng, nil
+}
+
+// endUnstartedBrowser ends the browser launched with profileDir at cdpURL
+// after its runtime failed to start. The SDK leaves a kept-alive browser
+// running then, and browser, when known, may no longer reach it, so the
+// browser is asked to exit over DevTools. The debugging port was only free
+// when chosen, so the browser is closed only when it uses profileDir.
+func endUnstartedBrowser(ctx context.Context, browser *stagehand.Browser, cdpURL, profileDir string) error {
+	ctx = context.WithoutCancel(ctx)
+	var err error
+	if profileDir != "" {
+		owned, ownErr := boundCall(ctx, unstartedCallTimeout, func(ctx context.Context) (bool, error) {
+			return browserhost.UsesProfile(ctx, cdpURL, profileDir)
+		})
+		switch {
+		case errors.Is(ownErr, browserhost.ErrUnreachable):
+		case ownErr != nil:
+			err = fmt.Errorf("identify browser: %w", ownErr)
+		case owned:
+			_, err = boundCall(ctx, unstartedCallTimeout, func(ctx context.Context) (struct{}, error) {
+				return struct{}{}, browserhost.CloseBrowser(ctx, cdpURL)
+			})
+		}
+	}
+	if browser != nil {
+		_, closeErr := boundCall(ctx, unstartedCallTimeout, func(ctx context.Context) (struct{}, error) {
+			return struct{}{}, browser.Close(ctx)
+		})
+		err = errors.Join(err, closeErr)
+	}
+	return err
 }
 
 func startEngine(ctx context.Context, browser *stagehand.Browser, cdpURL string, opts launchOptions) (*stagehandEngine, error) {
