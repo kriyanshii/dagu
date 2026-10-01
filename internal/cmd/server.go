@@ -92,7 +92,7 @@ func newServer(ctx *Context, rs *resource.Service, stores frontend.Stores, opts 
 func runServer(ctx *Context, _ []string, serverOpts ...frontend.ServerOption) error {
 	// Create a context that will be cancelled on interrupt signal.
 	// This must be created BEFORE server initialization so auth provider init can be cancelled.
-	signalCtx, stop := notifyShutdownContext(ctx.Context, ctx.Config.SignalHandling.EnablePropagation, syscall.SIGINT, syscall.SIGTERM)
+	signalCtx, stop := notifyShutdownContext(ctx.Context, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	// Create a signal-aware context for services
@@ -179,7 +179,7 @@ func runServer(ctx *Context, _ []string, serverOpts ...frontend.ServerOption) er
 	}
 
 	err = server.Serve(serviceCtx)
-	stop() // Restore default signal handling while deferred cleanup runs.
+	stop() // Let a second SIGINT end deferred cleanup; SIGTERM stays absorbed.
 	if err != nil {
 		return fmt.Errorf("failed to start server: %w", err)
 	}

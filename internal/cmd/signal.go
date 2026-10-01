@@ -33,10 +33,9 @@ func (e shutdownSignalError) As(target any) bool {
 
 // notifyShutdownContext preserves the received signal as the cancellation
 // cause so services can forward it even after their context becomes done.
-func notifyShutdownContext(parent context.Context, propagate bool, signals ...os.Signal) (context.Context, context.CancelFunc) {
-	if !propagate {
-		return signal.NotifyContext(parent, signals...)
-	}
+// Once a signal arrives, a repeated SIGTERM is absorbed for the rest of the
+// process; a repeated SIGINT takes its default action after stop.
+func notifyShutdownContext(parent context.Context, signals ...os.Signal) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancelCause(parent)
 	if signalctx.OSSignalsDisabled(parent) {
 		return ctx, func() { cancel(nil) }
@@ -46,6 +45,7 @@ func notifyShutdownContext(parent context.Context, propagate bool, signals ...os
 	go func() {
 		select {
 		case sig := <-quit:
+			signalctx.AbsorbRepeatedTerminate(parent)
 			signal.Stop(quit)
 			cancel(shutdownSignalError{signal: sig})
 		case <-ctx.Done():
