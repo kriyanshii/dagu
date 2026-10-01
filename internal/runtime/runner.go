@@ -626,6 +626,9 @@ func (r *Runner) runNodeExecution(ctx context.Context, plan *Plan, node *Node, p
 	r.setupChatMessages(ctx, node)
 	r.setupPushBackConversation(ctx, node)
 	declaredStep := node.Step()
+	// A graceful stop does not signal repeating steps, so an attempt that is
+	// running when the stop arrives completes with its own outcome.
+	stoppedDuringAttempt := false
 
 ExecRepeat: // repeat execution
 	for !r.isCanceled() {
@@ -639,6 +642,7 @@ ExecRepeat: // repeat execution
 			return
 		}
 		execErr := r.execNode(attemptCtx, node, progressCh)
+		stoppedDuringAttempt = r.isCanceled()
 		if execErr == nil {
 			committed, commitErr := commitBuildAttempt(attemptCtx, node, buildSession, stagingPath)
 			if committed {
@@ -681,11 +685,20 @@ ExecRepeat: // repeat execution
 		break ExecRepeat
 	}
 
+	// A stop after a repeating step's attempt finished aborts its pending
+	// repetition, even when the executor already reported the attempt's
+	// success. An attempt that was running when the stop arrived keeps its
+	// outcome.
+	isRepetitive := node.Step().RepeatPolicy.RepeatMode != ""
+	if isRepetitive && r.isCanceled() && !stoppedDuringAttempt {
+		status := node.State().Status
+		if status == ir.NodeRunning || status == ir.NodeSucceeded || status == ir.NodePartiallySucceeded {
+			node.SetStatus(ir.NodeAborted)
+		}
+	}
+
 	// Determine final status for nodes still in running state.
-	// Repetitive tasks complete naturally (signal not sent - see runner.Signal).
-	// Only mark as aborted if: not a repetitive task AND runner was canceled.
 	if node.State().Status == ir.NodeRunning {
-		isRepetitive := node.Step().RepeatPolicy.RepeatMode != ""
 		if !isRepetitive && r.isCanceled() {
 			node.SetStatus(ir.NodeAborted)
 		} else if node.Step().Approval != nil {
