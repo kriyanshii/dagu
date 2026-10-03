@@ -151,6 +151,14 @@ func writeOnce(ctx context.Context, path string, table Table, opts WriteOptions)
 	for c := range cols {
 		cols[c] = c + 1
 	}
+	// Appended cells land in rows that may already hold merged cells, which
+	// would take every value written inside them into their top-left cell.
+	var merges mergeFill
+	if opts.Mode == WriteAppend {
+		if merges, err = w.mergeMap(sheet); err != nil {
+			return nil, err
+		}
+	}
 	headerRow := 0
 	if opts.Mode == WriteAppend && !fresh {
 		targets, err := w.alignAppend(sheet, table, opts.Header, warn)
@@ -182,6 +190,9 @@ func writeOnce(ctx context.Context, path string, table Table, opts WriteOptions)
 	}
 	if writeHeader {
 		for c, name := range table.Columns {
+			if err := w.notMerged(sheet, merges, cols[c], startRow); err != nil {
+				return nil, err
+			}
 			if err := w.f.SetCellStr(sheet, cellName(cols[c], startRow), name); err != nil {
 				return nil, w.cellError(sheet, cols[c], startRow, err.Error())
 			}
@@ -206,6 +217,9 @@ func writeOnce(ctx context.Context, path string, table Table, opts WriteOptions)
 			}
 			if v == nil {
 				continue
+			}
+			if err := w.notMerged(sheet, merges, cols[c], r); err != nil {
+				return nil, err
 			}
 			if err := w.setCell(sheet, cols[c], r, v); err != nil {
 				return nil, err
@@ -240,6 +254,14 @@ func writeOnce(ctx context.Context, path string, table Table, opts WriteOptions)
 		return nil, err
 	}
 	return result, nil
+}
+
+// notMerged refuses an appended cell inside a merged cell.
+func (w *file) notMerged(sheet string, merges mergeFill, col, row int) error {
+	if merge, ok := merges.at(col, row); ok {
+		return w.cellError(sheet, col, row, fmt.Sprintf("cannot append into merged cell %s; unmerge it to write this cell", merge.ref()))
+	}
+	return nil
 }
 
 func mustGrid(w *file, sheet string) [][]string {
@@ -310,7 +332,7 @@ func (w *file) alignAppend(sheet string, table Table, header bool, warn func(str
 			return targets, w.sheetError(sheet, fmt.Sprintf("column %q not found in header row %d; did you mean %q?", name, targets.headerRow, near))
 		default:
 			next++
-			if err := w.addHeaderColumn(sheet, targets.headerRow, next, name); err != nil {
+			if err := w.addHeaderColumn(sheet, merges, targets.headerRow, next, name); err != nil {
 				return targets, err
 			}
 			targets.cols[c] = next
@@ -322,8 +344,13 @@ func (w *file) alignAppend(sheet string, table Table, header bool, warn func(str
 
 // addHeaderColumn writes the header cell of a column added at the right of
 // a header row, copying the style of the header cell to its left so the
-// header keeps one look.
-func (w *file) addHeaderColumn(sheet string, headerRow, col int, name string) error {
+// header keeps one look. A header cell inside a merged cell is refused: the
+// name would land in the merged cell's top-left cell, which may hold
+// another column's header.
+func (w *file) addHeaderColumn(sheet string, merges mergeFill, headerRow, col int, name string) error {
+	if merge, ok := merges.at(col, headerRow); ok {
+		return w.cellError(sheet, col, headerRow, fmt.Sprintf("merged cell %s covers the header cell of new column %q; unmerge it to add the column", merge.ref(), name))
+	}
 	cell := cellName(col, headerRow)
 	if err := w.f.SetCellStr(sheet, cell, name); err != nil {
 		return w.cellError(sheet, col, headerRow, err.Error())

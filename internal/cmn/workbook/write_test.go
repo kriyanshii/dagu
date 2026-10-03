@@ -776,3 +776,35 @@ func TestAppendInnerSpacingMismatchIsRefused(t *testing.T) {
 	_, err = Append(context.Background(), path, more, WriteOptions{Header: true})
 	require.ErrorContains(t, err, `column "First  Name" not found in header row 1; did you mean "First Name"?`)
 }
+
+// An empty merged block below the rows, such as a notes box, would take
+// every appended cell it covers into its top-left cell.
+func TestAppendIntoMergedCellIsRefused(t *testing.T) {
+	t.Parallel()
+	f := excelize.NewFile()
+	setRow(t, f, "Sheet1", "A1", "item", "qty")
+	setRow(t, f, "Sheet1", "A2", "pen", 1)
+	require.NoError(t, f.MergeCell("Sheet1", "A3", "B4"))
+	path := saveBook(t, f, "block.xlsx")
+	before := fileHash(t, path)
+
+	more := Table{Columns: []string{"item", "qty"}, Rows: [][]any{{"ink", 2}, {"pad", 3}}}
+	_, err := Append(context.Background(), path, more, WriteOptions{Header: true})
+	require.EqualError(t, err, "block.xlsx Sheet1!A3: cannot append into merged cell A3:B4; unmerge it to write this cell")
+	assert.Equal(t, before, fileHash(t, path))
+}
+
+func TestAppendNewColumnUnderMergedHeaderIsRefused(t *testing.T) {
+	t.Parallel()
+	f := excelize.NewFile()
+	setRow(t, f, "Sheet1", "A1", "item", "qty")
+	setRow(t, f, "Sheet1", "A2", "pen", 1)
+	require.NoError(t, f.MergeCell("Sheet1", "B1", "C1"))
+	path := saveBook(t, f, "header.xlsx")
+	before := fileHash(t, path)
+
+	more := Table{Columns: []string{"item", "qty", "note"}, Rows: [][]any{{"ink", 2, "blue"}}}
+	_, err := Append(context.Background(), path, more, WriteOptions{Header: true})
+	require.EqualError(t, err, `header.xlsx Sheet1!C1: merged cell B1:C1 covers the header cell of new column "note"; unmerge it to add the column`)
+	assert.Equal(t, before, fileHash(t, path))
+}
