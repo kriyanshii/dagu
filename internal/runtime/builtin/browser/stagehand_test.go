@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -502,7 +503,10 @@ func TestStagehandDocumentID(t *testing.T) {
 }
 
 // The process ID a launched browser reports is the browser itself: ending it
-// closes the browser.
+// closes the browser. Ending any other process would leave the browser
+// answering. A browser that was ended refuses connections, or, on Windows
+// while the process is still being torn down, accepts them without
+// answering, so a refusal or a timeout counts; any reply does not.
 func TestStagehandReportsBrowserProcess(t *testing.T) {
 	t.Parallel()
 
@@ -512,9 +516,12 @@ func TestStagehandReportsBrowserProcess(t *testing.T) {
 	process, err := os.FindProcess(handle.BrowserPID)
 	require.NoError(t, err)
 	require.NoError(t, process.Kill())
-	require.Eventually(t, func() bool {
-		return errors.Is(browserhost.Probe(context.Background(), handle.CDPURL), browserhost.ErrUnreachable)
-	}, 10*time.Second, 200*time.Millisecond, "the browser stops answering")
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		err := browserhost.Probe(context.Background(), handle.CDPURL)
+		var netErr net.Error
+		stopped := errors.Is(err, browserhost.ErrUnreachable) || (errors.As(err, &netErr) && netErr.Timeout())
+		assert.True(c, stopped, "the browser stops answering; last probe: %v", err)
+	}, 10*time.Second, 200*time.Millisecond)
 }
 
 // dialogPage opens an alert, a confirm, and a prompt while it loads, and
