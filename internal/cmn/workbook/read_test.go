@@ -5,7 +5,9 @@ package workbook
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -804,6 +806,56 @@ func TestProtectedWorkbook(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, got.Count)
 	assert.Equal(t, "INV-1", got.Rows[0]["Invoice No"])
+}
+
+func TestPasswordProtectedUsesDirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// The name sits in the directory. Bytes with the same spelling after
+	// the directory are the package payload and are not consulted.
+	named := filepath.Join(dir, "named.xlsx")
+	require.NoError(t, os.WriteFile(named, testCompoundFile(true), 0o600))
+	assert.True(t, passwordProtected(named))
+
+	decoy := filepath.Join(dir, "decoy.xlsx")
+	require.NoError(t, os.WriteFile(decoy, testCompoundFile(false), 0o600))
+	assert.False(t, passwordProtected(decoy))
+
+	_, err := Read(context.Background(), named, ReadOptions{})
+	require.ErrorIs(t, err, ErrPassword)
+	_, err = Read(context.Background(), decoy, ReadOptions{})
+	require.ErrorIs(t, err, ErrNotWorkbook)
+}
+
+// testCompoundFile builds a version-3 compound file whose directory is one
+// sector, then appends EncryptionInfo as a payload. withInfo also names
+// the directory stream EncryptionInfo; without it, only the payload does.
+func testCompoundFile(withInfo bool) []byte {
+	header := make([]byte, cfbHeaderBytes)
+	copy(header, oleHeader)
+	binary.LittleEndian.PutUint16(header[0x1A:], 3)
+	binary.LittleEndian.PutUint16(header[0x1E:], 9)
+	binary.LittleEndian.PutUint32(header[0x2C:], 1)
+	binary.LittleEndian.PutUint32(header[0x30:], 1)
+	binary.LittleEndian.PutUint32(header[0x3C:], cfbEndOfChain)
+	binary.LittleEndian.PutUint32(header[0x44:], cfbEndOfChain)
+	binary.LittleEndian.PutUint32(header[0x4C:], 0)
+	for i := 1; i < cfbDIFATInHead; i++ {
+		binary.LittleEndian.PutUint32(header[0x4C+i*4:], 0xFFFFFFFF)
+	}
+
+	fat := make([]byte, 512)
+	binary.LittleEndian.PutUint32(fat[0:], 0xFFFFFFFD)
+	binary.LittleEndian.PutUint32(fat[4:], cfbEndOfChain)
+
+	dir := make([]byte, 512)
+	if withInfo {
+		copy(dir, encryptionInfoName)
+		binary.LittleEndian.PutUint16(dir[64:], uint16(len(encryptionInfoName)+2))
+	}
+	payload := bytes.Repeat(encryptionInfoName, 64)
+	return append(append(append(header, fat...), dir...), payload...)
 }
 
 func TestLockFile(t *testing.T) {

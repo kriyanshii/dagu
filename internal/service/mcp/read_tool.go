@@ -417,7 +417,11 @@ func parseReadToolInput(raw json.RawMessage) (readInput, *readToolError) {
 		if err := json.Unmarshal(value, &text); err != nil {
 			return readInput{}, invalidToolInput("Field "+field+" must be a string.", field)
 		}
-		text = strings.TrimSpace(text)
+		// A password is significant in full, including surrounding spaces.
+		// Every other string field is trimmed, and an empty result is absent.
+		if field != readFieldPassword {
+			text = strings.TrimSpace(text)
+		}
 		if text == "" {
 			if field == readFieldTarget {
 				emptyTarget = true

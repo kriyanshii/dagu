@@ -53,7 +53,7 @@ Tool input is a JSON object. Fields outside this table fail with
 | `query` | string | Target mode only. | Optional only for `dags`, `wiki`, `runs`, `run_logs`, and `step_log`; forbidden for all other targets. | URL query string without a leading `?`. |
 | `workspace` | string | Target mode only. | Required for `wiki_page`, where `all` is not allowed; optional for `wiki`, `wiki_search`, and `dag_search`, defaulting to `all`; forbidden for all other targets. | Workspace selector. |
 | `path` | string | Target mode only. | Required for `wiki_page` and `workbook`; forbidden for all other targets. | Wiki page path without the `.md` extension, or for `workbook` a file path on the server. |
-| `password` | string | Target mode only. | Optional for `workbook`; forbidden for all other targets. | Password of a protected workbook. It is not recorded in the audit log. |
+| `password` | string | Target mode only. | Optional for `workbook`; forbidden for all other targets. | Password of a protected workbook, kept exactly as supplied. It is not recorded in the audit log. |
 | `search` | string | Target mode only. | Required for `wiki_search` and `dag_search`; forbidden for all other targets. | Search text. |
 | `prefix` | string | Target mode only. | Optional for `wiki` and `wiki_search`; forbidden for all other targets. | Wiki page path prefix. |
 | `cursor` | string | Target mode only. | Optional for `wiki_search` and `dag_search`; forbidden for all other targets. | Opaque continuation cursor returned by the same search target. |
@@ -62,11 +62,14 @@ Tool input is a JSON object. Fields outside this table fail with
 
 Supported fields other than `limit`, when present and not `null`, must be
 strings, and `limit` must be an integer. `null` is treated as absent. String
-field values are trimmed of leading and trailing whitespace. The trimmed value
-is the effective value used for mode selection, resource lookup, returned
-`target`, returned `uri`, and error fields. A string that is empty after
-trimming is treated as absent. A forbidden field fails when its trimmed value
-is non-empty. Supported target names are case-sensitive.
+field values other than `password` are trimmed of leading and trailing
+whitespace. The trimmed value is the effective value used for mode selection,
+resource lookup, returned `target`, returned `uri`, and error fields. A string
+that is empty after trimming is treated as absent. A forbidden field fails
+when its trimmed value is non-empty. `password` is kept exactly as supplied,
+including leading and trailing spaces and a value that is only spaces. An
+empty `password` and `null` are absent, and a forbidden `password` fails when
+the supplied value is non-empty. Supported target names are case-sensitive.
 
 The `docs`, `doc`, and `doc_search` target values are deprecated aliases that
 resolve to `wiki`, `wiki_page`, and `wiki_search`. They are accepted but not

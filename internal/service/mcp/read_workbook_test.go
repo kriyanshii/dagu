@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -43,6 +44,26 @@ func TestValidateWorkbookReadInput(t *testing.T) {
 			assert.Equal(t, tc.field, err.Field)
 		})
 	}
+}
+
+func TestParseWorkbookPasswordKeepsSpaces(t *testing.T) {
+	t.Parallel()
+	input, err := parseReadToolInput(json.RawMessage(`{"target":"workbook","path":" orders.xlsx ","password":" secret "}`))
+	require.Nil(t, err)
+	assert.Equal(t, "orders.xlsx", input.Path)
+	assert.Equal(t, " secret ", input.Password)
+
+	spaces, err := parseReadToolInput(json.RawMessage(`{"target":"workbook","path":"a.xlsx","password":"   "}`))
+	require.Nil(t, err)
+	assert.Equal(t, "   ", spaces.Password)
+
+	empty, err := parseReadToolInput(json.RawMessage(`{"target":"workbook","path":"a.xlsx","password":""}`))
+	require.Nil(t, err)
+	assert.Empty(t, empty.Password)
+
+	_, err = parseReadToolInput(json.RawMessage(`{"target":"dags","password":"   "}`))
+	require.NotNil(t, err)
+	assert.Equal(t, readFieldPassword, err.Field)
 }
 
 func TestReadWorkbookErrors(t *testing.T) {

@@ -9,8 +9,10 @@ package workbook
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -170,13 +172,195 @@ func open(path, password string) (*file, error) {
 }
 
 // passwordProtected reports whether path is an encrypted OOXML workbook.
-// It is checked only after opening fails.
+// It is checked only after opening fails. Only the compound-file header,
+// the FAT entries that locate the directory, and the directory sectors are
+// read; the encrypted package is left on disk.
 func passwordProtected(path string) bool {
-	data, err := os.ReadFile(path) //nolint:gosec // path is the workbook the caller asked to open
-	if err != nil || len(data) < len(oleHeader) || !bytes.Equal(data[:len(oleHeader)], oleHeader) {
+	f, err := os.Open(path) //nolint:gosec // path is the workbook the caller asked to open
+	if err != nil {
 		return false
 	}
-	return bytes.Contains(data, encryptionInfoName)
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return cfbHasEncryptionInfo(f, info.Size())
+}
+
+const (
+	cfbHeaderBytes  = 512
+	cfbDirEntrySize = 128
+	cfbDIFATInHead  = 109
+	// An encrypted workbook's directory is a few entries. The cap stops a
+	// corrupt sector chain from walking into the encrypted package.
+	cfbMaxDirSectors = 32
+	cfbMaxDIFAT      = 64
+
+	cfbEndOfChain = 0xFFFFFFFE
+)
+
+// cfbHasEncryptionInfo reports whether the compound file's directory names
+// an EncryptionInfo stream.
+func cfbHasEncryptionInfo(r io.ReaderAt, size int64) bool {
+	if size < cfbHeaderBytes {
+		return false
+	}
+	header := make([]byte, cfbHeaderBytes)
+	if _, err := r.ReadAt(header, 0); err != nil {
+		return false
+	}
+	if !bytes.Equal(header[:len(oleHeader)], oleHeader) {
+		return false
+	}
+	major := binary.LittleEndian.Uint16(header[0x1A:])
+	var sectorSize, headerSize int
+	switch binary.LittleEndian.Uint16(header[0x1E:]) {
+	case 9:
+		sectorSize = 512
+		headerSize = cfbHeaderBytes
+		if major != 3 {
+			return false
+		}
+	case 12:
+		sectorSize = 4096
+		headerSize = sectorSize
+		if major != 4 {
+			return false
+		}
+	default:
+		return false
+	}
+	c := cfbReader{
+		r:          r,
+		size:       size,
+		header:     header,
+		headerSize: headerSize,
+		sectorSize: sectorSize,
+	}
+	dir := binary.LittleEndian.Uint32(header[0x30:])
+	seen := make(map[uint32]struct{}, cfbMaxDirSectors)
+	for range cfbMaxDirSectors {
+		if _, ok := seen[dir]; ok || !c.sectorInFile(dir) {
+			return false
+		}
+		seen[dir] = struct{}{}
+		sector, err := c.readSector(dir)
+		if err != nil {
+			return false
+		}
+		for off := 0; off+cfbDirEntrySize <= len(sector); off += cfbDirEntrySize {
+			if encryptionInfoEntry(sector[off : off+cfbDirEntrySize]) {
+				return true
+			}
+		}
+		next, ok := c.fatNext(dir)
+		if !ok || next == cfbEndOfChain {
+			return false
+		}
+		dir = next
+	}
+	return false
+}
+
+// encryptionInfoEntry reports whether a directory entry names the
+// EncryptionInfo stream. The name is UTF-16LE and the length includes the
+// terminating null.
+func encryptionInfoEntry(entry []byte) bool {
+	if len(entry) < cfbDirEntrySize {
+		return false
+	}
+	n := int(binary.LittleEndian.Uint16(entry[64:66]))
+	if n != len(encryptionInfoName)+2 {
+		return false
+	}
+	return bytes.Equal(entry[:len(encryptionInfoName)], encryptionInfoName)
+}
+
+// cfbReader locates compound-file sectors without reading stream payloads.
+type cfbReader struct {
+	r          io.ReaderAt
+	size       int64
+	header     []byte
+	headerSize int
+	sectorSize int
+}
+
+func (c cfbReader) sectorInFile(sect uint32) bool {
+	off, ok := c.sectorOffset(sect)
+	return ok && off+int64(c.sectorSize) <= c.size
+}
+
+func (c cfbReader) sectorOffset(sect uint32) (int64, bool) {
+	off := int64(c.headerSize) + int64(sect)*int64(c.sectorSize)
+	if off < int64(c.headerSize) {
+		return 0, false
+	}
+	return off, true
+}
+
+func (c cfbReader) readSector(sect uint32) ([]byte, error) {
+	off, ok := c.sectorOffset(sect)
+	if !ok {
+		return nil, io.ErrUnexpectedEOF
+	}
+	buf := make([]byte, c.sectorSize)
+	_, err := c.r.ReadAt(buf, off)
+	return buf, err
+}
+
+// fatNext returns the next sector in a chain. The FAT itself is addressed
+// through the header's DIFAT, one entry at a time.
+func (c cfbReader) fatNext(sect uint32) (uint32, bool) {
+	entries := uint32(c.sectorSize / 4)
+	fatSect, ok := c.difat(sect / entries)
+	if !ok || !c.sectorInFile(fatSect) {
+		return 0, false
+	}
+	off, ok := c.sectorOffset(fatSect)
+	if !ok {
+		return 0, false
+	}
+	var buf [4]byte
+	if _, err := c.r.ReadAt(buf[:], off+int64(sect%entries)*4); err != nil {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint32(buf[:]), true
+}
+
+// difat returns the sector number of the FAT sector that holds entry index.
+func (c cfbReader) difat(index uint32) (uint32, bool) {
+	if index < cfbDIFATInHead {
+		at := 0x4C + int(index)*4
+		return binary.LittleEndian.Uint32(c.header[at : at+4]), true
+	}
+	index -= cfbDIFATInHead
+	sect := binary.LittleEndian.Uint32(c.header[0x44:])
+	count := binary.LittleEndian.Uint32(c.header[0x48:])
+	per := uint32(c.sectorSize/4 - 1)
+	for n := uint32(0); n < count && n < cfbMaxDIFAT; n++ {
+		if !c.sectorInFile(sect) {
+			return 0, false
+		}
+		off, ok := c.sectorOffset(sect)
+		if !ok {
+			return 0, false
+		}
+		if index < per {
+			var buf [4]byte
+			if _, err := c.r.ReadAt(buf[:], off+int64(index)*4); err != nil {
+				return 0, false
+			}
+			return binary.LittleEndian.Uint32(buf[:]), true
+		}
+		index -= per
+		var next [4]byte
+		if _, err := c.r.ReadAt(next[:], off+int64(per)*4); err != nil {
+			return 0, false
+		}
+		sect = binary.LittleEndian.Uint32(next[:])
+	}
+	return 0, false
 }
 
 func (w *file) close() {
