@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -77,7 +78,7 @@ func TestReadWorkbookErrors(t *testing.T) {
 	assert.Equal(t, readErrorResourceUnavailable, classifyWorkbookError(input, &workbook.LockedError{Path: "a.xlsx"}).Code)
 	assert.Equal(t, readErrorResourceUnavailable, classifyWorkbookError(input, workbook.ErrNotWorkbook).Code)
 	assert.Equal(t, readErrorResourceUnavailable, classifyWorkbookError(input, workbook.ErrUnsupportedEncryption).Code)
-	passwordErr := classifyWorkbookError(input, &workbook.PasswordError{Path: "orders.xlsx"})
+	passwordErr := classifyWorkbookError(input, fmt.Errorf("orders.xlsx: %w", workbook.ErrPassword))
 	assert.Equal(t, readErrorInvalidToolInput, passwordErr.Code)
 	assert.Equal(t, readFieldPassword, passwordErr.Field)
 	assert.Equal(t, "orders.xlsx: workbook password is missing or incorrect", passwordErr.Message)

@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -776,6 +777,11 @@ func TestOpenErrors(t *testing.T) {
 	require.NoError(t, os.WriteFile(bad, []byte("not a zip"), 0o600))
 	_, err = Read(context.Background(), bad, ReadOptions{})
 	require.ErrorIs(t, err, ErrNotWorkbook)
+	// A password, such as one exported in DAGU_XLSX_PASSWORD, does not turn
+	// a corrupt unprotected file into a password error.
+	_, err = Read(context.Background(), bad, ReadOptions{Password: "secret"})
+	require.ErrorIs(t, err, ErrNotWorkbook)
+	assert.Equal(t, "bad.xlsx: not a valid .xlsx workbook", err.Error())
 
 	// A compound file whose directory has no EncryptionInfo stream is not a
 	// protected workbook, so a renamed .xls stays "not a valid .xlsx workbook".
@@ -834,6 +840,75 @@ func TestProtectedWorkbook(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, got.Count)
 	assert.Equal(t, "INV-1", got.Rows[0]["Invoice No"])
+}
+
+// A protected workbook that the right password decrypts but whose contents
+// are broken, or whose EncryptionInfo is cut short, is not a workbook; the
+// password is not at fault.
+func TestCorruptProtectedWorkbook(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	broken := filepath.Join(dir, "broken.xlsx")
+	require.NoError(t, os.WriteFile(broken, encryptedBrokenWorkbook(t), 0o600))
+	_, err := Read(ctx, broken, ReadOptions{Password: "secret"})
+	require.ErrorIs(t, err, ErrNotWorkbook)
+	require.NotErrorIs(t, err, ErrPassword)
+
+	short := filepath.Join(dir, "short.xlsx")
+	require.NoError(t, os.WriteFile(short, shortEncryptionInfo(t, protectedWorkbookBytes(t)), 0o600))
+	_, err = Read(ctx, short, ReadOptions{Password: "secret"})
+	require.ErrorIs(t, err, ErrNotWorkbook)
+	require.NotErrorIs(t, err, ErrUnsupportedEncryption)
+}
+
+// encryptedBrokenWorkbook returns a workbook whose xl/workbook.xml is cut
+// off mid-tag, encrypted with the password "secret".
+func encryptedBrokenWorkbook(t *testing.T) []byte {
+	t.Helper()
+	f := excelize.NewFile()
+	var plain bytes.Buffer
+	require.NoError(t, f.Write(&plain))
+	require.NoError(t, f.Close())
+	zr, err := zip.NewReader(bytes.NewReader(plain.Bytes()), int64(plain.Len()))
+	require.NoError(t, err)
+
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	for _, entry := range zr.File {
+		w, err := zw.Create(entry.Name)
+		require.NoError(t, err)
+		if entry.Name == "xl/workbook.xml" {
+			_, err = w.Write([]byte("<workbook"))
+			require.NoError(t, err)
+			continue
+		}
+		r, err := entry.Open()
+		require.NoError(t, err)
+		_, err = io.Copy(w, r)
+		require.NoError(t, err)
+		require.NoError(t, r.Close())
+	}
+	require.NoError(t, zw.Close())
+	raw, err := excelize.Encrypt(out.Bytes(), &excelize.Options{Password: "secret"})
+	require.NoError(t, err)
+	return raw
+}
+
+// shortEncryptionInfo sets the EncryptionInfo stream size in its directory
+// entry to two bytes, too short to hold the version.
+func shortEncryptionInfo(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	name := []byte{}
+	for _, c := range []byte("EncryptionInfo") {
+		name = append(name, c, 0)
+	}
+	at := bytes.Index(raw, name)
+	require.GreaterOrEqual(t, at, 0)
+	// A directory entry starts with its name; the stream size is at byte 120.
+	binary.LittleEndian.PutUint64(raw[at+120:], 2)
+	return raw
 }
 
 // A mechanism excelize cannot decrypt is reported as such, not as a wrong

@@ -8,6 +8,7 @@
 package workbook
 
 import (
+	"archive/zip"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -89,19 +90,6 @@ var ErrNotWorkbook = errors.New("not a valid .xlsx workbook")
 // without the right password.
 var ErrPassword = errors.New("workbook password is missing or incorrect")
 
-// PasswordError reports a protected workbook whose password was missing
-// or wrong. It unwraps to ErrPassword.
-type PasswordError struct {
-	Path string
-}
-
-func (e *PasswordError) Error() string {
-	return filepath.Base(e.Path) + ": " + ErrPassword.Error()
-}
-
-// Unwrap lets errors.Is(err, ErrPassword) hold.
-func (*PasswordError) Unwrap() error { return ErrPassword }
-
 // ErrUnsupportedEncryption is wrapped into errors for a protected workbook
 // whose encryption cannot be decrypted. Only ECMA-376 agile and standard
 // encryption are supported.
@@ -150,8 +138,15 @@ func open(path, password string) (*file, error) {
 		if locked := classifyError(path, err); locked != nil && errors.As(locked, new(*LockedError)) {
 			return nil, locked
 		}
-		if err := encryptionError(path); err != nil {
-			return nil, err
+		if decryptFailed(err) {
+			if cause := encryptionCause(path); cause != nil {
+				return nil, fmt.Errorf("%s: %w", filepath.Base(path), cause)
+			}
+		}
+		if errors.Is(err, excelize.ErrWorkbookPassword) {
+			// excelize blames the password for any zip failure once one is
+			// set, but this file is not an encrypted package.
+			return nil, fmt.Errorf("%s: %w", filepath.Base(path), ErrNotWorkbook)
 		}
 		return nil, fmt.Errorf("%s: %w: %v", filepath.Base(path), ErrNotWorkbook, err)
 	}
@@ -163,19 +158,24 @@ func open(path, password string) (*file, error) {
 	return w, nil
 }
 
-// encryptionInfoStream is the stream an encrypted OOXML package carries
-// beside EncryptedPackage. Its first two words are the version that names
-// the encryption mechanism.
+// encryptionInfoStream names the stream of an encrypted package that
+// starts with the encryption version.
 const encryptionInfoStream = "EncryptionInfo"
 
-// encryptionError classifies a failed open of an encrypted OOXML workbook:
-// a PasswordError when the mechanism is one excelize decrypts, so only the
-// password can be at fault, ErrUnsupportedEncryption otherwise, and nil
-// for a file that is not an encrypted package. excelize reports both a bad
-// password and an unknown mechanism as an unsupported format. Only the
-// compound-file header, FAT, directory, and the EncryptionInfo version are
-// read; the encrypted package is left on disk.
-func encryptionError(path string) error {
+// decryptFailed reports whether an excelize open error is one that a wrong
+// password or an undecryptable package produces. Errors from parsing a
+// package that did decrypt are not.
+func decryptFailed(err error) bool {
+	return errors.Is(err, excelize.ErrWorkbookFileFormat) ||
+		errors.Is(err, excelize.ErrWorkbookPassword) ||
+		errors.Is(err, zip.ErrFormat)
+}
+
+// encryptionCause returns ErrPassword when path is an encrypted package with
+// a supported encryption version, ErrUnsupportedEncryption when the version
+// is not supported, and nil when path is not an encrypted package or its
+// version cannot be read.
+func encryptionCause(path string) error {
 	f, err := os.Open(path) //nolint:gosec // path is the workbook the caller asked to open
 	if err != nil {
 		return nil
@@ -190,13 +190,13 @@ func encryptionError(path string) error {
 			continue
 		}
 		var version [4]byte
-		if _, err := entry.ReadAt(version[:], 0); err != nil {
-			return fmt.Errorf("%s: %w", filepath.Base(path), ErrUnsupportedEncryption)
+		if n, _ := entry.ReadAt(version[:], 0); n < len(version) {
+			return nil
 		}
 		if supportedEncryption(binary.LittleEndian.Uint16(version[:2]), binary.LittleEndian.Uint16(version[2:])) {
-			return &PasswordError{Path: path}
+			return ErrPassword
 		}
-		return fmt.Errorf("%s: %w", filepath.Base(path), ErrUnsupportedEncryption)
+		return ErrUnsupportedEncryption
 	}
 	return nil
 }
