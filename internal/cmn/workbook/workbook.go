@@ -214,7 +214,10 @@ func cfbHasEncryptionInfo(r io.ReaderAt, size int64) bool {
 		return false
 	}
 	major := binary.LittleEndian.Uint16(header[0x1A:])
-	var sectorSize, headerSize int
+	// Sector size is only ever 512 or 4096, so it is stored as uint32 and
+	// used directly as a FAT index.
+	var sectorSize uint32
+	var headerSize int
 	switch binary.LittleEndian.Uint16(header[0x1E:]) {
 	case 9:
 		sectorSize = 512
@@ -224,7 +227,7 @@ func cfbHasEncryptionInfo(r io.ReaderAt, size int64) bool {
 		}
 	case 12:
 		sectorSize = 4096
-		headerSize = sectorSize
+		headerSize = 4096
 		if major != 4 {
 			return false
 		}
@@ -283,7 +286,7 @@ type cfbReader struct {
 	size       int64
 	header     []byte
 	headerSize int
-	sectorSize int
+	sectorSize uint32
 }
 
 func (c cfbReader) sectorInFile(sect uint32) bool {
@@ -312,7 +315,7 @@ func (c cfbReader) readSector(sect uint32) ([]byte, error) {
 // fatNext returns the next sector in a chain. The FAT itself is addressed
 // through the header's DIFAT, one entry at a time.
 func (c cfbReader) fatNext(sect uint32) (uint32, bool) {
-	entries := uint32(c.sectorSize / 4)
+	entries := c.sectorSize / 4
 	fatSect, ok := c.difat(sect / entries)
 	if !ok || !c.sectorInFile(fatSect) {
 		return 0, false
@@ -337,7 +340,7 @@ func (c cfbReader) difat(index uint32) (uint32, bool) {
 	index -= cfbDIFATInHead
 	sect := binary.LittleEndian.Uint32(c.header[0x44:])
 	count := binary.LittleEndian.Uint32(c.header[0x48:])
-	per := uint32(c.sectorSize/4 - 1)
+	per := c.sectorSize/4 - 1
 	for n := uint32(0); n < count && n < cfbMaxDIFAT; n++ {
 		if !c.sectorInFile(sect) {
 			return 0, false
