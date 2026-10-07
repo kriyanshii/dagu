@@ -82,6 +82,74 @@ func TestWriteNewWorkbookTableStyle(t *testing.T) {
 	require.Len(t, entries, 1, "no temporary file left behind")
 }
 
+// TestWriteWholeNumberFormat covers a column of whole numbers, which JSON
+// delivers as float64. It is formatted #,##0. One fraction in a column keeps
+// two decimals. Pinning number follows the values that are written; pinning
+// integer uses #,##0 rather than the plain format 0.
+func TestWriteWholeNumberFormat(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "totals.xlsx")
+	table := Table{
+		Columns: []string{"Total", "Rate"},
+		Rows: [][]any{
+			{float64(17500), 20.5},
+			{float64(-17500), float64(10)},
+			{nil, nil},
+		},
+	}
+	_, err := Write(context.Background(), path, table, WriteOptions{Header: true})
+	require.NoError(t, err)
+
+	f, err := excelize.OpenFile(path)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	assert.Equal(t, fmtInteger, cellNumFmt(t, f, "Sheet1", "A2"))
+	assert.Equal(t, fmtNumber, cellNumFmt(t, f, "Sheet1", "B2"))
+	total, err := f.GetCellValue("Sheet1", "A2")
+	require.NoError(t, err)
+	assert.Equal(t, "17,500", total)
+	negative, err := f.GetCellValue("Sheet1", "A3")
+	require.NoError(t, err)
+	assert.Equal(t, "-17,500", negative)
+
+	whole := filepath.Join(t.TempDir(), "pinned-whole.xlsx")
+	pinned := Table{Columns: []string{"Total"}, Rows: [][]any{{"17500"}, {float64(200)}}}
+	_, err = Write(context.Background(), whole, pinned, WriteOptions{Header: true, Types: map[string]ColumnType{"Total": TypeNumber}})
+	require.NoError(t, err)
+	g, err := excelize.OpenFile(whole)
+	require.NoError(t, err)
+	defer func() { _ = g.Close() }()
+	assert.Equal(t, fmtInteger, cellNumFmt(t, g, "Sheet1", "A2"), "a number column of whole values has no decimals")
+
+	fraction := filepath.Join(t.TempDir(), "pinned-fraction.xlsx")
+	_, err = Write(context.Background(), fraction, Table{Columns: []string{"Total"}, Rows: [][]any{{"17500"}, {"1.5"}}}, WriteOptions{Header: true, Types: map[string]ColumnType{"Total": TypeNumber}})
+	require.NoError(t, err)
+	h, err := excelize.OpenFile(fraction)
+	require.NoError(t, err)
+	defer func() { _ = h.Close() }()
+	assert.Equal(t, fmtNumber, cellNumFmt(t, h, "Sheet1", "A2"))
+
+	integer := filepath.Join(t.TempDir(), "pinned-integer.xlsx")
+	_, err = Write(context.Background(), integer, Table{Columns: []string{"Total"}, Rows: [][]any{{17500}}}, WriteOptions{Header: true, Types: map[string]ColumnType{"Total": TypeInteger}})
+	require.NoError(t, err)
+	i, err := excelize.OpenFile(integer)
+	require.NoError(t, err)
+	defer func() { _ = i.Close() }()
+	assert.Equal(t, fmtInteger, cellNumFmt(t, i, "Sheet1", "A2"))
+}
+
+func cellNumFmt(t *testing.T, f *excelize.File, sheet, cell string) string {
+	t.Helper()
+	id, err := f.GetCellStyle(sheet, cell)
+	require.NoError(t, err)
+	style, err := f.GetStyle(id)
+	require.NoError(t, err)
+	if style.CustomNumFmt != nil {
+		return *style.CustomNumFmt
+	}
+	return ""
+}
+
 func TestWriteStyleNoneAndColumnWidthClamp(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "plain.xlsx")

@@ -30,7 +30,7 @@ type StyleMode string
 // Style modes.
 const (
 	// StyleTable formats a new sheet like a finished table: bold frozen
-	// header, fitted widths, and number formats by column type.
+	// header, fitted widths, and number formats by the values written.
 	StyleTable StyleMode = "table"
 	// StyleNone writes bare cells.
 	StyleNone StyleMode = "none"
@@ -64,7 +64,7 @@ const (
 	headerFill  = "DDEBF7"
 	minColWidth = 8.0
 	maxColWidth = 60.0
-	fmtInteger  = 1
+	fmtInteger  = "#,##0"
 	fmtText     = 49
 	fmtNumber   = "#,##0.00"
 	fmtDate     = "yyyy-mm-dd"
@@ -209,8 +209,9 @@ func writeOnce(ctx context.Context, path string, table Table, opts WriteOptions)
 			if c >= len(table.Columns) {
 				break
 			}
-			// Only a pinned type converts values; the detected kind picks
-			// the column's number format and leaves mixed columns alone.
+			// Only a pinned type converts values. The column kind picks the
+			// number format: whole numbers use #,##0, and a fraction uses
+			// two decimals.
 			v, err := outValue(value, opts.Types[table.Columns[c]], w.date1904)
 			if err != nil {
 				return nil, w.cellError(sheet, cols[c], r, err.Error())
@@ -477,19 +478,30 @@ func lastUsedRow(grid [][]string, used region) int {
 	return r
 }
 
-// columnKinds picks the kind each column is written as: the pinned type, or
-// the dominant kind of its values.
+// columnKinds picks the kind each column is formatted as: the pinned type,
+// or the dominant kind of its values. Whole numbers, including a column
+// pinned as number, are integers; a fraction makes the column a number.
 func columnKinds(table Table, types map[string]ColumnType) []ColumnType {
 	kinds := make([]ColumnType, len(table.Columns))
 	for c, name := range table.Columns {
 		if t, ok := types[name]; ok {
+			if t == TypeNumber {
+				kinds[c] = numberColumnFormat(table, c)
+				continue
+			}
 			kinds[c] = t
 			continue
 		}
 		counts := map[string]int{}
 		for _, row := range table.Rows {
 			if c < len(row) {
-				if k := detectKind(row[c]); k != "" {
+				k := detectKind(row[c])
+				// JSON numbers arrive as float64, so a whole number such as
+				// 17500 would otherwise be formatted with two decimals.
+				if k == string(TypeNumber) && wholeNumber(row[c]) {
+					k = string(TypeInteger)
+				}
+				if k != "" {
 					counts[k]++
 				}
 			}
@@ -511,6 +523,43 @@ func columnKinds(table Table, types map[string]ColumnType) []ColumnType {
 		kinds[c] = ColumnType(best)
 	}
 	return kinds
+}
+
+// numberColumnFormat is the format of a column pinned as number. Every
+// written value being a whole number selects an integer format; one
+// fraction keeps two decimals. A value that cannot be read as a number is
+// ignored here, because writing it fails before a format is applied.
+func numberColumnFormat(table Table, col int) ColumnType {
+	saw := false
+	for _, row := range table.Rows {
+		if col >= len(row) || row[col] == nil {
+			continue
+		}
+		v, err := outValue(row[col], TypeNumber, false)
+		if err != nil || v == nil {
+			continue
+		}
+		if !wholeNumber(v) {
+			return TypeNumber
+		}
+		saw = true
+	}
+	if saw {
+		return TypeInteger
+	}
+	return TypeNumber
+}
+
+// wholeNumber reports whether v is a finite number with no fractional part.
+func wholeNumber(v any) bool {
+	switch x := v.(type) {
+	case int, int64:
+		return true
+	case float64:
+		return x == math.Trunc(x) && !math.IsNaN(x) && !math.IsInf(x, 0)
+	default:
+		return false
+	}
 }
 
 // outValue converts a table value into what the cell receives. Pinned
@@ -636,7 +685,8 @@ func (w *file) styleTable(sheet string, table Table, kinds []ColumnType, startRo
 func kindStyle(kind ColumnType) *excelize.Style {
 	switch kind {
 	case TypeInteger:
-		return &excelize.Style{NumFmt: fmtInteger}
+		f := fmtInteger
+		return &excelize.Style{CustomNumFmt: &f}
 	case TypeNumber:
 		f := fmtNumber
 		return &excelize.Style{CustomNumFmt: &f}
