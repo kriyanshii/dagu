@@ -507,16 +507,23 @@ func columnKinds(table Table, types map[string]ColumnType) []ColumnType {
 			}
 		}
 		best, bestCount := "", 0
-		for _, k := range []string{string(TypeString), string(TypeInteger), string(TypeNumber), string(TypeDate), string(TypeDateTime), string(TypeBoolean)} {
-			if counts[k] > bestCount {
-				best, bestCount = k, counts[k]
+		// Whole numbers and fractions are one numeric count, so neither
+		// loses to another kind by being tallied alone. A fraction in that
+		// column still selects the decimal format.
+		numeric := counts[string(TypeInteger)] + counts[string(TypeNumber)]
+		for _, k := range []string{string(TypeString), string(TypeInteger), string(TypeDate), string(TypeDateTime), string(TypeBoolean)} {
+			n := counts[k]
+			if k == string(TypeInteger) {
+				n = numeric
+			}
+			if n > bestCount {
+				best, bestCount = k, n
 			}
 		}
-		// A column mixing integers and decimals is a number column, and
-		// one mixing dates and datetimes keeps the time.
 		if best == string(TypeInteger) && counts[string(TypeNumber)] > 0 {
 			best = string(TypeNumber)
 		}
+		// A column mixing dates and datetimes keeps the time.
 		if best == string(TypeDate) && counts[string(TypeDateTime)] > 0 {
 			best = string(TypeDateTime)
 		}
@@ -657,7 +664,14 @@ func (w *file) styleTable(sheet string, table Table, kinds []ColumnType, startRo
 		width := displayWidth(name)
 		for _, row := range table.Rows {
 			if c < len(row) {
-				width = max(width, displayWidth(valueString(row[c])))
+				text := valueString(row[c])
+				cellWidth := displayWidth(text)
+				// #,##0 inserts a grouping separator that the raw digits
+				// do not include. The two characters of padding are added below.
+				if kinds[c] == TypeInteger {
+					cellWidth += groupingSeparators(text)
+				}
+				width = max(width, cellWidth)
 			}
 		}
 		col, _ := excelize.ColumnNumberToName(c + 1)
@@ -716,6 +730,21 @@ func kindFor(v any, pinned ColumnType) ColumnType {
 		return TypeDateTime
 	}
 	return TypeDate
+}
+
+// groupingSeparators is how many "," characters the #,##0 format inserts
+// into a number written as s.
+func groupingSeparators(s string) int {
+	digits := 0
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			digits++
+		}
+	}
+	if digits < 4 {
+		return 0
+	}
+	return (digits - 1) / 3
 }
 
 // displayWidth approximates how many character cells the widest line of a

@@ -138,6 +138,36 @@ func TestWriteWholeNumberFormat(t *testing.T) {
 	assert.Equal(t, fmtInteger, cellNumFmt(t, i, "Sheet1", "A2"))
 }
 
+// TestWriteNumericKindAndIntegerWidth covers two format details. Whole
+// numbers and fractions count as one kind, so a numeric majority that
+// contains a fraction stays a number column. An integer column is wide
+// enough for the grouping separators #,##0 adds, plus the usual padding.
+func TestWriteNumericKindAndIntegerWidth(t *testing.T) {
+	t.Parallel()
+	mixed := filepath.Join(t.TempDir(), "mixed.xlsx")
+	rows := [][]any{{"a"}, {"b"}, {"c"}, {float64(1)}, {float64(2)}, {float64(1.5)}, {float64(2.5)}}
+	_, err := Write(context.Background(), mixed, Table{Columns: []string{"v"}, Rows: rows}, WriteOptions{Header: true})
+	require.NoError(t, err)
+	f, err := excelize.OpenFile(mixed)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	assert.Equal(t, fmtNumber, cellNumFmt(t, f, "Sheet1", "A2"))
+
+	wide := filepath.Join(t.TempDir(), "wide.xlsx")
+	_, err = Write(context.Background(), wide, Table{Columns: []string{"n"}, Rows: [][]any{{int64(1234567890)}}}, WriteOptions{Header: true})
+	require.NoError(t, err)
+	g, err := excelize.OpenFile(wide)
+	require.NoError(t, err)
+	defer func() { _ = g.Close() }()
+	width, err := g.GetColWidth("Sheet1", "A")
+	require.NoError(t, err)
+	// "1234567890" is 10 characters, #,##0 adds 3 separators, and the column keeps 2 of padding.
+	assert.Equal(t, 15.0, width)
+	shown, err := g.GetCellValue("Sheet1", "A2")
+	require.NoError(t, err)
+	assert.Equal(t, "1,234,567,890", shown)
+}
+
 func cellNumFmt(t *testing.T, f *excelize.File, sheet, cell string) string {
 	t.Helper()
 	id, err := f.GetCellStyle(sheet, cell)
