@@ -19,7 +19,7 @@ import (
 )
 
 // xlsxPasswordEnv supplies a workbook password when --password is omitted.
-const xlsxPasswordEnv = "DAGU_XLSX_PASSWORD"
+const xlsxPasswordEnv = "DAGU_XLSX_PASSWORD" //nolint:gosec // This is an environment variable name, not a credential.
 
 // Xlsx returns the command group for workbooks. inspect and read open a file
 // directly, need no configuration or engine, and create no run, so a host

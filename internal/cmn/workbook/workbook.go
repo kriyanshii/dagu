@@ -172,7 +172,7 @@ func open(path, password string) (*file, error) {
 // passwordProtected reports whether path is an encrypted OOXML workbook.
 // It is checked only after opening fails.
 func passwordProtected(path string) bool {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is the workbook the caller asked to open
 	if err != nil || len(data) < len(oleHeader) || !bytes.Equal(data[:len(oleHeader)], oleHeader) {
 		return false
 	}
