@@ -105,7 +105,9 @@ Only `.xlsx` and `.xlsm` paths are accepted. `path` resolves like the file
 actions: absolute and `~` paths as written, relative paths against the step
 working directory. A `password` opens a protected workbook. A protected
 workbook opened without that password, or with the wrong one, fails with
-`<name>: workbook password is missing or incorrect`.
+`<name>: workbook password is missing or incorrect`. Only ECMA-376 agile
+and standard encryption can be opened; any other mechanism fails with
+`<name>: workbook encryption is not supported`.
 
 ### Addressing
 
@@ -898,6 +900,8 @@ Every one of these is rejected by `dagu validate`:
 - A missing workbook: `<name>: workbook not found`.
 - A protected workbook opened with no password or the wrong one:
   `<name>: workbook password is missing or incorrect`.
+- A protected workbook whose encryption is not agile or standard:
+  `<name>: workbook encryption is not supported`.
 - A missing sheet: `sheet "Order" not found; sheets present: Orders, Summary`.
 - A range that is none of the accepted forms:
   `range "Totals" is not a cell range, named range, or table`.

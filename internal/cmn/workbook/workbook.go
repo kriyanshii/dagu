@@ -8,6 +8,7 @@
 package workbook
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -101,6 +102,11 @@ func (e *PasswordError) Error() string {
 // Unwrap lets errors.Is(err, ErrPassword) hold.
 func (*PasswordError) Unwrap() error { return ErrPassword }
 
+// ErrUnsupportedEncryption is wrapped into errors for a protected workbook
+// whose encryption cannot be decrypted. Only ECMA-376 agile and standard
+// encryption are supported.
+var ErrUnsupportedEncryption = errors.New("workbook encryption is not supported")
+
 // CheckExtension rejects paths whose extension is not .xlsx or .xlsm.
 func CheckExtension(path string) error {
 	switch strings.ToLower(filepath.Ext(path)) {
@@ -144,8 +150,8 @@ func open(path, password string) (*file, error) {
 		if locked := classifyError(path, err); locked != nil && errors.As(locked, new(*LockedError)) {
 			return nil, locked
 		}
-		if passwordProtected(path) {
-			return nil, &PasswordError{Path: path}
+		if err := encryptionError(path); err != nil {
+			return nil, err
 		}
 		return nil, fmt.Errorf("%s: %w: %v", filepath.Base(path), ErrNotWorkbook, err)
 	}
@@ -158,29 +164,47 @@ func open(path, password string) (*file, error) {
 }
 
 // encryptionInfoStream is the stream an encrypted OOXML package carries
-// beside EncryptedPackage.
+// beside EncryptedPackage. Its first two words are the version that names
+// the encryption mechanism.
 const encryptionInfoStream = "EncryptionInfo"
 
-// passwordProtected reports whether path is an encrypted OOXML workbook.
-// It is checked only after opening fails, because excelize reports a bad
-// password as an unsupported format. Only the compound-file header, FAT,
-// and directory are read; the encrypted package is left on disk.
-func passwordProtected(path string) bool {
+// encryptionError classifies a failed open of an encrypted OOXML workbook:
+// a PasswordError when the mechanism is one excelize decrypts, so only the
+// password can be at fault, ErrUnsupportedEncryption otherwise, and nil
+// for a file that is not an encrypted package. excelize reports both a bad
+// password and an unknown mechanism as an unsupported format. Only the
+// compound-file header, FAT, directory, and the EncryptionInfo version are
+// read; the encrypted package is left on disk.
+func encryptionError(path string) error {
 	f, err := os.Open(path) //nolint:gosec // path is the workbook the caller asked to open
 	if err != nil {
-		return false
+		return nil
 	}
 	defer func() { _ = f.Close() }()
 	doc, err := mscfb.New(f)
 	if err != nil {
-		return false
+		return nil
 	}
 	for entry, err := doc.Next(); err == nil; entry, err = doc.Next() {
-		if entry.Name == encryptionInfoStream {
-			return true
+		if entry.Name != encryptionInfoStream {
+			continue
 		}
+		var version [4]byte
+		if _, err := entry.ReadAt(version[:], 0); err != nil {
+			return fmt.Errorf("%s: %w", filepath.Base(path), ErrUnsupportedEncryption)
+		}
+		if supportedEncryption(binary.LittleEndian.Uint16(version[:2]), binary.LittleEndian.Uint16(version[2:])) {
+			return &PasswordError{Path: path}
+		}
+		return fmt.Errorf("%s: %w", filepath.Base(path), ErrUnsupportedEncryption)
 	}
-	return false
+	return nil
+}
+
+// supportedEncryption reports whether an EncryptionInfo version is one
+// excelize decrypts: 4.4 is agile, and 2.2 through 4.2 are standard.
+func supportedEncryption(major, minor uint16) bool {
+	return (major == 4 && minor == 4) || (major >= 2 && major <= 4 && minor == 2)
 }
 
 func (w *file) close() {

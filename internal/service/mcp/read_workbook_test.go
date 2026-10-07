@@ -76,6 +76,7 @@ func TestReadWorkbookErrors(t *testing.T) {
 
 	assert.Equal(t, readErrorResourceUnavailable, classifyWorkbookError(input, &workbook.LockedError{Path: "a.xlsx"}).Code)
 	assert.Equal(t, readErrorResourceUnavailable, classifyWorkbookError(input, workbook.ErrNotWorkbook).Code)
+	assert.Equal(t, readErrorResourceUnavailable, classifyWorkbookError(input, workbook.ErrUnsupportedEncryption).Code)
 	passwordErr := classifyWorkbookError(input, &workbook.PasswordError{Path: "orders.xlsx"})
 	assert.Equal(t, readErrorInvalidToolInput, passwordErr.Code)
 	assert.Equal(t, readFieldPassword, passwordErr.Field)

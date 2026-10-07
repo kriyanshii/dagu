@@ -7,6 +7,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/richardlehane/mscfb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/xuri/excelize/v2"
@@ -832,6 +834,47 @@ func TestProtectedWorkbook(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, got.Count)
 	assert.Equal(t, "INV-1", got.Rows[0]["Invoice No"])
+}
+
+// A mechanism excelize cannot decrypt is reported as such, not as a wrong
+// password, whatever password is supplied.
+func TestUnsupportedEncryption(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "protected.xlsx")
+	require.NoError(t, os.WriteFile(path, protectedWorkbookBytes(t), 0o600))
+	setEncryptionInfoVersion(t, path, 3, 3)
+
+	ctx := context.Background()
+	const want = "protected.xlsx: workbook encryption is not supported"
+	_, err := Read(ctx, path, ReadOptions{Password: "secret"})
+	require.ErrorIs(t, err, ErrUnsupportedEncryption)
+	assert.Equal(t, want, err.Error())
+	_, err = Inspect(ctx, path, InspectOptions{})
+	require.ErrorIs(t, err, ErrUnsupportedEncryption)
+	assert.Equal(t, want, err.Error())
+}
+
+// setEncryptionInfoVersion rewrites the version words of the EncryptionInfo
+// stream in place. Version 3.3 is the extensible mechanism.
+func setEncryptionInfoVersion(t *testing.T, path string, major, minor uint16) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, f.Close()) }()
+	doc, err := mscfb.New(f)
+	require.NoError(t, err)
+	for entry, err := doc.Next(); err == nil; entry, err = doc.Next() {
+		if entry.Name != "EncryptionInfo" {
+			continue
+		}
+		var version [4]byte
+		binary.LittleEndian.PutUint16(version[:2], major)
+		binary.LittleEndian.PutUint16(version[2:], minor)
+		_, err := entry.WriteAt(version[:], 0)
+		require.NoError(t, err)
+		return
+	}
+	t.Fatal("no EncryptionInfo stream")
 }
 
 func TestLockFile(t *testing.T) {
