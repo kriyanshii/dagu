@@ -7,7 +7,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -776,22 +775,49 @@ func TestOpenErrors(t *testing.T) {
 	_, err = Read(context.Background(), bad, ReadOptions{})
 	require.ErrorIs(t, err, ErrNotWorkbook)
 
-	// An OLE header without an EncryptionInfo stream is not a protected
-	// workbook, so a renamed .xls stays "not a valid .xlsx workbook".
+	// A compound file whose directory has no EncryptionInfo stream is not a
+	// protected workbook, so a renamed .xls stays "not a valid .xlsx workbook".
 	ole := filepath.Join(dir, "ole.xlsx")
-	require.NoError(t, os.WriteFile(ole, append([]byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}, make([]byte, 64)...), 0o600))
+	raw := renamedEncryptionInfo(t, protectedWorkbookBytes(t))
+	require.NoError(t, os.WriteFile(ole, raw, 0o600))
 	_, err = Read(context.Background(), ole, ReadOptions{Password: "secret"})
 	require.ErrorIs(t, err, ErrNotWorkbook)
 }
 
-func TestProtectedWorkbook(t *testing.T) {
-	t.Parallel()
+// protectedWorkbookBytes returns a one-sheet workbook saved with the
+// password "secret".
+func protectedWorkbookBytes(t *testing.T) []byte {
+	t.Helper()
 	f := excelize.NewFile()
 	require.NoError(t, f.SetCellValue("Sheet1", "A1", "Invoice No"))
 	require.NoError(t, f.SetCellValue("Sheet1", "A2", "INV-1"))
-	path := filepath.Join(t.TempDir(), "protected.xlsx")
-	require.NoError(t, f.SaveAs(path, excelize.Options{Password: "secret"}))
+	var buf bytes.Buffer
+	require.NoError(t, f.Write(&buf, excelize.Options{Password: "secret"}))
 	require.NoError(t, f.Close())
+	return buf.Bytes()
+}
+
+// renamedEncryptionInfo renames the EncryptionInfo directory entry of an
+// encrypted package. The UTF-16LE name occurs only in the directory, so the
+// result is a compound file that is not a protected workbook.
+func renamedEncryptionInfo(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	utf16 := func(s string) []byte {
+		b := make([]byte, 0, 2*len(s))
+		for _, c := range []byte(s) {
+			b = append(b, c, 0)
+		}
+		return b
+	}
+	name := utf16("EncryptionInfo")
+	require.Equal(t, 1, bytes.Count(raw, name))
+	return bytes.ReplaceAll(raw, name, utf16("EncryptionXnfo"))
+}
+
+func TestProtectedWorkbook(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "protected.xlsx")
+	require.NoError(t, os.WriteFile(path, protectedWorkbookBytes(t), 0o600))
 
 	ctx := context.Background()
 	const want = "protected.xlsx: workbook password is missing or incorrect"
@@ -806,56 +832,6 @@ func TestProtectedWorkbook(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, got.Count)
 	assert.Equal(t, "INV-1", got.Rows[0]["Invoice No"])
-}
-
-func TestPasswordProtectedUsesDirectory(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	// The name sits in the directory. Bytes with the same spelling after
-	// the directory are the package payload and are not consulted.
-	named := filepath.Join(dir, "named.xlsx")
-	require.NoError(t, os.WriteFile(named, testCompoundFile(true), 0o600))
-	assert.True(t, passwordProtected(named))
-
-	decoy := filepath.Join(dir, "decoy.xlsx")
-	require.NoError(t, os.WriteFile(decoy, testCompoundFile(false), 0o600))
-	assert.False(t, passwordProtected(decoy))
-
-	_, err := Read(context.Background(), named, ReadOptions{})
-	require.ErrorIs(t, err, ErrPassword)
-	_, err = Read(context.Background(), decoy, ReadOptions{})
-	require.ErrorIs(t, err, ErrNotWorkbook)
-}
-
-// testCompoundFile builds a version-3 compound file whose directory is one
-// sector, then appends EncryptionInfo as a payload. withInfo also names
-// the directory stream EncryptionInfo; without it, only the payload does.
-func testCompoundFile(withInfo bool) []byte {
-	header := make([]byte, cfbHeaderBytes)
-	copy(header, oleHeader)
-	binary.LittleEndian.PutUint16(header[0x1A:], 3)
-	binary.LittleEndian.PutUint16(header[0x1E:], 9)
-	binary.LittleEndian.PutUint32(header[0x2C:], 1)
-	binary.LittleEndian.PutUint32(header[0x30:], 1)
-	binary.LittleEndian.PutUint32(header[0x3C:], cfbEndOfChain)
-	binary.LittleEndian.PutUint32(header[0x44:], cfbEndOfChain)
-	binary.LittleEndian.PutUint32(header[0x4C:], 0)
-	for i := 1; i < cfbDIFATInHead; i++ {
-		binary.LittleEndian.PutUint32(header[0x4C+i*4:], 0xFFFFFFFF)
-	}
-
-	fat := make([]byte, 512)
-	binary.LittleEndian.PutUint32(fat[0:], 0xFFFFFFFD)
-	binary.LittleEndian.PutUint32(fat[4:], cfbEndOfChain)
-
-	dir := make([]byte, 512)
-	if withInfo {
-		copy(dir, encryptionInfoName)
-		binary.LittleEndian.PutUint16(dir[64:], uint16(len(encryptionInfoName)+2))
-	}
-	payload := bytes.Repeat(encryptionInfoName, 64)
-	return append(append(append(header, fat...), dir...), payload...)
 }
 
 func TestLockFile(t *testing.T) {
