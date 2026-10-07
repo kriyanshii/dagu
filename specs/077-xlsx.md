@@ -488,7 +488,9 @@ is not in the workbook fails with `sheet "Nope" not found; sheets present:
 taking the values the fields take.
 `--password` is the password of a protected workbook. When the flag is
 omitted, `DAGU_XLSX_PASSWORD` supplies it; when both are set, the flag
-wins, including when the flag is empty. A protected workbook opened
+wins, including when the flag is empty. The variable is the recommended
+form, since a flag value is visible in the process list and kept in
+shell history. A protected workbook opened
 without the right password fails with `<name>: workbook password is
 missing or incorrect`.
 Both read the file directly, create no run, and exit non-zero with the

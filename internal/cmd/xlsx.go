@@ -65,8 +65,10 @@ column name:
 This is what xlsx.info publishes, read straight from the file. Nothing is
 written and no run is created.
 
-A protected workbook needs --password. When the flag is omitted,
-DAGU_XLSX_PASSWORD supplies it, and the flag wins when both are set.
+A protected workbook needs a password. Set DAGU_XLSX_PASSWORD rather
+than --password where other users share the host: a flag value shows in
+the process list and stays in shell history. The flag wins when both are
+set.
 
 With --format json, the result is one JSON object: path, date_system,
 sheets (each with name, hidden, used_range, range, header_row, headers,
@@ -83,7 +85,7 @@ blank, distinct, values, min, max, odd, and odd_cells.
 	}
 	cmd.Flags().IntP("rows", "n", 5, "Typed sample rows to show per sheet")
 	cmd.Flags().String("sheet", "", "Describe this sheet only")
-	cmd.Flags().String("password", "", "Password of a protected workbook; DAGU_XLSX_PASSWORD is used when this flag is omitted")
+	cmd.Flags().String("password", "", "Password of a protected workbook; prefer DAGU_XLSX_PASSWORD, which stays out of the process list and shell history")
 	cmd.Flags().StringP("format", "f", "text", "Output format: text or json (default: text)")
 	return cmd
 }
@@ -101,8 +103,10 @@ With --format json, the result is one JSON object: rows, count, headers,
 sheet, range, warnings, and truncated. The text format prints a tab-separated
 header line and one line per row.
 
-A protected workbook needs --password. When the flag is omitted,
-DAGU_XLSX_PASSWORD supplies it, and the flag wins when both are set.
+A protected workbook needs a password. Set DAGU_XLSX_PASSWORD rather
+than --password where other users share the host: a flag value shows in
+the process list and stays in shell history. The flag wins when both are
+set.
 `,
 		Example: `  dagu xlsx read orders.xlsx
   dagu xlsx read orders.xlsx --sheet Orders --range A2:F --header false
@@ -118,7 +122,7 @@ DAGU_XLSX_PASSWORD supplies it, and the flag wins when both are set.
 	cmd.Flags().String("columns", "", "Columns to keep, comma-separated, with optional name:alias renames")
 	cmd.Flags().Int("max-rows", 0, "Most rows to print (default 5000)")
 	cmd.Flags().Bool("skip-hidden", false, "Leave out rows hidden by a filter or by hand")
-	cmd.Flags().String("password", "", "Password of a protected workbook; DAGU_XLSX_PASSWORD is used when this flag is omitted")
+	cmd.Flags().String("password", "", "Password of a protected workbook; prefer DAGU_XLSX_PASSWORD, which stays out of the process list and shell history")
 	cmd.Flags().StringP("format", "f", "text", "Output format: text or json (default: text)")
 	return cmd
 }
