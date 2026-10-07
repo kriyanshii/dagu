@@ -773,6 +773,37 @@ func TestOpenErrors(t *testing.T) {
 	require.NoError(t, os.WriteFile(bad, []byte("not a zip"), 0o600))
 	_, err = Read(context.Background(), bad, ReadOptions{})
 	require.ErrorIs(t, err, ErrNotWorkbook)
+
+	// An OLE header without an EncryptionInfo stream is not a protected
+	// workbook, so a renamed .xls stays "not a valid .xlsx workbook".
+	ole := filepath.Join(dir, "ole.xlsx")
+	require.NoError(t, os.WriteFile(ole, append([]byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}, make([]byte, 64)...), 0o600))
+	_, err = Read(context.Background(), ole, ReadOptions{Password: "secret"})
+	require.ErrorIs(t, err, ErrNotWorkbook)
+}
+
+func TestProtectedWorkbook(t *testing.T) {
+	t.Parallel()
+	f := excelize.NewFile()
+	require.NoError(t, f.SetCellValue("Sheet1", "A1", "Invoice No"))
+	require.NoError(t, f.SetCellValue("Sheet1", "A2", "INV-1"))
+	path := filepath.Join(t.TempDir(), "protected.xlsx")
+	require.NoError(t, f.SaveAs(path, excelize.Options{Password: "secret"}))
+	require.NoError(t, f.Close())
+
+	ctx := context.Background()
+	const want = "protected.xlsx: workbook password is missing or incorrect"
+	_, err := Read(ctx, path, ReadOptions{})
+	require.ErrorIs(t, err, ErrPassword)
+	assert.Equal(t, want, err.Error())
+	_, err = Inspect(ctx, path, InspectOptions{Password: "nope"})
+	require.ErrorIs(t, err, ErrPassword)
+	assert.Equal(t, want, err.Error())
+
+	got, err := Read(ctx, path, ReadOptions{Password: "secret"})
+	require.NoError(t, err)
+	require.Equal(t, 1, got.Count)
+	assert.Equal(t, "INV-1", got.Rows[0]["Invoice No"])
 }
 
 func TestLockFile(t *testing.T) {

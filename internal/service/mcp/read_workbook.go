@@ -28,7 +28,10 @@ func readWorkbook(ctx context.Context, input readInput) (any, error) {
 	if path, err = filepath.Abs(path); err != nil {
 		return nil, invalidTargetValue(input.Target, readFieldPath, err.Error())
 	}
-	info, err := workbook.Inspect(ctx, path, workbook.InspectOptions{SampleRows: workbookSampleRows})
+	info, err := workbook.Inspect(ctx, path, workbook.InspectOptions{
+		Password:   input.Password,
+		SampleRows: workbookSampleRows,
+	})
 	if err != nil {
 		return nil, classifyWorkbookError(input, err)
 	}
@@ -42,6 +45,8 @@ func classifyWorkbookError(input readInput, err error) *readToolError {
 		return resourceNotFoundReadError(input, err.Error())
 	case errors.Is(err, workbook.ErrUnsupportedFormat):
 		return invalidTargetValue(input.Target, readFieldPath, err.Error())
+	case errors.Is(err, workbook.ErrPassword):
+		return invalidTargetValue(input.Target, readFieldPassword, err.Error())
 	case errors.As(err, &locked), errors.Is(err, workbook.ErrNotWorkbook):
 		return &readToolError{Code: readErrorResourceUnavailable, Message: err.Error(), Target: input.Target}
 	default:

@@ -8,6 +8,7 @@
 package workbook
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -83,6 +84,35 @@ var ErrUnsupportedFormat = errors.New("only .xlsx and .xlsm workbooks are suppor
 // ErrNotWorkbook is wrapped into errors for files that cannot be parsed.
 var ErrNotWorkbook = errors.New("not a valid .xlsx workbook")
 
+// ErrPassword is wrapped into errors for a protected workbook opened
+// without the right password.
+var ErrPassword = errors.New("workbook password is missing or incorrect")
+
+// PasswordError reports a protected workbook whose password was missing
+// or wrong. It unwraps to ErrPassword.
+type PasswordError struct {
+	Path string
+}
+
+func (e *PasswordError) Error() string {
+	return filepath.Base(e.Path) + ": " + ErrPassword.Error()
+}
+
+// Unwrap lets errors.Is(err, ErrPassword) hold.
+func (*PasswordError) Unwrap() error { return ErrPassword }
+
+// oleHeader is the Compound File Binary signature of an encrypted OOXML
+// workbook. excelize reports a bad password as an unsupported format, so
+// this header, together with the EncryptionInfo stream, is what
+// distinguishes protection from a file that is not a workbook.
+var oleHeader = []byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}
+
+// encryptionInfoName is the UTF-16LE stream name of an encrypted package.
+var encryptionInfoName = []byte{
+	'E', 0, 'n', 0, 'c', 0, 'r', 0, 'y', 0, 'p', 0, 't', 0, 'i', 0, 'o', 0, 'n', 0,
+	'I', 0, 'n', 0, 'f', 0, 'o', 0,
+}
+
 // CheckExtension rejects paths whose extension is not .xlsx or .xlsm.
 func CheckExtension(path string) error {
 	switch strings.ToLower(filepath.Ext(path)) {
@@ -126,6 +156,9 @@ func open(path, password string) (*file, error) {
 		if locked := classifyError(path, err); locked != nil && errors.As(locked, new(*LockedError)) {
 			return nil, locked
 		}
+		if passwordProtected(path) {
+			return nil, &PasswordError{Path: path}
+		}
 		return nil, fmt.Errorf("%s: %w: %v", filepath.Base(path), ErrNotWorkbook, err)
 	}
 	w := &file{f: f, path: path, base: filepath.Base(path), kinds: map[int]cellKind{}, grids: map[string][][]string{}}
@@ -134,6 +167,16 @@ func open(path, password string) (*file, error) {
 		w.date1904 = *props.Date1904
 	}
 	return w, nil
+}
+
+// passwordProtected reports whether path is an encrypted OOXML workbook.
+// It is checked only after opening fails.
+func passwordProtected(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) < len(oleHeader) || !bytes.Equal(data[:len(oleHeader)], oleHeader) {
+		return false
+	}
+	return bytes.Contains(data, encryptionInfoName)
 }
 
 func (w *file) close() {

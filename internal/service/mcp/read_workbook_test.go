@@ -16,9 +16,10 @@ import (
 
 func TestValidateWorkbookReadInput(t *testing.T) {
 	t.Parallel()
-	ok := readInput{Target: readTargetWorkbook, Path: "orders.xlsx"}
+	ok := readInput{Target: readTargetWorkbook, Path: "orders.xlsx", Password: "secret"}
 	require.Nil(t, validateTargetReadInput(&ok))
 	assert.Empty(t, ok.URI, "the workbook target has no resource URI")
+	assert.Equal(t, "secret", ok.Password)
 
 	for _, tc := range []struct {
 		name  string
@@ -31,6 +32,7 @@ func TestValidateWorkbookReadInput(t *testing.T) {
 		{"query forbidden", readInput{Target: readTargetWorkbook, Path: "a.xlsx", Query: "x"}, readFieldQuery},
 		{"workspace forbidden", readInput{Target: readTargetWorkbook, Path: "a.xlsx", Workspace: "default"}, readFieldWorkspace},
 		{"path forbidden on dags", readInput{Target: readTargetDAGs, Path: "a.xlsx"}, readFieldPath},
+		{"password forbidden on dags", readInput{Target: readTargetDAGs, Password: "secret"}, readFieldPassword},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -53,16 +55,24 @@ func TestReadWorkbookErrors(t *testing.T) {
 
 	assert.Equal(t, readErrorResourceUnavailable, classifyWorkbookError(input, &workbook.LockedError{Path: "a.xlsx"}).Code)
 	assert.Equal(t, readErrorResourceUnavailable, classifyWorkbookError(input, workbook.ErrNotWorkbook).Code)
+	passwordErr := classifyWorkbookError(input, &workbook.PasswordError{Path: "orders.xlsx"})
+	assert.Equal(t, readErrorInvalidToolInput, passwordErr.Code)
+	assert.Equal(t, readFieldPassword, passwordErr.Field)
+	assert.Equal(t, "orders.xlsx: workbook password is missing or incorrect", passwordErr.Message)
 	assert.Equal(t, readErrorInvalidToolInput, classifyWorkbookError(input, workbook.ErrUnsupportedFormat).Code)
 	assert.Equal(t, readErrorInternal, classifyWorkbookError(input, errors.New("boom")).Code)
 }
 
 func TestReadAuditMetadataWorkbookPath(t *testing.T) {
 	t.Parallel()
-	meta := readAuditMetadata(readInput{Target: readTargetWorkbook, Path: "/data/orders.xlsx"})
+	meta := readAuditMetadata(readInput{Target: readTargetWorkbook, Path: "/data/orders.xlsx", Password: "pw-not-logged"})
 	assert.Equal(t, "/data/orders.xlsx", meta.Attributes["workbook_path"])
 	assert.NotContains(t, meta.Attributes, "doc_path")
+	assert.NotContains(t, meta.Attributes, "password")
 	assert.Equal(t, "/data/orders.xlsx", meta.ResourceID)
+	for _, value := range meta.Attributes {
+		assert.NotContains(t, value, "pw-not-logged")
+	}
 
 	wiki := readAuditMetadata(readInput{Target: readTargetWikiPage, Workspace: "default", Path: "guides/intro"})
 	assert.Equal(t, "guides/intro", wiki.Attributes["doc_path"])
