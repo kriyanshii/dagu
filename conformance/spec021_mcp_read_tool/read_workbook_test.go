@@ -171,12 +171,12 @@ func TestReadWorkbookTarget(t *testing.T) {
 		output := requireReadError(t, missing, "invalid_tool_input")
 		require.Equal(t, "password", output["field"])
 		require.Contains(t, output["message"], want)
-		require.NotContains(t, output["message"], "secret")
 
 		wrong := callRead(t, session, map[string]any{"target": "workbook", "path": protected, "password": "nope"})
 		output = requireReadError(t, wrong, "invalid_tool_input")
 		require.Equal(t, "password", output["field"])
 		require.Contains(t, output["message"], want)
+		require.NotContains(t, output["message"], "nope", "the supplied password is not echoed")
 
 		result := callRead(t, session, map[string]any{"target": "workbook", "path": protected, "password": "secret"})
 		require.False(t, result.IsError)

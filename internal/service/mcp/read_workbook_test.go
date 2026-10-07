@@ -14,6 +14,7 @@ import (
 	"github.com/dagucloud/dagu/v2/internal/cmn/workbook"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/xuri/excelize/v2"
 )
 
 func TestValidateWorkbookReadInput(t *testing.T) {
@@ -74,6 +75,15 @@ func TestReadWorkbookErrors(t *testing.T) {
 	var readErr *readToolError
 	require.True(t, errors.As(err, &readErr))
 	assert.Equal(t, readErrorResourceNotFound, readErr.Code)
+
+	protected := filepath.Join(t.TempDir(), "protected.xlsx")
+	f := excelize.NewFile()
+	require.NoError(t, f.SaveAs(protected, excelize.Options{Password: "secret"}))
+	require.NoError(t, f.Close())
+	_, err = readWorkbook(context.Background(), readInput{Target: readTargetWorkbook, Path: protected, Password: "nope"})
+	require.True(t, errors.As(err, &readErr))
+	assert.Equal(t, readFieldPassword, readErr.Field)
+	assert.NotContains(t, readErr.Message, "nope", "the supplied password is not echoed")
 
 	assert.Equal(t, readErrorResourceUnavailable, classifyWorkbookError(input, &workbook.LockedError{Path: "a.xlsx"}).Code)
 	assert.Equal(t, readErrorResourceUnavailable, classifyWorkbookError(input, workbook.ErrNotWorkbook).Code)
