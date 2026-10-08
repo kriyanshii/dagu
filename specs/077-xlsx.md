@@ -325,11 +325,12 @@ keeps ISO-looking text as text.
 `style: table` (default) makes a new or replaced sheet look finished: bold
 header on a light fill, frozen below the header, column widths fitted to
 content between 8 and 60 characters with East Asian characters counting
-double, and number formats by the values written: a column of whole numbers
-uses `#,##0`, a column that holds a fraction uses `#,##0.00`, dates
-`yyyy-mm-dd`, date-times `yyyy-mm-dd hh:mm:ss`, text `@`. A column pinned
-as `number` follows the same rule, and one pinned as `integer` uses `#,##0`.
-A column mixing dates and date-times is formatted as date-time. `style: none`
+double, and number formats by column kind: integers plain, decimals with two
+places, dates `yyyy-mm-dd`, date-times `yyyy-mm-dd hh:mm:ss`, text `@`. A
+column's kind is its pinned type, or else the kind most of its values have;
+a whole number is an integer however it arrives, so JSON `17500` shows as
+`17500`, and a column mixing integers and decimals is a decimal column. A
+column mixing dates and date-times is formatted as date-time. `style: none`
 writes bare cells.
 
 `xlsx.append`, and `mode: append`, write below the last non-empty row with

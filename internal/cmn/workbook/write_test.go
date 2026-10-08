@@ -82,102 +82,57 @@ func TestWriteNewWorkbookTableStyle(t *testing.T) {
 	require.Len(t, entries, 1, "no temporary file left behind")
 }
 
-// TestWriteWholeNumberFormat covers a column of whole numbers, which JSON
-// delivers as float64. It is formatted #,##0. One fraction in a column keeps
-// two decimals. Pinning number follows the values that are written; pinning
-// integer uses #,##0 rather than the plain format 0.
-func TestWriteWholeNumberFormat(t *testing.T) {
+// TestWriteNumberFormats covers the number format style: table gives a
+// column. JSON delivers every number as float64, so a whole one still counts
+// as an integer, and a pinned type sets the format whatever the values are.
+func TestWriteNumberFormats(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "totals.xlsx")
-	table := Table{
-		Columns: []string{"Total", "Rate"},
-		Rows: [][]any{
-			{float64(17500), 20.5},
-			{float64(-17500), float64(10)},
-			{nil, nil},
-		},
+	tests := []struct {
+		name    string
+		rows    [][]any
+		types   map[string]ColumnType
+		cell    string
+		builtin int    // built-in format id; 1 is the plain format 0
+		custom  string // custom format code
+		shown   string
+	}{
+		{name: "WholeFloats", rows: [][]any{{float64(17500)}, {float64(-17500)}, {nil}}, cell: "A2", builtin: 1, shown: "17500"},
+		{name: "Fraction", rows: [][]any{{20.5}, {float64(10)}}, cell: "A3", custom: "#,##0.00", shown: "10.00"},
+		{name: "NumericMajority", rows: [][]any{{"a"}, {"b"}, {"c"}, {float64(1)}, {float64(2)}, {1.5}, {2.5}}, cell: "A5", custom: "#,##0.00", shown: "1.00"},
+		{name: "PinnedNumber", rows: [][]any{{"17500"}, {float64(200)}}, types: map[string]ColumnType{"v": TypeNumber}, cell: "A2", custom: "#,##0.00", shown: "17,500.00"},
+		{name: "PinnedInteger", rows: [][]any{{17500}}, types: map[string]ColumnType{"v": TypeInteger}, cell: "A2", builtin: 1, shown: "17500"},
 	}
-	_, err := Write(context.Background(), path, table, WriteOptions{Header: true})
-	require.NoError(t, err)
-
-	f, err := excelize.OpenFile(path)
-	require.NoError(t, err)
-	defer func() { _ = f.Close() }()
-	assert.Equal(t, fmtInteger, cellNumFmt(t, f, "Sheet1", "A2"))
-	assert.Equal(t, fmtNumber, cellNumFmt(t, f, "Sheet1", "B2"))
-	total, err := f.GetCellValue("Sheet1", "A2")
-	require.NoError(t, err)
-	assert.Equal(t, "17,500", total)
-	negative, err := f.GetCellValue("Sheet1", "A3")
-	require.NoError(t, err)
-	assert.Equal(t, "-17,500", negative)
-
-	whole := filepath.Join(t.TempDir(), "pinned-whole.xlsx")
-	pinned := Table{Columns: []string{"Total"}, Rows: [][]any{{"17500"}, {float64(200)}}}
-	_, err = Write(context.Background(), whole, pinned, WriteOptions{Header: true, Types: map[string]ColumnType{"Total": TypeNumber}})
-	require.NoError(t, err)
-	g, err := excelize.OpenFile(whole)
-	require.NoError(t, err)
-	defer func() { _ = g.Close() }()
-	assert.Equal(t, fmtInteger, cellNumFmt(t, g, "Sheet1", "A2"), "a number column of whole values has no decimals")
-
-	fraction := filepath.Join(t.TempDir(), "pinned-fraction.xlsx")
-	_, err = Write(context.Background(), fraction, Table{Columns: []string{"Total"}, Rows: [][]any{{"17500"}, {"1.5"}}}, WriteOptions{Header: true, Types: map[string]ColumnType{"Total": TypeNumber}})
-	require.NoError(t, err)
-	h, err := excelize.OpenFile(fraction)
-	require.NoError(t, err)
-	defer func() { _ = h.Close() }()
-	assert.Equal(t, fmtNumber, cellNumFmt(t, h, "Sheet1", "A2"))
-
-	integer := filepath.Join(t.TempDir(), "pinned-integer.xlsx")
-	_, err = Write(context.Background(), integer, Table{Columns: []string{"Total"}, Rows: [][]any{{17500}}}, WriteOptions{Header: true, Types: map[string]ColumnType{"Total": TypeInteger}})
-	require.NoError(t, err)
-	i, err := excelize.OpenFile(integer)
-	require.NoError(t, err)
-	defer func() { _ = i.Close() }()
-	assert.Equal(t, fmtInteger, cellNumFmt(t, i, "Sheet1", "A2"))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "out.xlsx")
+			_, err := Write(context.Background(), path, Table{Columns: []string{"v"}, Rows: tt.rows}, WriteOptions{Header: true, Types: tt.types})
+			require.NoError(t, err)
+			f, err := excelize.OpenFile(path)
+			require.NoError(t, err)
+			defer func() { _ = f.Close() }()
+			builtin, custom := cellNumFmt(t, f, "Sheet1", tt.cell)
+			assert.Equal(t, tt.builtin, builtin)
+			assert.Equal(t, tt.custom, custom)
+			shown, err := f.GetCellValue("Sheet1", tt.cell)
+			require.NoError(t, err)
+			assert.Equal(t, tt.shown, shown)
+		})
+	}
 }
 
-// TestWriteNumericKindAndIntegerWidth covers two format details. Whole
-// numbers and fractions count as one kind, so a numeric majority that
-// contains a fraction stays a number column. An integer column is wide
-// enough for the grouping separators #,##0 adds, plus the usual padding.
-func TestWriteNumericKindAndIntegerWidth(t *testing.T) {
-	t.Parallel()
-	mixed := filepath.Join(t.TempDir(), "mixed.xlsx")
-	rows := [][]any{{"a"}, {"b"}, {"c"}, {float64(1)}, {float64(2)}, {float64(1.5)}, {float64(2.5)}}
-	_, err := Write(context.Background(), mixed, Table{Columns: []string{"v"}, Rows: rows}, WriteOptions{Header: true})
-	require.NoError(t, err)
-	f, err := excelize.OpenFile(mixed)
-	require.NoError(t, err)
-	defer func() { _ = f.Close() }()
-	assert.Equal(t, fmtNumber, cellNumFmt(t, f, "Sheet1", "A2"))
-
-	wide := filepath.Join(t.TempDir(), "wide.xlsx")
-	_, err = Write(context.Background(), wide, Table{Columns: []string{"n"}, Rows: [][]any{{int64(1234567890)}}}, WriteOptions{Header: true})
-	require.NoError(t, err)
-	g, err := excelize.OpenFile(wide)
-	require.NoError(t, err)
-	defer func() { _ = g.Close() }()
-	width, err := g.GetColWidth("Sheet1", "A")
-	require.NoError(t, err)
-	// "1234567890" is 10 characters, #,##0 adds 3 separators, and the column keeps 2 of padding.
-	assert.Equal(t, 15.0, width)
-	shown, err := g.GetCellValue("Sheet1", "A2")
-	require.NoError(t, err)
-	assert.Equal(t, "1,234,567,890", shown)
-}
-
-func cellNumFmt(t *testing.T, f *excelize.File, sheet, cell string) string {
+// cellNumFmt returns a cell's number format: a built-in id, or zero and a
+// custom format code.
+func cellNumFmt(t *testing.T, f *excelize.File, sheet, cell string) (int, string) {
 	t.Helper()
 	id, err := f.GetCellStyle(sheet, cell)
 	require.NoError(t, err)
 	style, err := f.GetStyle(id)
 	require.NoError(t, err)
 	if style.CustomNumFmt != nil {
-		return *style.CustomNumFmt
+		return 0, *style.CustomNumFmt
 	}
-	return ""
+	return style.NumFmt, ""
 }
 
 func TestWriteStyleNoneAndColumnWidthClamp(t *testing.T) {

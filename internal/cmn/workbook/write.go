@@ -30,7 +30,7 @@ type StyleMode string
 // Style modes.
 const (
 	// StyleTable formats a new sheet like a finished table: bold frozen
-	// header, fitted widths, and number formats by the values written.
+	// header, fitted widths, and number formats by column type.
 	StyleTable StyleMode = "table"
 	// StyleNone writes bare cells.
 	StyleNone StyleMode = "none"
@@ -64,7 +64,7 @@ const (
 	headerFill  = "DDEBF7"
 	minColWidth = 8.0
 	maxColWidth = 60.0
-	fmtInteger  = "#,##0"
+	fmtInteger  = 1
 	fmtText     = 49
 	fmtNumber   = "#,##0.00"
 	fmtDate     = "yyyy-mm-dd"
@@ -209,9 +209,8 @@ func writeOnce(ctx context.Context, path string, table Table, opts WriteOptions)
 			if c >= len(table.Columns) {
 				break
 			}
-			// Only a pinned type converts values. The column kind picks the
-			// number format: whole numbers use #,##0, and a fraction uses
-			// two decimals.
+			// Only a pinned type converts values; the detected kind picks
+			// the column's number format and leaves mixed columns alone.
 			v, err := outValue(value, opts.Types[table.Columns[c]], w.date1904)
 			if err != nil {
 				return nil, w.cellError(sheet, cols[c], r, err.Error())
@@ -478,17 +477,12 @@ func lastUsedRow(grid [][]string, used region) int {
 	return r
 }
 
-// columnKinds picks the kind each column is formatted as: the pinned type,
-// or the dominant kind of its values. Whole numbers, including a column
-// pinned as number, are integers; a fraction makes the column a number.
+// columnKinds picks the kind each column is written as: the pinned type, or
+// the dominant kind of its values, where a whole number is an integer.
 func columnKinds(table Table, types map[string]ColumnType) []ColumnType {
 	kinds := make([]ColumnType, len(table.Columns))
 	for c, name := range table.Columns {
 		if t, ok := types[name]; ok {
-			if t == TypeNumber {
-				kinds[c] = numberColumnFormat(table, c)
-				continue
-			}
 			kinds[c] = t
 			continue
 		}
@@ -496,9 +490,8 @@ func columnKinds(table Table, types map[string]ColumnType) []ColumnType {
 		for _, row := range table.Rows {
 			if c < len(row) {
 				k := detectKind(row[c])
-				// JSON numbers arrive as float64, so a whole number such as
-				// 17500 would otherwise be formatted with two decimals.
-				if k == string(TypeNumber) && wholeNumber(row[c]) {
+				// JSON numbers arrive as float64, whole ones included.
+				if f, ok := row[c].(float64); ok && wholeNumber(f) {
 					k = string(TypeInteger)
 				}
 				if k != "" {
@@ -507,9 +500,8 @@ func columnKinds(table Table, types map[string]ColumnType) []ColumnType {
 			}
 		}
 		best, bestCount := "", 0
-		// Whole numbers and fractions are one numeric count, so neither
-		// loses to another kind by being tallied alone. A fraction in that
-		// column still selects the decimal format.
+		// Integers and decimals count as one kind, and a column mixing
+		// them is a number column.
 		numeric := counts[string(TypeInteger)] + counts[string(TypeNumber)]
 		for _, k := range []string{string(TypeString), string(TypeInteger), string(TypeDate), string(TypeDateTime), string(TypeBoolean)} {
 			n := counts[k]
@@ -532,41 +524,9 @@ func columnKinds(table Table, types map[string]ColumnType) []ColumnType {
 	return kinds
 }
 
-// numberColumnFormat is the format of a column pinned as number. Every
-// written value being a whole number selects an integer format; one
-// fraction keeps two decimals. A value that cannot be read as a number is
-// ignored here, because writing it fails before a format is applied.
-func numberColumnFormat(table Table, col int) ColumnType {
-	saw := false
-	for _, row := range table.Rows {
-		if col >= len(row) || row[col] == nil {
-			continue
-		}
-		v, err := outValue(row[col], TypeNumber, false)
-		if err != nil || v == nil {
-			continue
-		}
-		if !wholeNumber(v) {
-			return TypeNumber
-		}
-		saw = true
-	}
-	if saw {
-		return TypeInteger
-	}
-	return TypeNumber
-}
-
-// wholeNumber reports whether v is a finite number with no fractional part.
-func wholeNumber(v any) bool {
-	switch x := v.(type) {
-	case int, int64:
-		return true
-	case float64:
-		return x == math.Trunc(x) && !math.IsNaN(x) && !math.IsInf(x, 0)
-	default:
-		return false
-	}
+// wholeNumber reports whether f is written as an integer cell.
+func wholeNumber(f float64) bool {
+	return f == math.Trunc(f) && math.Abs(f) <= maxExactInt
 }
 
 // outValue converts a table value into what the cell receives. Pinned
@@ -616,7 +576,7 @@ func (w *file) setCell(sheet string, col, row int, v any) error {
 	case int:
 		err = w.f.SetCellInt(sheet, cell, int64(x))
 	case float64:
-		if x == math.Trunc(x) && math.Abs(x) <= maxExactInt {
+		if wholeNumber(x) {
 			err = w.f.SetCellInt(sheet, cell, int64(x))
 		} else {
 			err = w.f.SetCellFloat(sheet, cell, x, -1, 64)
@@ -664,14 +624,7 @@ func (w *file) styleTable(sheet string, table Table, kinds []ColumnType, startRo
 		width := displayWidth(name)
 		for _, row := range table.Rows {
 			if c < len(row) {
-				text := valueString(row[c])
-				cellWidth := displayWidth(text)
-				// #,##0 inserts a grouping separator that the raw digits
-				// do not include. The two characters of padding are added below.
-				if kinds[c] == TypeInteger {
-					cellWidth += groupingSeparators(text)
-				}
-				width = max(width, cellWidth)
+				width = max(width, displayWidth(valueString(row[c])))
 			}
 		}
 		col, _ := excelize.ColumnNumberToName(c + 1)
@@ -699,8 +652,7 @@ func (w *file) styleTable(sheet string, table Table, kinds []ColumnType, startRo
 func kindStyle(kind ColumnType) *excelize.Style {
 	switch kind {
 	case TypeInteger:
-		f := fmtInteger
-		return &excelize.Style{CustomNumFmt: &f}
+		return &excelize.Style{NumFmt: fmtInteger}
 	case TypeNumber:
 		f := fmtNumber
 		return &excelize.Style{CustomNumFmt: &f}
@@ -730,21 +682,6 @@ func kindFor(v any, pinned ColumnType) ColumnType {
 		return TypeDateTime
 	}
 	return TypeDate
-}
-
-// groupingSeparators is how many "," characters the #,##0 format inserts
-// into a number written as s.
-func groupingSeparators(s string) int {
-	digits := 0
-	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			digits++
-		}
-	}
-	if digits < 4 {
-		return 0
-	}
-	return (digits - 1) / 3
 }
 
 // displayWidth approximates how many character cells the widest line of a
