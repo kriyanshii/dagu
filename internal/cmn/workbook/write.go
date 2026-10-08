@@ -29,9 +29,8 @@ type StyleMode string
 
 // Style modes.
 const (
-	// StyleTable formats a new or empty sheet like a finished table: bold
-	// frozen header, fitted widths, and number formats by column type. A
-	// sheet that holds values keeps its own formats.
+	// StyleTable formats a new sheet like a finished table: bold frozen
+	// header, fitted widths, and number formats by column type.
 	StyleTable StyleMode = "table"
 	// StyleNone writes bare cells.
 	StyleNone StyleMode = "none"
@@ -72,10 +71,10 @@ const (
 )
 
 // Write creates a workbook or writes a sheet from a table. With
-// WriteReplace an existing sheet's values are replaced and its cells keep
-// their formats; with WriteAppend rows are added below its last used row,
-// each column under the header cell of the same name, and no header is
-// written. Other sheets, widths, styles, and defined names are preserved.
+// WriteReplace an existing sheet is replaced; with WriteAppend rows are
+// added below its last used row, each column under the header cell of the
+// same name, and no header is written. Other sheets, widths, styles, and
+// defined names are preserved.
 func Write(ctx context.Context, path string, table Table, opts WriteOptions) (*WriteResult, error) {
 	if opts.Mode == "" {
 		opts.Mode = WriteReplace
@@ -122,16 +121,12 @@ func writeOnce(ctx context.Context, path string, table Table, opts WriteOptions)
 
 	startRow := 1
 	fresh := created
-	// blank is a sheet that held no values, the only kind style: table
-	// formats; a sheet with values keeps the formats it has.
-	blank := created
 	if !created {
 		used, err := w.usedRange(sheet)
 		if err != nil {
 			return nil, err
 		}
 		empty := used.R2 == 1 && used.C2 == 1 && cellAt(mustGrid(w, sheet), 1, 1) == ""
-		blank = empty
 		switch {
 		case opts.Mode == WriteAppend && !empty:
 			startRow = lastUsedRow(mustGrid(w, sheet), used) + 1
@@ -139,8 +134,8 @@ func writeOnce(ctx context.Context, path string, table Table, opts WriteOptions)
 			fresh = true
 		default:
 			// A replace clears every existing sheet, even one with no
-			// values: its cells may still carry hyperlinks.
-			if err := w.clearSheet(sheet, true); err != nil {
+			// values: its cells may still carry styles or hyperlinks.
+			if err := w.clearSheet(sheet); err != nil {
 				return nil, err
 			}
 			fresh = true
@@ -225,27 +220,11 @@ func writeOnce(ctx context.Context, path string, table Table, opts WriteOptions)
 			if err := w.notMerged(sheet, merges, cols[c], r); err != nil {
 				return nil, err
 			}
-			base := 0
-			if !fresh {
-				base = bases[c]
-			} else if !blank {
-				// A replaced cell keeps its own format, as an updated one
-				// does, but a number never takes a date format, which would
-				// read it back as a date. The style is read before the value
-				// lands, since the library gives a time a date format of its
-				// own when the cell has none.
-				base = w.styleAt(sheet, cols[c], r)
-				if _, ok := toFloat(v); ok && w.styleKind(base) != kindNumber {
-					base = w.kindedStyle(base, TypeInteger)
-					cell := cellName(cols[c], r)
-					_ = w.f.SetCellStyle(sheet, cell, cell, base)
-				}
-			}
 			if err := w.setCell(sheet, cols[c], r, v); err != nil {
 				return nil, err
 			}
-			if !fresh || !blank {
-				w.styleWrittenCell(sheet, cols[c], r, base, v, opts.Types[table.Columns[c]])
+			if !fresh {
+				w.styleWrittenCell(sheet, cols[c], r, bases[c], v, opts.Types[table.Columns[c]])
 			}
 			cells++
 		}
@@ -261,7 +240,7 @@ func writeOnce(ctx context.Context, path string, table Table, opts WriteOptions)
 	result.Changes.RowsAppended = len(table.Rows)
 	result.Changes.CellsChanged = cells
 
-	if blank && opts.Style == StyleTable && len(table.Columns) > 0 {
+	if fresh && opts.Style == StyleTable && len(table.Columns) > 0 {
 		if err := w.styleTable(sheet, table, kinds, startRow, writeHeader, lastRow); err != nil {
 			return nil, err
 		}
@@ -402,19 +381,18 @@ func (w *file) targetSheet(name string, created bool) (string, error) {
 }
 
 // clearCellBudget caps the rectangle clearSheet sweeps. Within it every
-// cell of the stored dimension is cleared, which also catches empty cells
-// that carry a style or hyperlink; beyond it only cells holding a value or
-// formula are cleared, so a sparse sheet with one far cell does not cost a
-// sweep of the whole grid.
+// cell of the stored dimension is cleared, which also catches cells that
+// only carry a style; beyond it only cells holding a value or formula are
+// cleared, so a sparse sheet with one far cell does not cost a sweep of
+// the whole grid.
 const clearCellBudget = 1 << 20
 
 // clearSheet empties a sheet in place: its merged regions and tables are
-// removed and every used cell loses its value and hyperlink, and its style
-// unless keepStyles is set, while the sheet itself, its position, the
-// defined names scoped to it, and formulas on other sheets that refer to
-// it by name all stay valid. Deleting and recreating the sheet would lose
-// those.
-func (w *file) clearSheet(name string, keepStyles bool) error {
+// removed and every used cell loses its value, style, and hyperlink, while
+// the sheet itself, its position, the defined names scoped to it, and
+// formulas on other sheets that refer to it by name all stay valid.
+// Deleting and recreating the sheet would lose those.
+func (w *file) clearSheet(name string) error {
 	merges, err := w.f.GetMergeCells(name, true)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", w.base, name, err)
@@ -439,9 +417,8 @@ func (w *file) clearSheet(name string, keepStyles bool) error {
 	if err != nil {
 		return err
 	}
-	// The stored dimension, when Excel kept it, also covers empty cells that
-	// hold a style or hyperlink; it is swept when the rectangle stays within
-	// budget.
+	// The stored dimension, when Excel kept it, also covers cells that hold
+	// only a style; it is swept when the rectangle stays within budget.
 	if dim, ok := w.storedDimension(name); ok && withinClearBudget(dim) {
 		used.R2 = max(used.R2, dim.R2)
 		used.C2 = max(used.C2, dim.C2)
@@ -449,7 +426,7 @@ func (w *file) clearSheet(name string, keepStyles bool) error {
 	if withinClearBudget(used) {
 		for r := 1; r <= used.R2; r++ {
 			for c := 1; c <= used.C2; c++ {
-				if err := w.clearCell(name, c, r, keepStyles); err != nil {
+				if err := w.clearCell(name, c, r); err != nil {
 					return err
 				}
 			}
@@ -457,7 +434,7 @@ func (w *file) clearSheet(name string, keepStyles bool) error {
 	} else {
 		for r := 1; r < len(grid); r++ {
 			for c := 1; c < len(grid[r]); c++ {
-				if err := w.clearCell(name, c, r, keepStyles); err != nil {
+				if err := w.clearCell(name, c, r); err != nil {
 					return err
 				}
 			}
@@ -474,18 +451,15 @@ func withinClearBudget(reg region) bool {
 	return reg.C2 > 0 && reg.R2 <= clearCellBudget/reg.C2
 }
 
-// clearCell empties one cell: value and formula, hyperlink, and style
-// unless keepStyle is set. A cell left with none of those is dropped on
-// save.
-func (w *file) clearCell(name string, c, r int, keepStyle bool) error {
+// clearCell empties one cell: value and formula, style, and hyperlink. A
+// cell with none of those is left as it was and dropped on save.
+func (w *file) clearCell(name string, c, r int) error {
 	cell := cellName(c, r)
 	if err := w.f.SetCellDefault(name, cell, ""); err != nil {
 		return w.cellError(name, c, r, err.Error())
 	}
-	if !keepStyle {
-		if err := w.f.SetCellStyle(name, cell, cell, 0); err != nil {
-			return w.cellError(name, c, r, err.Error())
-		}
+	if err := w.f.SetCellStyle(name, cell, cell, 0); err != nil {
+		return w.cellError(name, c, r, err.Error())
 	}
 	if err := w.f.SetCellHyperLink(name, cell, "", "None"); err != nil {
 		return w.cellError(name, c, r, err.Error())
@@ -677,10 +651,9 @@ func (w *file) styleTable(sheet string, table Table, kinds []ColumnType, startRo
 func kindStyle(kind ColumnType) *excelize.Style {
 	switch kind {
 	case TypeInteger:
-		// General shows a whole number plain and keeps the digits of a
-		// fraction written later under the same format, as an appended
-		// row copies it.
-		return &excelize.Style{}
+		// Integers keep General, which shows a whole number plain and a
+		// fraction appended below it with its digits.
+		return nil
 	case TypeNumber:
 		f := fmtNumber
 		return &excelize.Style{CustomNumFmt: &f}
@@ -734,8 +707,8 @@ func isNarrow(r rune) bool {
 	return r >= 0xFF61 && r <= 0xFF9F // half-width katakana
 }
 
-// kindedKey identifies a style derived from a base style for a kind.
-type kindedKey struct {
+// datedKey identifies a style derived from a base style for a date kind.
+type datedKey struct {
 	base int
 	kind ColumnType
 }
@@ -763,7 +736,7 @@ func (w *file) styleAt(sheet string, col, row int) int {
 func (w *file) styleWrittenCell(sheet string, col, row, base int, value any, pinned ColumnType) {
 	cell := cellName(col, row)
 	if t, ok := value.(time.Time); ok && (base == 0 || w.styleKind(base) == kindNumber) {
-		if id := w.kindedStyle(base, kindFor(t, pinned)); id != 0 {
+		if id := w.datedStyle(base, kindFor(t, pinned)); id != 0 {
 			_ = w.f.SetCellStyle(sheet, cell, cell, id)
 		}
 		return
@@ -773,12 +746,12 @@ func (w *file) styleWrittenCell(sheet string, col, row, base int, value any, pin
 	}
 }
 
-// kindedStyle returns a style like base with the number format of kind,
-// made once per base and kind for the life of the open workbook. Zero is
-// the default style, or means no style could be made.
-func (w *file) kindedStyle(base int, kind ColumnType) int {
-	key := kindedKey{base: base, kind: kind}
-	if id, ok := w.kinded[key]; ok {
+// datedStyle returns a style like base with the number format of kind,
+// made once per base and kind for the life of the open workbook. Zero
+// means no style could be made.
+func (w *file) datedStyle(base int, kind ColumnType) int {
+	key := datedKey{base: base, kind: kind}
+	if id, ok := w.dated[key]; ok {
 		return id
 	}
 	id := 0
@@ -794,9 +767,9 @@ func (w *file) kindedStyle(base int, kind ColumnType) int {
 			id = made
 		}
 	}
-	if w.kinded == nil {
-		w.kinded = map[kindedKey]int{}
+	if w.dated == nil {
+		w.dated = map[datedKey]int{}
 	}
-	w.kinded[key] = id
+	w.dated[key] = id
 	return id
 }

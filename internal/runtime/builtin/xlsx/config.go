@@ -777,9 +777,9 @@ var configSchema = &jsonschema.Schema{
 		"input":  {Type: "string", Description: "File to write rows from instead of rows: .json (an array), .jsonl, or .csv with a header line."},
 		"format": {Type: "string", Enum: []any{"json", "jsonl", "csv"}, Description: "Format of input when its extension does not say."},
 		"mode": {Type: "string", Enum: []any{"replace", "append"},
-			Description: "What xlsx.write does to an existing sheet: replace (default) its values, keeping cell formats, or append below its last row."},
+			Description: "What xlsx.write does to an existing sheet: replace (default) its contents, or append below its last row."},
 		"style": {Type: "string", Enum: []any{"table", "none"},
-			Description: "How a new or empty sheet looks: table (default) has a bold frozen header, fitted widths, and number formats by column; none writes bare cells. A replaced sheet that held values keeps its formats."},
+			Description: "How a new sheet looks: table (default) has a bold frozen header, fitted widths, and number formats by column; none writes bare cells."},
 		"atomic":  boolOrRef("Save through a temporary file renamed over the workbook. Defaults to true."),
 		"dry_run": boolOrRef("Compute and report the changes without saving the workbook."),
 		"wait_for_unlock": {Type: "string", Description: "How long to retry a workbook that another program holds open, such as 5m. " +

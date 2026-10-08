@@ -114,9 +114,8 @@ type file struct {
 	sheets   []string
 	kinds    map[int]cellKind
 	grids    map[string][][]string
-	// kinded memoizes styles derived from a cell's style with the number
-	// format a written value's kind needs.
-	kinded map[kindedKey]int
+	// dated memoizes styles derived for dates written into plain cells.
+	dated map[datedKey]int
 }
 
 func open(path, password string) (*file, error) {

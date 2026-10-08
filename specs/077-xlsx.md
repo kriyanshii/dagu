@@ -38,11 +38,10 @@ fixture.
 Conformance exceptions, behavior that a black-box run cannot observe or
 set up and that unit tests of `internal/cmn/workbook` cover instead:
 `with.password` on an xlsx step (nothing in Dagu writes a protected workbook;
-opening one is covered by `dagu xlsx` and the workbook read target); the
-hyperlinks, merged regions, and tables that `mode: replace` clears and the
-styles it keeps, `style: table` formatting, style copying, and column
-widths (not readable through `xlsx.read`; that a replace empties the
-values is covered); the
+opening one is covered by `dagu xlsx` and the workbook read target); the styles,
+hyperlinks, merged regions, and tables that `mode: replace` clears,
+`style: table` formatting, style copying, and column widths (not readable
+through `xlsx.read`; that a replace empties the values is covered); the
 temporary file of an
 atomic save and symbolic links; a lock file another process holds,
 `wait_for_unlock` timing, and Windows sharing violations; the consequences
@@ -311,32 +310,26 @@ creates directories. A `sheet` that does not exist is created; an
 existing sheet is replaced (`mode: replace`, the default) or extended
 (`mode: append`). A replaced sheet is cleared in place: its merged regions
 and tables are removed, and every cell holding a value or formula is
-emptied of its value and hyperlink. Every cell keeps its style, so a format
-set on the sheet applies to the value written into that cell, and cells
-past the new rows keep theirs too. A date written into a cell without a
-date format gains one over the cell's style, and a number written into a
-cell with a date or time format gets the cell's style with the General
-format, so it reads back as a number. Column widths stay as they are, so a
-wider value can show as `####` until its column is widened. To start again
-from the `style: table` look, delete the sheet first, or add it with
-`xlsx.sheet` and `if_exists: replace`, which clears styles too. An empty
-cell's hyperlink is removed as well when the sheet's stored dimension spans
-at most 2^20 cells; past that, a sweep of the whole rectangle is skipped so
-a large sparse sheet stays cheap to replace, and a hyperlink on an empty
-cell outside both the stored dimension and the cells holding values is
-kept.
-The sheet itself, its position, the defined names scoped to it, and
+emptied of its value, style, and hyperlink. Cells that carry only a style
+are cleared as well when the sheet's stored dimension spans at most 2^20
+cells; past that, a sweep of the whole rectangle is skipped so a large
+sparse sheet stays cheap to replace, and such style-only cells keep their
+style. A hyperlink on a cell the clear does not visit, one that is empty
+and outside both the stored dimension and the cells holding values, is
+kept for the same reason. The sheet itself, its position, the defined names scoped to it, and
 formulas on other sheets that refer to it stay valid. Other sheets, column
 widths, styles, and defined names are untouched. An AutoFilter on the
 replaced sheet stays in place, as the underlying library offers no way to
-remove one.
+remove one. A replace rebuilds the sheet; to fill a formatted sheet or a
+form and keep its look, use `xlsx.write_cells`, `xlsx.update_rows`, or
+`xlsx.append`, which keep each cell's style.
 
 Values are written by type: numbers as numbers, booleans as booleans,
 `2026-10-01` and `2026-10-01T14:30:00` strings as dates, other strings as
 text. `types` pins a column: `number` and `date` convert strings, `string`
 keeps ISO-looking text as text.
 
-`style: table` (default) makes a new or empty sheet look finished: bold
+`style: table` (default) makes a new or replaced sheet look finished: bold
 header on a light fill, frozen below the header, column widths fitted to
 content between 8 and 60 characters with East Asian characters counting
 double, and number formats by column kind: integers General, so a fraction
@@ -345,9 +338,8 @@ places, dates `yyyy-mm-dd`, date-times `yyyy-mm-dd hh:mm:ss`, text `@`. A
 column's kind is its pinned type, or else the kind most of its values have;
 a whole number is an integer however it arrives, so JSON `17500` shows as
 `17500`, and a column mixing integers and decimals is a decimal column. A
-column mixing dates and date-times is formatted as date-time. A replaced
-sheet that held values keeps its own formats, and `style: table` adds none.
-`style: none` writes bare cells.
+column mixing dates and date-times is formatted as date-time. `style: none`
+writes bare cells.
 
 `xlsx.append`, and `mode: append`, write below the last non-empty row with
 no header, and each new cell copies the style of the cell above it, so a date
@@ -757,8 +749,8 @@ not as expected. `if_exists` applies to the sheet `add`, `copy`, and
 `rename` would create: `fail` (default) with `sheet "October" already
 exists`, `skip` with the warning `sheet "October" already exists; nothing
 added` (or `copied`, `renamed`) and nothing changed, or `replace`, which
-empties an added sheet in place, styles included, copies over the existing
-sheet keeping its position, or drops the sheet in a rename's way. `missing` applies to the
+empties an added sheet in place, copies over the existing sheet keeping its
+position, or drops the sheet in a rename's way. `missing` applies to the
 sheet `copy`, `rename`, and `delete` start from: `fail` (default) or `skip`
 with the warning `sheet "Template" not found; nothing copied` (or
 `renamed`, `deleted`). Deleting the only sheet fails with `cannot delete

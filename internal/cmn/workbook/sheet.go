@@ -249,7 +249,7 @@ func (op *sheetOp) add() (string, error) {
 			op.result.Skipped = true
 			return existing, nil
 		case ExistsReplace:
-			return existing, op.w.clearSheet(existing, false)
+			return existing, op.w.clearSheet(existing)
 		case ExistsFail:
 			return "", fmt.Errorf("%s: sheet %q already exists", op.w.base, existing)
 		default:

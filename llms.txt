@@ -1148,9 +1148,7 @@ and date columns), `odd` (cells the type cannot read even when pinned, such as
 `未定` in a number column; `１２` or `令和8年10月3日` are not odd), and
 `odd_cells` (the first three as `{cell, text}`). Before writing a workflow for a
 workbook, read it with `dagu xlsx inspect <path>` or the MCP `workbook` target
-to learn its sheets, headers, and types. A protected workbook takes `--password`
-or `DAGU_XLSX_PASSWORD` on the command, and `password` on the workbook target.
-Use the profile to choose `where`
+to learn its sheets, headers, and types, and use the profile to choose `where`
 values, `types`, and `on_type_error`.
 
 `xlsx.write` `with` fields: `path`, `sheet` (created when missing), `rows` (a
@@ -1163,10 +1161,8 @@ default: bold frozen header, fitted widths, number formats by column; or
 `none`), `types`, `atomic` (default `true`), `dry_run`, `wait_for_unlock`,
 `artifact`. A replaced sheet is cleared in place, so its position, the defined
 names scoped to it, and formulas elsewhere that refer to it stay valid; its
-merged regions and tables are removed, and every cell keeps its format, so
-`style: table` only formats a new or empty sheet; delete the sheet first, or
-add it with `xlsx.sheet` and `if_exists: replace`, to start from a fresh look.
-Other sheets, widths, styles, and defined names are untouched. ISO date strings become real dates. `xlsx.append` adds rows below the last used row,
+merged regions and tables are removed. Other sheets, widths, styles, and
+defined names are untouched. ISO date strings become real dates. `xlsx.append` adds rows below the last used row,
 copying the style of the cell above, and writes a header only when the sheet is
 empty. Appended fields are placed under the header cell of the same exact name:
 a loose match fails with `did you mean`, a name the header lacks adds a column
@@ -1967,18 +1963,18 @@ dagu computer cache clear <dag> [--step <id>]
 
 ### dagu xlsx inspect
 
-Describe every sheet of an `.xlsx` workbook: used range, detected data block, header row, column names and types, a profile of each column, row count, tables, and a few typed sample rows, plus the workbook's named ranges and date system. Types and the profile cover every data row up to 5000: filled and blank counts, distinct count, the values when a few repeat, min and max of number and date columns, and the cells that do not read as the column's type. The text format shows them after each column, as in `状態 (string: 済, 未; 40 blank), 数量 (number; 1..250; 1 odd: D300 "未定")`. It reads the file directly, needs no configuration or engine, and creates no run. `--sheet` describes one sheet only and `--rows` sets the sample size. A hidden sheet is marked `(hidden)` and rows hidden by a filter or by hand are counted, as in `300 rows, 12 hidden`. A protected workbook takes its password from `DAGU_XLSX_PASSWORD`, which stays out of the process list and shell history; `--password` is a convenience that wins when both are set. `--format json` prints one object: `path`, `date_system`, `sheets` (each with `name`, `hidden`, `used_range`, `range`, `header_row`, `headers`, `types`, `row_count`, `hidden_rows`, `columns`, `profile_truncated`, `tables`, `sample`), `named_ranges`, and `warnings`.
+Describe every sheet of an `.xlsx` workbook: used range, detected data block, header row, column names and types, a profile of each column, row count, tables, and a few typed sample rows, plus the workbook's named ranges and date system. Types and the profile cover every data row up to 5000: filled and blank counts, distinct count, the values when a few repeat, min and max of number and date columns, and the cells that do not read as the column's type. The text format shows them after each column, as in `状態 (string: 済, 未; 40 blank), 数量 (number; 1..250; 1 odd: D300 "未定")`. It reads the file directly, needs no configuration or engine, and creates no run. `--sheet` describes one sheet only and `--rows` sets the sample size. A hidden sheet is marked `(hidden)` and rows hidden by a filter or by hand are counted, as in `300 rows, 12 hidden`. `--format json` prints one object: `path`, `date_system`, `sheets` (each with `name`, `hidden`, `used_range`, `range`, `header_row`, `headers`, `types`, `row_count`, `hidden_rows`, `columns`, `profile_truncated`, `tables`, `sample`), `named_ranges`, and `warnings`.
 
 ```sh
-dagu xlsx inspect <path> [--sheet <name>] [--rows <n>] [--password <password>] [--format json]
+dagu xlsx inspect <path> [--sheet <name>] [--rows <n>] [--format json]
 ```
 
 ### dagu xlsx read
 
-Print the typed rows of a sheet the way `xlsx.read` publishes them: numbers stay numbers, dates become ISO 8601 text, text keeps its leading zeros, and each row carries `_row`. The flags mirror the action's fields: `--sheet`, `--range`, `--header` (`true`, `false`, a row number, or `3,4`), `--columns` (comma-separated, with `name:alias` renames), `--max-rows`, `--skip-hidden` (leave out rows hidden by a filter or by hand), and `--password` (a protected workbook; prefer `DAGU_XLSX_PASSWORD`, which stays out of the process list and shell history, and the flag wins when both are set). The text format is tab-separated, with tabs, line breaks, and backslashes inside a cell escaped as `\t`, `\n`, `\r`, and `\\` so one cell stays in one column; `--format json` prints `rows`, `count`, `headers`, `sheet`, `range`, `warnings`, and `truncated`.
+Print the typed rows of a sheet the way `xlsx.read` publishes them: numbers stay numbers, dates become ISO 8601 text, text keeps its leading zeros, and each row carries `_row`. The flags mirror the action's fields: `--sheet`, `--range`, `--header` (`true`, `false`, a row number, or `3,4`), `--columns` (comma-separated, with `name:alias` renames), `--max-rows`, and `--skip-hidden` (leave out rows hidden by a filter or by hand). The text format is tab-separated, with tabs, line breaks, and backslashes inside a cell escaped as `\t`, `\n`, `\r`, and `\\` so one cell stays in one column; `--format json` prints `rows`, `count`, `headers`, `sheet`, `range`, `warnings`, and `truncated`.
 
 ```sh
-dagu xlsx read <path> [--sheet <name>] [--range A2:F] [--header false] [--columns "a,b:c"] [--max-rows <n>] [--skip-hidden] [--password <password>] [--format json]
+dagu xlsx read <path> [--sheet <name>] [--range A2:F] [--header false] [--columns "a,b:c"] [--max-rows <n>] [--skip-hidden] [--format json]
 ```
 
 ### dagu ps
