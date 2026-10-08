@@ -92,15 +92,15 @@ func TestWriteNumberFormats(t *testing.T) {
 		rows    [][]any
 		types   map[string]ColumnType
 		cell    string
-		builtin int    // built-in format id; 1 is the plain format 0
+		builtin int    // built-in format id; 0 is General
 		custom  string // custom format code
 		shown   string
 	}{
-		{name: "WholeFloats", rows: [][]any{{float64(17500)}, {float64(-17500)}, {nil}}, cell: "A2", builtin: 1, shown: "17500"},
+		{name: "WholeFloats", rows: [][]any{{float64(17500)}, {float64(-17500)}, {nil}}, cell: "A2", shown: "17500"},
 		{name: "Fraction", rows: [][]any{{20.5}, {float64(10)}}, cell: "A3", custom: "#,##0.00", shown: "10.00"},
 		{name: "NumericMajority", rows: [][]any{{"a"}, {"b"}, {"c"}, {float64(1)}, {float64(2)}, {1.5}, {2.5}}, cell: "A5", custom: "#,##0.00", shown: "1.00"},
 		{name: "PinnedNumber", rows: [][]any{{"17500"}, {float64(200)}}, types: map[string]ColumnType{"v": TypeNumber}, cell: "A2", custom: "#,##0.00", shown: "17,500.00"},
-		{name: "PinnedInteger", rows: [][]any{{17500}}, types: map[string]ColumnType{"v": TypeInteger}, cell: "A2", builtin: 1, shown: "17500"},
+		{name: "PinnedInteger", rows: [][]any{{17500}}, types: map[string]ColumnType{"v": TypeInteger}, cell: "A2", shown: "17500"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -576,6 +576,41 @@ func TestWriteStylesAddedSheet(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, header.Font.Bold, "a sheet the write adds gets the table style")
 	assert.Equal(t, []string{headerFill}, header.Fill.Color)
+}
+
+// TestAppendKeepsFractionDigits covers a fraction appended below a column of
+// whole numbers: it copies the integer format and still shows its digits.
+func TestAppendKeepsFractionDigits(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "log.xlsx")
+	_, err := Write(context.Background(), path, Table{Columns: []string{"v"}, Rows: [][]any{{float64(1)}, {float64(2)}}}, WriteOptions{Header: true})
+	require.NoError(t, err)
+	_, err = Append(context.Background(), path, Table{Columns: []string{"v"}, Rows: [][]any{{20.5}}}, WriteOptions{Header: true})
+	require.NoError(t, err)
+	f, err := excelize.OpenFile(path)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	shown, err := f.GetCellValue("Sheet1", "A4")
+	require.NoError(t, err)
+	assert.Equal(t, "20.5", shown)
+}
+
+// TestReplaceNumberUnderDateFormat covers a replace whose columns shift, as
+// sorted keys do when a field is added: a number lands in a cell kept with a
+// date format and must still read back as a number.
+func TestReplaceNumberUnderDateFormat(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "shift.xlsx")
+	_, err := Write(context.Background(), path, Table{Columns: []string{"date", "name"}, Rows: [][]any{{"2026-10-01", "a"}}}, WriteOptions{Header: true})
+	require.NoError(t, err)
+	shifted := Table{Columns: []string{"amount", "date", "name"}, Rows: [][]any{{float64(17500), "2026-10-02", "b"}}}
+	_, err = Write(context.Background(), path, shifted, WriteOptions{Header: true})
+	require.NoError(t, err)
+	back, err := Read(context.Background(), path, ReadOptions{})
+	require.NoError(t, err)
+	require.Equal(t, 1, back.Count)
+	assert.Equal(t, int64(17500), back.Rows[0]["amount"])
+	assert.Equal(t, "2026-10-02", back.Rows[0]["date"])
 }
 
 func TestReplaceKeepsStylesDropsHyperlinks(t *testing.T) {

@@ -314,11 +314,17 @@ and tables are removed, and every cell holding a value or formula is
 emptied of its value and hyperlink. Every cell keeps its style, so a format
 set on the sheet applies to the value written into that cell, and cells
 past the new rows keep theirs too. A date written into a cell without a
-date format gains one over the cell's style. An empty cell's hyperlink is
-removed as well when the sheet's stored dimension spans at most 2^20
-cells; past that, a sweep of the whole rectangle is skipped so a large
-sparse sheet stays cheap to replace, and a hyperlink on an empty cell
-outside both the stored dimension and the cells holding values is kept.
+date format gains one over the cell's style, and a number written into a
+cell with a date or time format gets the cell's style with the General
+format, so it reads back as a number. Column widths stay as they are, so a
+wider value can show as `####` until its column is widened. To start again
+from the `style: table` look, delete the sheet first, or add it with
+`xlsx.sheet` and `if_exists: replace`, which clears styles too. An empty
+cell's hyperlink is removed as well when the sheet's stored dimension spans
+at most 2^20 cells; past that, a sweep of the whole rectangle is skipped so
+a large sparse sheet stays cheap to replace, and a hyperlink on an empty
+cell outside both the stored dimension and the cells holding values is
+kept.
 The sheet itself, its position, the defined names scoped to it, and
 formulas on other sheets that refer to it stay valid. Other sheets, column
 widths, styles, and defined names are untouched. An AutoFilter on the
@@ -333,7 +339,8 @@ keeps ISO-looking text as text.
 `style: table` (default) makes a new or empty sheet look finished: bold
 header on a light fill, frozen below the header, column widths fitted to
 content between 8 and 60 characters with East Asian characters counting
-double, and number formats by column kind: integers plain, decimals with two
+double, and number formats by column kind: integers General, so a fraction
+written later under the same format keeps its digits, decimals with two
 places, dates `yyyy-mm-dd`, date-times `yyyy-mm-dd hh:mm:ss`, text `@`. A
 column's kind is its pinned type, or else the kind most of its values have;
 a whole number is an integer however it arrives, so JSON `17500` shows as

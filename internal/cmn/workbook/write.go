@@ -65,7 +65,6 @@ const (
 	headerFill  = "DDEBF7"
 	minColWidth = 8.0
 	maxColWidth = 60.0
-	fmtInteger  = 1
 	fmtText     = 49
 	fmtNumber   = "#,##0.00"
 	fmtDate     = "yyyy-mm-dd"
@@ -231,9 +230,16 @@ func writeOnce(ctx context.Context, path string, table Table, opts WriteOptions)
 				base = bases[c]
 			} else if !blank {
 				// A replaced cell keeps its own format, as an updated one
-				// does. It is read before the value lands, since the library
-				// gives a time a date format of its own when the cell has none.
+				// does, but a number never takes a date format, which would
+				// read it back as a date. The style is read before the value
+				// lands, since the library gives a time a date format of its
+				// own when the cell has none.
 				base = w.styleAt(sheet, cols[c], r)
+				if _, ok := toFloat(v); ok && w.styleKind(base) != kindNumber {
+					base = w.kindedStyle(base, TypeInteger)
+					cell := cellName(cols[c], r)
+					_ = w.f.SetCellStyle(sheet, cell, cell, base)
+				}
 			}
 			if err := w.setCell(sheet, cols[c], r, v); err != nil {
 				return nil, err
@@ -671,7 +677,10 @@ func (w *file) styleTable(sheet string, table Table, kinds []ColumnType, startRo
 func kindStyle(kind ColumnType) *excelize.Style {
 	switch kind {
 	case TypeInteger:
-		return &excelize.Style{NumFmt: fmtInteger}
+		// General shows a whole number plain and keeps the digits of a
+		// fraction written later under the same format, as an appended
+		// row copies it.
+		return &excelize.Style{}
 	case TypeNumber:
 		f := fmtNumber
 		return &excelize.Style{CustomNumFmt: &f}
@@ -725,8 +734,8 @@ func isNarrow(r rune) bool {
 	return r >= 0xFF61 && r <= 0xFF9F // half-width katakana
 }
 
-// datedKey identifies a style derived from a base style for a date kind.
-type datedKey struct {
+// kindedKey identifies a style derived from a base style for a kind.
+type kindedKey struct {
 	base int
 	kind ColumnType
 }
@@ -754,7 +763,7 @@ func (w *file) styleAt(sheet string, col, row int) int {
 func (w *file) styleWrittenCell(sheet string, col, row, base int, value any, pinned ColumnType) {
 	cell := cellName(col, row)
 	if t, ok := value.(time.Time); ok && (base == 0 || w.styleKind(base) == kindNumber) {
-		if id := w.datedStyle(base, kindFor(t, pinned)); id != 0 {
+		if id := w.kindedStyle(base, kindFor(t, pinned)); id != 0 {
 			_ = w.f.SetCellStyle(sheet, cell, cell, id)
 		}
 		return
@@ -764,12 +773,12 @@ func (w *file) styleWrittenCell(sheet string, col, row, base int, value any, pin
 	}
 }
 
-// datedStyle returns a style like base with the number format of kind,
-// made once per base and kind for the life of the open workbook. Zero
-// means no style could be made.
-func (w *file) datedStyle(base int, kind ColumnType) int {
-	key := datedKey{base: base, kind: kind}
-	if id, ok := w.dated[key]; ok {
+// kindedStyle returns a style like base with the number format of kind,
+// made once per base and kind for the life of the open workbook. Zero is
+// the default style, or means no style could be made.
+func (w *file) kindedStyle(base int, kind ColumnType) int {
+	key := kindedKey{base: base, kind: kind}
+	if id, ok := w.kinded[key]; ok {
 		return id
 	}
 	id := 0
@@ -785,9 +794,9 @@ func (w *file) datedStyle(base int, kind ColumnType) int {
 			id = made
 		}
 	}
-	if w.dated == nil {
-		w.dated = map[datedKey]int{}
+	if w.kinded == nil {
+		w.kinded = map[kindedKey]int{}
 	}
-	w.dated[key] = id
+	w.kinded[key] = id
 	return id
 }
