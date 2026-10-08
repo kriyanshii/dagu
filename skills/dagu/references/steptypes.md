@@ -569,6 +569,53 @@ steps:
 
 Output: `apple`
 
+## js.run
+
+Run a JavaScript function body in an embedded sandbox. No Node.js or other interpreter is needed on the host.
+
+```yaml
+steps:
+  - id: fetch
+    action: http.request
+    with:
+      method: GET
+      url: https://example.com
+    output: HTML
+
+  - id: links
+    depends: [fetch]
+    action: js.run
+    with:
+      input: ${HTML}
+      script: |
+        const urls = new Set();
+        for (const m of input.matchAll(/href="([^"]+)"/g)) {
+          urls.add(new URL(m[1], "https://example.com").href);
+        }
+        return [...urls];
+    output: LINKS
+```
+
+`with.script` is a function body; `return` a value to publish it. The text is used as written: Dagu does not resolve `${...}` inside the script, so JavaScript template literals keep working. Pass workflow values through `with.input`.
+
+`with.input` is any YAML value bound to `input`; objects and lists arrive as native objects and arrays. `with.input_file` binds a file's contents instead. A string input that is a JSON object or array is parsed by default, so a captured output from an earlier step arrives as an object; set `format: text` to keep the string, or `format: json` to fail on invalid JSON:
+
+```yaml
+  - id: summarize
+    depends: [links]
+    action: js.run
+    with:
+      input: ${LINKS}
+      script: |
+        return {count: input.length, first: input[0]};
+```
+
+Output rules: `undefined` writes nothing, a string is written as-is, any other value is written as JSON. Capture it with `output:`.
+
+The sandbox exposes the ECMAScript builtins, `console.*` (written to step stderr), `URL`, and `URLSearchParams`. The language level is ES2022 (classes, destructuring, generators, `async`/`await`, optional chaining, `BigInt`, regex named groups and lookbehind) plus `toSorted` and the ES2025 `Set` methods; absent are ES modules, `Object.groupBy`, `WeakRef`, and host APIs such as `Intl`, `structuredClone`, `TextEncoder`, and `atob`. `await` works for promises that resolve synchronously; there is no `require`, `fetch`, filesystem, `process`, or timers. `with.timeout` takes seconds or a duration and defaults to the step timeout, or `60s` without one. `dagu validate` reports syntax errors with the script line. A thrown error fails the step with the exception and script line in the error, and the stack trace on stderr. A script that returns `undefined` leaves stdout empty and notes that on stderr. Use `node-script@v1` when a script needs real Node.js.
+
+`with` fields: `script`, `input`, `input_file`, `format`, `timeout`.
+
 ## template.render
 
 Render text using Go `text/template`.
@@ -585,7 +632,7 @@ steps:
     output: RESULT
 ```
 
-Set exactly one of `with.template` or `with.template_ref`. `with.template` is literal template text. `with.template_ref` must be one complete canonical Dagu reference such as `${env.TEMPLATE}` or `${steps.fetch.outputs.template}`; it resolves once to a non-empty string, and references inside the resulting template remain literal. The selected text is rendered as a template, not executed as shell. `with.output` writes rendered content to a file; top-level `output:` captures or publishes step output.
+Reference `with.data` keys with a leading dot: `{{ .name }}`. A bare `{{ name }}` is a function call in Go templates; `dagu validate` rejects it in inline `with.template` text, and a `with.template_ref` template fails the same way when the step runs. Set exactly one of `with.template` or `with.template_ref`. `with.template` is literal template text. `with.template_ref` must be one complete canonical Dagu reference such as `${env.TEMPLATE}` or `${steps.fetch.outputs.template}`; it resolves once to a non-empty string, and references inside the resulting template remain literal. The selected text is rendered as a template, not executed as shell. `with.output` writes rendered content to a file; top-level `output:` captures or publishes step output.
 
 ## file.stat / file.read / file.write / file.copy / file.move / file.delete / file.mkdir / file.list
 
@@ -880,7 +927,9 @@ and date columns), `odd` (cells the type cannot read even when pinned, such as
 `未定` in a number column; `１２` or `令和8年10月3日` are not odd), and
 `odd_cells` (the first three as `{cell, text}`). Before writing a workflow for a
 workbook, read it with `dagu xlsx inspect <path>` or the MCP `workbook` target
-to learn its sheets, headers, and types, and use the profile to choose `where`
+to learn its sheets, headers, and types. A protected workbook takes `--password`
+or `DAGU_XLSX_PASSWORD` on the command, and `password` on the workbook target.
+Use the profile to choose `where`
 values, `types`, and `on_type_error`.
 
 `xlsx.write` `with` fields: `path`, `sheet` (created when missing), `rows` (a
