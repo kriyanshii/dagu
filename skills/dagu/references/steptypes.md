@@ -942,8 +942,9 @@ default: bold frozen header, fitted widths, number formats by column; or
 `none`), `types`, `atomic` (default `true`), `dry_run`, `wait_for_unlock`,
 `artifact`. A replaced sheet is cleared in place, so its position, the defined
 names scoped to it, and formulas elsewhere that refer to it stay valid; its
-merged regions and tables are removed. Other sheets, widths, styles, and
-defined names are untouched. ISO date strings become real dates. `xlsx.append` adds rows below the last used row,
+merged regions and tables are removed, and every cell keeps its format, so
+`style: table` only formats a new or empty sheet. Other sheets, widths, styles,
+and defined names are untouched. ISO date strings become real dates. `xlsx.append` adds rows below the last used row,
 copying the style of the cell above, and writes a header only when the sheet is
 empty. Appended fields are placed under the header cell of the same exact name:
 a loose match fails with `did you mean`, a name the header lacks adds a column

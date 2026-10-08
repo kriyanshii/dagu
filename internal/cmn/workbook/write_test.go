@@ -509,28 +509,76 @@ func TestSaveKeepsPermissionBits(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "the rewritten workbook keeps its restrictive mode")
 }
 
-func TestClearedSheetDropsOldStyles(t *testing.T) {
+// TestReplaceKeepsStyles covers a replace of a sheet that holds values:
+// every cell keeps its format, including cells past the new rows, and
+// style: table adds nothing. A date written under a style without a date
+// format gains one.
+func TestReplaceKeepsStyles(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "restyle.xlsx")
-	dates := Table{Columns: []string{"when"}, Rows: [][]any{{"2026-10-01"}, {"2026-10-02"}}}
-	_, err := Write(context.Background(), path, dates, WriteOptions{Header: true})
+	f := excelize.NewFile()
+	bold := styleID(t, f, &excelize.Style{Font: &excelize.Font{Bold: true}})
+	grouped := "#,##0"
+	amount := styleID(t, f, &excelize.Style{CustomNumFmt: &grouped})
+	setRow(t, f, "Sheet1", "A1", "id", "total", "when")
+	setRow(t, f, "Sheet1", "A2", "old", 1, "x")
+	setRow(t, f, "Sheet1", "A3", "older", 2, "y")
+	require.NoError(t, f.SetCellStyle("Sheet1", "A1", "C1", bold))
+	require.NoError(t, f.SetCellStyle("Sheet1", "B2", "B3", amount))
+	require.NoError(t, f.SetCellStyle("Sheet1", "C2", "C2", bold))
+	require.NoError(t, f.SetColWidth("Sheet1", "A", "A", 25))
+	path := saveBook(t, f, "styled.xlsx")
+
+	table := Table{Columns: []string{"id", "total", "when"}, Rows: [][]any{{"new", float64(17500), "2026-10-01"}}}
+	_, err := Write(context.Background(), path, table, WriteOptions{Header: true})
 	require.NoError(t, err)
 
-	numbers := Table{Columns: []string{"n"}, Rows: [][]any{{int64(7)}}}
-	_, err = Write(context.Background(), path, numbers, WriteOptions{Header: true, Style: StyleNone})
+	g, err := excelize.OpenFile(path)
 	require.NoError(t, err)
-	back, err := Read(context.Background(), path, ReadOptions{})
+	defer func() { _ = g.Close() }()
+	for cell, want := range map[string]int{"A1": bold, "B2": amount, "B3": amount} {
+		id, err := g.GetCellStyle("Sheet1", cell)
+		require.NoError(t, err)
+		assert.Equal(t, want, id, "%s keeps its style", cell)
+	}
+	total, err := g.GetCellValue("Sheet1", "B2")
 	require.NoError(t, err)
-	assert.Equal(t, int64(7), back.Rows[0]["n"], "a number written where a date column was is read as a number")
+	assert.Equal(t, "17,500", total)
+	past, err := g.GetCellValue("Sheet1", "B3")
+	require.NoError(t, err)
+	assert.Empty(t, past, "a cell past the new rows loses its value")
+	width, err := g.GetColWidth("Sheet1", "A")
+	require.NoError(t, err)
+	assert.Equal(t, 25.0, width, "style: table does not refit a sheet that held values")
+
+	dateStyle, err := g.GetCellStyle("Sheet1", "C2")
+	require.NoError(t, err)
+	date, err := g.GetStyle(dateStyle)
+	require.NoError(t, err)
+	assert.True(t, date.Font.Bold)
+	require.NotNil(t, date.CustomNumFmt)
+	assert.Equal(t, fmtDate, *date.CustomNumFmt)
+	when, err := g.GetCellValue("Sheet1", "C2")
+	require.NoError(t, err)
+	assert.Equal(t, "2026-10-01", when)
+}
+
+func TestWriteStylesAddedSheet(t *testing.T) {
+	t.Parallel()
+	path := logBook(t)
+	_, err := Write(context.Background(), path, Table{Columns: []string{"n"}, Rows: [][]any{{int64(1)}}}, WriteOptions{Sheet: "Added", Header: true})
+	require.NoError(t, err)
 	f, err := excelize.OpenFile(path)
 	require.NoError(t, err)
 	defer func() { _ = f.Close() }()
-	id, err := f.GetCellStyle("Sheet1", "A3")
+	id, err := f.GetCellStyle("Added", "A1")
 	require.NoError(t, err)
-	assert.Equal(t, 0, id, "cells outside the new block lose their old style too")
+	header, err := f.GetStyle(id)
+	require.NoError(t, err)
+	assert.True(t, header.Font.Bold, "a sheet the write adds gets the table style")
+	assert.Equal(t, []string{headerFill}, header.Fill.Color)
 }
 
-func TestClearedSheetDropsStyledEmptyCellsAndHyperlinks(t *testing.T) {
+func TestReplaceKeepsStylesDropsHyperlinks(t *testing.T) {
 	t.Parallel()
 	f := excelize.NewFile()
 	bold := styleID(t, f, &excelize.Style{Font: &excelize.Font{Bold: true}})
@@ -554,7 +602,7 @@ func TestClearedSheetDropsStyledEmptyCellsAndHyperlinks(t *testing.T) {
 	for _, cell := range []string{"B1", "C3"} {
 		id, err := g.GetCellStyle("Sheet1", cell)
 		require.NoError(t, err)
-		assert.Equal(t, 0, id, "%s: a styled empty cell loses its style", cell)
+		assert.Equal(t, bold, id, "%s keeps its style", cell)
 	}
 	linked, _, err := g.GetCellHyperLink("Sheet1", "A2")
 	require.NoError(t, err)
@@ -568,9 +616,10 @@ func TestSingleCellDimensionIsClearedOnReplace(t *testing.T) {
 	t.Parallel()
 	f := excelize.NewFile()
 	bold := styleID(t, f, &excelize.Style{Font: &excelize.Font{Bold: true}})
-	// The only thing on the sheet is a styled empty cell, so Excel stores
-	// the single-cell dimension C3.
+	// The only thing on the sheet is a styled, linked empty cell, so Excel
+	// stores the single-cell dimension C3.
 	require.NoError(t, f.SetCellStyle("Sheet1", "C3", "C3", bold))
+	require.NoError(t, f.SetCellHyperLink("Sheet1", "C3", "https://example.com/old", "External"))
 	require.NoError(t, f.SetSheetDimension("Sheet1", "C3"))
 	path := saveBook(t, f, "lone.xlsx")
 
@@ -586,9 +635,12 @@ func TestSingleCellDimensionIsClearedOnReplace(t *testing.T) {
 	g, err := excelize.OpenFile(path)
 	require.NoError(t, err)
 	defer func() { _ = g.Close() }()
+	linked, _, err := g.GetCellHyperLink("Sheet1", "C3")
+	require.NoError(t, err)
+	assert.False(t, linked, "the lone cell's hyperlink is cleared along with the sheet")
 	id, err := g.GetCellStyle("Sheet1", "C3")
 	require.NoError(t, err)
-	assert.Equal(t, 0, id, "the lone styled cell is cleared along with the sheet")
+	assert.Equal(t, bold, id, "the lone cell keeps its style")
 }
 
 func TestReplaceClearsAnA1OnlySheet(t *testing.T) {
@@ -610,7 +662,7 @@ func TestReplaceClearsAnA1OnlySheet(t *testing.T) {
 	defer func() { _ = g.Close() }()
 	id, err := g.GetCellStyle("Sheet1", "A1")
 	require.NoError(t, err)
-	assert.Equal(t, 0, id, "the old style does not survive the replace")
+	assert.Equal(t, bold, id, "the new header keeps the cell's style")
 	linked, _, err := g.GetCellHyperLink("Sheet1", "A1")
 	require.NoError(t, err)
 	assert.False(t, linked, "the old hyperlink does not attach to the new header")

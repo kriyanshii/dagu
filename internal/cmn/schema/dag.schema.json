@@ -8133,12 +8133,12 @@
         "mode": {
           "type": "string",
           "enum": ["replace", "append"],
-          "description": "What xlsx.write does to an existing sheet: replace (default) its contents, or append below its last row."
+          "description": "What xlsx.write does to an existing sheet: replace (default) its values, keeping cell formats, or append below its last row."
         },
         "style": {
           "type": "string",
           "enum": ["table", "none"],
-          "description": "How a new sheet looks: table (default) has a bold frozen header, fitted widths, and number formats by column; none writes bare cells."
+          "description": "How a new or empty sheet looks: table (default) has a bold frozen header, fitted widths, and number formats by column; none writes bare cells. A replaced sheet that held values keeps its formats."
         },
         "atomic": {
           "oneOf": [{ "type": "boolean" }, { "type": "string" }],
